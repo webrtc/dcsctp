@@ -1,0 +1,35 @@
+[package]
+name = "dcsctp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.dcsctp]
+path = ".."
+
+[[bin]]
+name = "parse_parameters"
+path = "fuzz_targets/parse_parameters.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_error_causes"
+path = "fuzz_targets/parse_error_causes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_packet"
+path = "fuzz_targets/parse_packet.rs"
+test = false
+doc = false
+bench = false
