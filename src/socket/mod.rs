@@ -561,10 +561,9 @@ impl Socket<'_> {
 
         match &mut self.state {
             State::Closed => {
-                my_initial_tsn =
-                    Tsn(rand::thread_rng().gen_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
+                my_initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
                 my_verification_tag =
-                    rand::thread_rng().gen_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+                    rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
                 tie_tag = 0;
             }
             State::CookieWait(CookieWaitState { verification_tag, initial_tsn, .. })
@@ -605,7 +604,7 @@ impl Socket<'_> {
                 //
                 // Create a new verification tag, different from the previous one.
                 my_verification_tag =
-                    rand::thread_rng().gen_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+                    rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
                 my_initial_tsn = tcb.retransmission_queue.next_tsn().add_to(1000000);
                 tie_tag = tcb.tie_tag;
             }
@@ -709,7 +708,7 @@ impl Socket<'_> {
         t1_cookie.start(now);
         self.peer_implementation = detemine_sctp_implementation(&cookie);
         self.send_queue.reset();
-        let tie_tag = rand::thread_rng().gen::<u64>();
+        let tie_tag = rand::rng().random::<u64>();
         self.state = State::CookieEchoed(CookieEchoState {
             t1_cookie,
             cookie_echo_chunk: CookieEchoChunk { cookie },
@@ -1006,7 +1005,7 @@ impl Socket<'_> {
                     // re-configured, and shouldn't be reset.
                     self.send_queue.reset();
 
-                    let tie_tag = rand::thread_rng().gen::<u64>();
+                    let tie_tag = rand::rng().random::<u64>();
                     self.state = State::Established(TransmissionControlBlock::new(
                         &self.options,
                         cookie.my_tag,
@@ -1669,9 +1668,8 @@ impl DcSctpSocket for Socket<'_> {
             None,
         );
         t1_init.start(now);
-        let initial_tsn = Tsn(rand::thread_rng().gen_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
-        let verification_tag =
-            rand::thread_rng().gen_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+        let initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
+        let verification_tag = rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
         self.state = State::CookieWait(CookieWaitState { t1_init, initial_tsn, verification_tag });
         self.send_init();
     }

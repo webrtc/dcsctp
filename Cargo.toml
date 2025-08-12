@@ -9,11 +9,11 @@ keywords = ["webrtc", "sctp"]
 categories = ["network-programming"]
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.98"
 crc32c = "0.6.8"
-log = "0.4.22"
-rand = "0.8.5"
-thiserror = "2.0.10"
+log = "0.4.27"
+rand = "0.9.1"
+thiserror = "2.0.12"
 
 [dev-dependencies]
 itertools = "0.14.0"
