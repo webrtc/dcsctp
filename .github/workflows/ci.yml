@@ -8,7 +8,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  build_and_test:
+    name: build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,3 +19,41 @@ jobs:
         run: cargo build --verbose
       - name: Test
         run: cargo test --verbose
+
+  check-rustfmt:
+    name: check (rustfmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - run: cargo +nightly fmt --all -- --check
+
+  check-clippy:
+    name: check (clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+
+  check-doctests:
+    name: check (doctests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # NOTE: We need to run `cargo test --doc` separately from normal tests:
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: Run doctests
+        run: cargo test --doc
+        env:
+          RUST_BACKTRACE: 1
+      - name: Check `cargo doc` for lint issues
+        env:
+          RUSTDOCFLAGS: "--deny warnings"
+        run: cargo doc --no-deps --all-features --document-private-items
