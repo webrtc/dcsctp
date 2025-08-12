@@ -10,7 +10,7 @@ categories = ["network-programming"]
 
 [dependencies]
 anyhow = "1.0.98"
-crc32c = "0.6.8"
+crc-any = "2.5.0"
 log = "0.4.27"
 rand = "0.9.1"
 thiserror = "2.0.12"
