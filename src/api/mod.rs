@@ -428,10 +428,6 @@ pub enum SocketEvent {
     /// Generated when the library wants a datagram packet to be sent.
     SendPacket(Vec<u8>),
 
-    /// Generated when the library has received an SCTP message in full and delivers it to the
-    /// upper layer.
-    OnMessage(Message),
-
     /// Generated when calling [`DcSctpSocket::connect`] succeeds, but also for incoming successful
     /// connection attempts.
     OnConnected(),
@@ -655,6 +651,16 @@ pub trait DcSctpSocket {
     /// Returns the next generated event, if any.
     fn poll_event(&mut self) -> Option<SocketEvent>;
 
+    /// Retrieves the next received message from the incoming message queue.
+    ///
+    /// When the socket receives data from the peer, it reassembles it into messages. Once a
+    /// message is fully reassembled, it's placed in a queue. This method retrieves the
+    /// first message from that queue.
+    ///
+    /// Returns `Some(Message)` if there is a message available, and `None` otherwise.
+    /// It's recommended to check [`DcSctpSocket::messages_ready_count`] before calling this.
+    fn get_next_message(&mut self) -> Option<Message>;
+
     /// To be called when an incoming SCTP packet is to be processed.
     fn handle_input(&mut self, packet: &[u8]);
 
@@ -696,6 +702,10 @@ pub trait DcSctpSocket {
 
     /// The socket state.
     fn state(&self) -> SocketState;
+
+    /// Returns the number of fully reassembled messages waiting in the incoming message queue.
+    /// These messages can be retrieved by calling [`DcSctpSocket::get_next_message`].
+    fn messages_ready_count(&self) -> usize;
 
     fn options(&self) -> Options;
 

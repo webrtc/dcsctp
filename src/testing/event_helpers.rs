@@ -47,12 +47,6 @@ macro_rules! expect_sent_packet {
     };
 }
 
-macro_rules! expect_on_message {
-    ($event:expr) => {
-        crate::expect_event_1!($event, OnMessage)
-    };
-}
-
 macro_rules! expect_on_connected {
     ($event:expr) => {
         crate::expect_event_0!($event, OnConnected)
@@ -194,7 +188,6 @@ pub(crate) use expect_on_lifecycle_message_expired;
 pub(crate) use expect_on_lifecycle_message_fully_sent;
 #[allow(unused_imports)]
 pub(crate) use expect_on_lifecycle_message_maybe_sent;
-pub(crate) use expect_on_message;
 pub(crate) use expect_on_streams_reset_performed;
 pub(crate) use expect_sent_packet;
 pub(crate) use expect_total_buffered_amount_low;

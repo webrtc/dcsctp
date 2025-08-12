@@ -116,7 +116,6 @@ impl TransmissionControlBlock {
             reassembly_queue: ReassemblyQueue::new(
                 options.max_receiver_window_buffer_size,
                 capabilities.message_interleaving,
-                Rc::clone(&events),
             ),
             retransmission_queue: RetransmissionQueue::new(
                 Rc::clone(&events),
