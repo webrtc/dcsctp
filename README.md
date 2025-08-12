@@ -1,5 +1,8 @@
 # dcSCTP
 
+[![crates.io](https://img.shields.io/crates/v/dcsctp)](https://crates.io/crates/dcsctp)
+[![docs.rs](https://img.shields.io/docsrs/dcsctp)](https://docs.rs/dcsctp)
+
 An [SCTP](https://datatracker.ietf.org/doc/html/rfc9260) implementation for
 [WebRTC Data Channels](https://datatracker.ietf.org/doc/html/rfc8831).
 
