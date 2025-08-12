@@ -14,7 +14,7 @@
 
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
-use crate::api::SocketEvent;
+use crate::api::Message;
 use crate::api::StreamId;
 use crate::packet::data::Data;
 use crate::packet::forward_tsn_chunk::SkippedStream;
@@ -22,10 +22,8 @@ use crate::rx::interleaved_reassembly_streams::InterleavedReassemblyStreams;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::rx::traditional_reassembly_streams::TraditionalReassemblyStreams;
 use crate::types::Tsn;
-use crate::EventSink;
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::collections::VecDeque;
 
 pub const HIGH_WATERMARK_LIMIT: f32 = 0.9;
 
@@ -46,16 +44,12 @@ pub struct ReassemblyQueue {
     queued_bytes: usize,
     streams: Box<dyn ReassemblyStreams>,
     deferred_reset_streams: Option<DeferredResetStreams>,
-    events: Rc<RefCell<dyn EventSink>>,
     rx_messages_count: usize,
+    reassembled_messages: VecDeque<Message>,
 }
 
 impl ReassemblyQueue {
-    pub fn new(
-        max_size_bytes: usize,
-        use_message_interleaving: bool,
-        events: Rc<RefCell<dyn EventSink>>,
-    ) -> Self {
+    pub fn new(max_size_bytes: usize, use_message_interleaving: bool) -> Self {
         let streams: Box<dyn ReassemblyStreams> = if use_message_interleaving {
             Box::new(InterleavedReassemblyStreams::new())
         } else {
@@ -68,9 +62,19 @@ impl ReassemblyQueue {
             queued_bytes: 0,
             streams,
             deferred_reset_streams: None,
-            events,
             rx_messages_count: 0,
+            reassembled_messages: VecDeque::new(),
         }
+    }
+
+    pub fn messages_ready_count(&self) -> usize {
+        self.reassembled_messages.len()
+    }
+
+    pub fn get_next_message(&mut self) -> Option<Message> {
+        let message = self.reassembled_messages.pop_front()?;
+        self.queued_bytes -= message.payload.len();
+        Some(message)
     }
 
     pub fn rx_messages_count(&self) -> usize {
@@ -88,11 +92,13 @@ impl ReassemblyQueue {
             }
         }
 
-        self.queued_bytes =
-            self.queued_bytes.wrapping_add_signed(self.streams.add(tsn, data, &mut |message| {
-                self.rx_messages_count += 1;
-                self.events.borrow_mut().add(SocketEvent::OnMessage(message))
-            }));
+        let bytes_added_to_queue = self.streams.add(tsn, data, &mut |message| {
+            self.rx_messages_count += 1;
+            self.queued_bytes += message.payload.len();
+            self.reassembled_messages.push_back(message);
+        });
+
+        self.queued_bytes = self.queued_bytes.wrapping_add_signed(bytes_added_to_queue);
     }
 
     pub fn queued_bytes(&self) -> usize {
@@ -121,11 +127,13 @@ impl ReassemblyQueue {
             }
         }
 
-        self.queued_bytes -=
+        let bytes_removed_from_queue =
             self.streams.handle_forward_tsn(new_cumulative_ack, &skipped_streams, &mut |message| {
                 self.rx_messages_count += 1;
-                self.events.borrow_mut().add(SocketEvent::OnMessage(message))
+                self.queued_bytes += message.payload.len();
+                self.reassembled_messages.push_back(message);
             });
+        self.queued_bytes -= bytes_removed_from_queue;
     }
 
     /// The remaining bytes until the queue has reached the watermark limit.
@@ -175,10 +183,7 @@ impl ReassemblyQueue {
 mod tests {
     use super::*;
     use crate::api::PpId;
-    use crate::events::Events;
     use crate::testing::data_generator::DataGenerator;
-    use crate::testing::event_helpers::expect_no_event;
-    use crate::testing::event_helpers::expect_on_message;
     use crate::types::Fsn;
     use crate::types::Mid;
     use crate::types::Ssn;
@@ -187,40 +192,40 @@ mod tests {
 
     const MAX_SIZE: usize = 1000;
 
-    fn make_events() -> Rc<RefCell<Events>> {
-        Rc::new(RefCell::new(Events::new()))
+    fn make_traditional_queue() -> ReassemblyQueue {
+        ReassemblyQueue::new(MAX_SIZE, false)
     }
 
-    fn next_event(events: &Rc<RefCell<Events>>) -> Option<SocketEvent> {
-        events.borrow_mut().next_event()
+    fn make_interleaved_queue() -> ReassemblyQueue {
+        ReassemblyQueue::new(MAX_SIZE, true)
     }
 
-    fn make_traditional_queue(events: &Rc<RefCell<Events>>) -> ReassemblyQueue {
-        ReassemblyQueue::new(MAX_SIZE, false, Rc::clone(events) as Rc<RefCell<dyn EventSink>>)
-    }
-
-    fn make_interleaved_queue(events: &Rc<RefCell<Events>>) -> ReassemblyQueue {
-        ReassemblyQueue::new(MAX_SIZE, true, Rc::clone(events) as Rc<RefCell<dyn EventSink>>)
+    fn assert_no_partial_message_in_queue(q: &mut ReassemblyQueue) {
+        // Drain the reassembled messages, and validate that there is nothing partial remaining.
+        while q.messages_ready_count() > 0 {
+            q.get_next_message();
+        }
+        assert_eq!(q.messages_ready_count(), 0);
+        assert_eq!(q.queued_bytes(), 0);
     }
 
     #[test]
     fn empty_queue() {
-        let q = make_traditional_queue(&make_events());
+        let q = make_traditional_queue();
         assert_eq!(q.queued_bytes(), 0);
     }
 
     #[test]
     fn single_unordered_chunk_message() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.unordered("abcde", "BE"));
-        let message = expect_on_message!(next_event(&events));
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.ppid, PpId(53));
         assert_eq!(message.payload, "abcde".as_bytes().to_vec());
         assert_eq!(q.queued_bytes(), 0);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
     }
 
     #[test]
@@ -229,8 +234,7 @@ mod tests {
         let payload: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
         for perm in tsns.iter().permutations(tsns.len()) {
-            let events = make_events();
-            let mut q = make_traditional_queue(&events);
+            let mut q = make_traditional_queue();
             for (i, tsn) in perm.iter().enumerate() {
                 let offset = ((*tsn - 10) * 4) as usize;
                 let perm_payload = payload[offset..offset + 4].to_vec();
@@ -249,11 +253,11 @@ mod tests {
                     },
                 );
                 if i < 3 {
-                    expect_no_event!(next_event(&events));
+                    assert_eq!(q.messages_ready_count(), 0);
                     assert!(q.queued_bytes() > 0);
                 } else {
-                    expect_on_message!(next_event(&events));
-                    assert_eq!(q.queued_bytes(), 0);
+                    assert_eq!(q.messages_ready_count(), 1);
+                    assert_no_partial_message_in_queue(&mut q);
                 }
             }
         }
@@ -261,16 +265,15 @@ mod tests {
 
     #[test]
     fn single_ordered_chunk_message() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.ordered("abcde", "BE"));
-        let message = expect_on_message!(next_event(&events));
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.ppid, PpId(53));
         assert_eq!(message.payload, "abcde".as_bytes().to_vec());
         assert_eq!(q.queued_bytes(), 0);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
     }
 
     #[test]
@@ -279,8 +282,7 @@ mod tests {
         let payload: Vec<u8> = "abcdefghijklmnop".as_bytes().to_vec();
 
         for perm in tsns.iter().permutations(tsns.len()) {
-            let events = make_events();
-            let mut q = make_traditional_queue(&events);
+            let mut q = make_traditional_queue();
             for tsn in perm {
                 let offset = ((*tsn - 10) * 4) as usize;
                 let perm_payload = payload[offset..offset + 4].to_vec();
@@ -297,19 +299,15 @@ mod tests {
                     },
                 );
             }
-            expect_on_message!(next_event(&events));
-            expect_on_message!(next_event(&events));
-            expect_on_message!(next_event(&events));
-            expect_on_message!(next_event(&events));
-            expect_no_event!(next_event(&events));
-            assert_eq!(q.queued_bytes(), 0);
+            assert_eq!(q.messages_ready_count(), 4);
+            assert_eq!(q.queued_bytes(), 4 * 4);
+            assert_no_partial_message_in_queue(&mut q);
         }
     }
 
     #[test]
     fn retransmission_in_large_ordered() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.ordered("a", "B"));
         q.add(Tsn(12), gen.ordered("c", ""));
@@ -325,18 +323,17 @@ mod tests {
         q.add(Tsn(18), gen.ordered("i", ""));
         q.add(Tsn(19), gen.ordered("j", ""));
         assert_eq!(q.queued_bytes(), 10);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
 
         q.add(Tsn(20), gen.ordered("klmnop", "E"));
-        expect_on_message!(next_event(&events));
-        assert_eq!(q.queued_bytes(), 0);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.queued_bytes(), 16);
+        assert_eq!(q.messages_ready_count(), 1);
+        assert_no_partial_message_in_queue(&mut q);
     }
 
     #[test]
     fn forward_tsn_remove_unordered() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.unordered("a", "B"));
         q.add(Tsn(12), gen.unordered("c", ""));
@@ -346,21 +343,20 @@ mod tests {
         q.add(Tsn(15), gen.unordered("f", ""));
         q.add(Tsn(17), gen.unordered("h", "E"));
         assert_eq!(q.queued_bytes(), 6);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
 
         q.handle_forward_tsn(Tsn(13), vec![]);
         assert_eq!(q.queued_bytes(), 3);
 
         q.add(Tsn(16), gen.unordered("g", ""));
-        expect_on_message!(next_event(&events));
-        assert_eq!(q.queued_bytes(), 0);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.queued_bytes(), 4);
+        assert_eq!(q.messages_ready_count(), 1);
+        assert_no_partial_message_in_queue(&mut q);
     }
 
     #[test]
     fn forward_tsn_remove_ordered() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.ordered("a", "B"));
         q.add(Tsn(12), gen.ordered("c", ""));
@@ -371,17 +367,17 @@ mod tests {
         q.add(Tsn(16), gen.ordered("g", ""));
         q.add(Tsn(17), gen.ordered("h", "E"));
         assert_eq!(q.queued_bytes(), 7);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
 
         q.handle_forward_tsn(Tsn(13), vec![SkippedStream::ForwardTsn(StreamId(1), Ssn(0))]);
-        assert_eq!(q.queued_bytes(), 0);
-        expect_on_message!(next_event(&events));
+        assert_eq!(q.queued_bytes(), 4);
+        assert_eq!(q.messages_ready_count(), 1);
+        assert_no_partial_message_in_queue(&mut q);
     }
 
     #[test]
     fn not_ready_for_handover_when_reset_stream_is_deferred() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.ordered("abcd", "BE"));
         q.add(Tsn(11), gen.ordered("efgh", "BE"));
@@ -399,75 +395,71 @@ mod tests {
 
     #[test]
     fn handover_in_initial_state() {
-        let events = make_events();
-        let q = make_traditional_queue(&events);
+        let q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
 
         let mut state = SocketHandoverState::default();
         q.add_to_handover_state(&mut state);
 
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         q.restore_from_state(&state);
 
         q.add(Tsn(10), gen.ordered("abcd", "BE"));
-        expect_on_message!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 1);
     }
 
     #[test]
     fn handover_after_having_assembed_one_message() {
-        let events = make_events();
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         let mut gen = DataGenerator::new(StreamId(1));
 
         q.add(Tsn(10), gen.ordered("abcd", "BE"));
-        expect_on_message!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 1);
 
         let mut state = SocketHandoverState::default();
         q.add_to_handover_state(&mut state);
 
-        let mut q = make_traditional_queue(&events);
+        let mut q = make_traditional_queue();
         q.restore_from_state(&state);
 
         q.add(Tsn(11), gen.ordered("efgh", "BE"));
-        expect_on_message!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 1);
     }
 
     #[test]
     fn single_unordered_chunk_message_in_rfc8260() {
-        let events = make_events();
-        let mut q = make_interleaved_queue(&events);
+        let mut q = make_interleaved_queue();
         let mut gen = DataGenerator::new(StreamId(1));
         q.add(Tsn(10), gen.ordered("abcd", "BE"));
-        let message = expect_on_message!(next_event(&events));
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, "abcd".as_bytes().to_vec());
         assert_eq!(q.queued_bytes(), 0);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
     }
 
     #[test]
     fn two_interleaved_chunks() {
-        let events = make_events();
-        let mut q = make_interleaved_queue(&events);
+        let mut q = make_interleaved_queue();
         let mut s1 = DataGenerator::new(StreamId(1));
         let mut s2 = DataGenerator::new(StreamId(2));
         q.add(Tsn(10), s1.ordered("abcd", "B"));
         q.add(Tsn(11), s2.ordered("ijkl", "B"));
         assert_eq!(q.queued_bytes(), 8);
         q.add(Tsn(12), s1.ordered("efgh", "E"));
-        assert_eq!(q.queued_bytes(), 4);
-        q.add(Tsn(13), s2.ordered("mnop", "E"));
-        assert_eq!(q.queued_bytes(), 0);
 
-        let message = expect_on_message!(next_event(&events));
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, "abcdefgh".as_bytes().to_vec());
+        assert_eq!(q.queued_bytes(), 4);
 
-        let message = expect_on_message!(next_event(&events));
+        q.add(Tsn(13), s2.ordered("mnop", "E"));
+
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(2));
         assert_eq!(message.payload, "ijklmnop".as_bytes().to_vec());
-
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.queued_bytes(), 0);
+        assert_eq!(q.messages_ready_count(), 0);
     }
 
     #[test]
@@ -489,8 +481,7 @@ mod tests {
         ];
 
         for perm in chunks.iter().permutations(chunks.len()) {
-            let events = make_events();
-            let mut q = make_interleaved_queue(&events);
+            let mut q = make_interleaved_queue();
             for chunk in perm {
                 q.add(
                     chunk.tsn,
@@ -504,16 +495,13 @@ mod tests {
                     },
                 );
             }
-            expect_on_message!(next_event(&events));
-            expect_on_message!(next_event(&events));
-            expect_no_event!(next_event(&events));
+            assert_eq!(q.messages_ready_count(), 2);
         }
     }
 
     #[test]
     fn i_forward_tsn_remove_a_lot_ordered() {
-        let events = make_events();
-        let mut q = make_interleaved_queue(&events);
+        let mut q = make_interleaved_queue();
         let mut s1 = DataGenerator::new(StreamId(1));
 
         q.add(Tsn(10), s1.ordered("a", "B"));
@@ -531,18 +519,18 @@ mod tests {
             Tsn(13),
             vec![SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
         );
-        assert_eq!(q.queued_bytes(), 0);
 
-        let message = expect_on_message!(next_event(&events));
+        let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, "efgh".as_bytes().to_vec());
 
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
+        assert_no_partial_message_in_queue(&mut q);
 
         // The lost chunk comes, but too late. This is actually not a realistic scenario, as the
         // data tracker ensures that this chunk is never fed into the reassembly queue, but let's
         // just validate that it hasn't kept the discarded message and now tries to assemble it.
         q.add(Tsn(11), lost);
-        expect_no_event!(next_event(&events));
+        assert_eq!(q.messages_ready_count(), 0);
     }
 }

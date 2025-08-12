@@ -230,9 +230,6 @@ impl EventSink for LoggingEvents {
                 let now = *self.now.borrow();
                 log_packet(&self.name, now - self.start_time, true, e);
             }
-            SocketEvent::OnMessage(ref e) => {
-                info!("OnMessage: sid={}, ppid={}, len={}", e.stream_id, e.ppid, e.payload.len(),)
-            }
             SocketEvent::OnConnected() => info!("OnConnected"),
             SocketEvent::OnError(kind, ref e) => info!("OnError: {:?}, {}", kind, e),
             SocketEvent::OnBufferedAmountLow(e) => info!("OnBufferedAmountLow: {}", e),
@@ -1655,6 +1652,10 @@ impl DcSctpSocket for Socket<'_> {
         self.events.borrow_mut().next_event()
     }
 
+    fn get_next_message(&mut self) -> Option<Message> {
+        self.state.tcb_mut()?.reassembly_queue.get_next_message()
+    }
+
     fn connect(&mut self) {
         let State::Closed = self.state else {
             warn!("Called connect on a socket that is not closed");
@@ -1875,6 +1876,13 @@ impl DcSctpSocket for Socket<'_> {
             | State::ShutdownReceived(_)
             | State::ShutdownAckSent(_) => SocketState::ShuttingDown,
         }
+    }
+
+    fn messages_ready_count(&self) -> usize {
+        let Some(tcb) = self.state.tcb() else {
+            return 0;
+        };
+        tcb.reassembly_queue.messages_ready_count()
     }
 
     fn options(&self) -> Options {

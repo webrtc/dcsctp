@@ -56,7 +56,6 @@ mod tests {
     use crate::testing::event_helpers::expect_on_error;
     use crate::testing::event_helpers::expect_on_incoming_stream_reset;
     use crate::testing::event_helpers::expect_on_lifecycle_end;
-    use crate::testing::event_helpers::expect_on_message;
     use crate::testing::event_helpers::expect_on_streams_reset_performed;
     use crate::testing::event_helpers::expect_sent_packet;
     use crate::testing::event_helpers::expect_total_buffered_amount_low;
@@ -557,17 +556,12 @@ mod tests {
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
+        let message = socket_z.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload.len(), payload_size);
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -659,7 +653,7 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Connected);
         assert_eq!(socket_z.state(), SocketState::Connected);
 
-        let msg = expect_on_message!(socket_z.poll_event());
+        let msg = socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
         assert_eq!(msg.payload, vec![1, 2]);
 
@@ -681,7 +675,7 @@ mod tests {
         socket_z.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
         // A <- DATA <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
-        let msg = expect_on_message!(socket_a.poll_event());
+        let msg = socket_a.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
         assert_eq!(msg.payload, vec![1, 2]);
 
@@ -708,7 +702,7 @@ mod tests {
         socket_z.advance_time(expected_timeout);
 
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
-        let msg = expect_on_message!(socket_a.poll_event());
+        let msg = socket_a.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
         assert_eq!(msg.payload, vec![1, 2]);
 
@@ -737,17 +731,12 @@ mod tests {
         // A /lost/ <- DATA <- Z
         expect_sent_packet!(socket_z.poll_event());
 
-        let (events_a, ..) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_a
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
+        let message = socket_a.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, payload);
+        assert!(socket_a.get_next_message().is_none());
     }
 
     #[test]
@@ -837,7 +826,7 @@ mod tests {
 
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        expect_on_message!(socket_z.poll_event());
+        assert!(socket_z.get_next_message().is_some());
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
@@ -1109,7 +1098,7 @@ mod tests {
 
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        expect_on_message!(socket_z.poll_event());
+        assert!(socket_z.get_next_message().is_some());
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
@@ -1151,10 +1140,11 @@ mod tests {
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 100]), &ordered);
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let found =
-            events_z.iter().any(|e| matches!(e, SocketEvent::OnMessage(e) if e.ppid == PpId(53)));
-        assert!(found);
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(51));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -1179,10 +1169,10 @@ mod tests {
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
         // A <- SACK <- Z
-        expect_on_message!(socket_z.poll_event());
+        assert!(socket_z.get_next_message().is_some());
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
-        expect_on_message!(socket_z.poll_event());
+        assert!(socket_z.get_next_message().is_some());
 
         // Reset the outgoing stream. This will directly send a RE-CONFIG.
         assert_eq!(socket_a.reset_streams(&[StreamId(1)]), ResetStreamsStatus::Performed);
@@ -1211,8 +1201,7 @@ mod tests {
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        expect_on_message!(socket_z.poll_event());
-        expect_on_message!(socket_z.poll_event());
+        assert_eq!(socket_z.messages_ready_count(), 2);
 
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
@@ -1311,16 +1300,11 @@ mod tests {
 
         // Retransmit and handle the rest. As there will be some chunks in-flight that have the
         // wrong verification tag, those will yield errors.
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z2);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z2);
 
-        assert_eq!(message.ppid, PpId(51))
+        let message = socket_z2.get_next_message().unwrap();
+        assert_eq!(message.ppid, PpId(51));
+        assert!(socket_z2.get_next_message().is_none());
     }
 
     #[test]
@@ -1339,7 +1323,8 @@ mod tests {
 
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        assert_eq!(expect_on_message!(socket_z.poll_event()).ppid, PpId(51));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(51));
+
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
@@ -1366,7 +1351,7 @@ mod tests {
 
         // A -> FORWARD-TSN -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        assert_eq!(expect_on_message!(socket_z.poll_event()).ppid, PpId(53));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
 
         // Delayed SACK
         let now = socket_z.poll_timeout().unwrap();
@@ -1466,7 +1451,7 @@ mod tests {
             Chunk::Data(_)
         ));
         socket_z.handle_input(&packet);
-        expect_on_message!(socket_z.poll_event());
+        assert!(socket_z.get_next_message().is_some());
 
         let packet = expect_sent_packet!(socket_z.poll_event());
         assert!(matches!(
@@ -1603,15 +1588,10 @@ mod tests {
         now += options.rto_initial * (1 << (options.max_retransmissions.unwrap() - 1));
         socket_a.advance_time(now);
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z);
+        let message = socket_z.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -1646,16 +1626,10 @@ mod tests {
         // A -> DATA (msg 4, fragment 2) -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let messages = events_z
-            .iter()
-            .filter_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].ppid, PpId(54));
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(54));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -1720,11 +1694,9 @@ mod tests {
             socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
         }
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let received_messages =
-            events_z.iter().filter(|e| matches!(e, SocketEvent::OnMessage(_))).count();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(received_messages, ITERATIONS);
+        assert_eq!(socket_z.messages_ready_count(), ITERATIONS);
     }
 
     #[test]
@@ -1746,7 +1718,6 @@ mod tests {
             socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &s);
         }
 
-        let mut received_messages = Vec::<Message>::new();
         loop {
             // Mock that the time always goes forward.
             now += Duration::from_millis(1);
@@ -1761,10 +1732,8 @@ mod tests {
                 again = true;
             }
             if let Some(e) = socket_z.poll_event() {
-                match e {
-                    SocketEvent::SendPacket(send) => socket_a.handle_input(&send),
-                    SocketEvent::OnMessage(msg) => received_messages.push(msg),
-                    _ => {}
+                if let SocketEvent::SendPacket(send) = e {
+                    socket_a.handle_input(&send)
                 }
                 again = true;
             }
@@ -1772,7 +1741,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(received_messages.len(), ITERATIONS);
+        assert_eq!(socket_z.messages_ready_count(), ITERATIONS);
     }
 
     #[test]
@@ -1800,7 +1769,6 @@ mod tests {
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3]), &lifetime_1);
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &lifetime_0);
 
-        let mut received_messages = Vec::<Message>::new();
         loop {
             // Mock that the time always goes forward.
             now += Duration::from_millis(1);
@@ -1815,10 +1783,8 @@ mod tests {
                 again = true;
             }
             if let Some(e) = socket_z.poll_event() {
-                match e {
-                    SocketEvent::SendPacket(send) => socket_a.handle_input(&send),
-                    SocketEvent::OnMessage(msg) => received_messages.push(msg),
-                    _ => {}
+                if let SocketEvent::SendPacket(send) = e {
+                    socket_a.handle_input(&send);
                 }
                 again = true;
             }
@@ -1828,8 +1794,8 @@ mod tests {
         }
 
         // The large message should be delivered. It was sent reliably.
-        assert_eq!(received_messages.len(), 1);
-        assert_eq!(received_messages[0].payload.len(), 20 * options.mtu);
+        assert_eq!(socket_z.get_next_message().unwrap().payload.len(), 20 * options.mtu);
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -1949,10 +1915,10 @@ mod tests {
         expect_no_event!(socket_z.poll_event());
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 100]), &SendOptions::default());
-        let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
 
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(1));
-        expect_on_message!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
     }
 
     #[test]
@@ -1969,12 +1935,16 @@ mod tests {
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
 
         expect_no_event!(events_a.pop_front());
-        expect_on_message!(events_z.pop_front());
+        expect_no_event!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &SendOptions::default());
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
-        expect_on_message!(events_z.pop_front());
+        expect_no_event!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -1991,24 +1961,28 @@ mod tests {
         let s = SendOptions::default();
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &s);
-        let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(1));
-        expect_on_message!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
 
         socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000]), &s);
-        let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(2));
-        expect_on_message!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &s);
-        let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(1));
-        expect_on_message!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
 
         socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000]), &s);
-        let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(2));
-        expect_on_message!(events_z.pop_front());
+        assert!(socket_z.get_next_message().is_some());
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2120,19 +2094,26 @@ mod tests {
         assert_eq!(metrics.rx_packets_count, 2);
         assert_eq!(metrics.rx_messages_count, 0);
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &SendOptions::default());
+        let payload_size = 2;
+        socket_a.send(
+            Message::new(StreamId(1), PpId(53), vec![0; payload_size]),
+            &SendOptions::default(),
+        );
 
         let metrics = socket_a.get_metrics().unwrap();
         assert_eq!(metrics.unack_data_count, 1);
 
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        expect_on_message!(socket_z.poll_event());
+        assert_eq!(socket_z.messages_ready_count(), 1);
+
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
         let metrics = socket_a.get_metrics().unwrap();
-        assert_eq!(metrics.peer_rwnd_bytes, initial_a_rwnd);
+        // The reassembled message is still in the socket, and not consumed, so the receiver window
+        // size doesn't recover to its initial value.
+        assert_eq!(metrics.peer_rwnd_bytes, initial_a_rwnd - (payload_size as u32));
         assert_eq!(metrics.unack_data_count, 0);
         assert_eq!(metrics.tx_packets_count, 3);
         assert_eq!(metrics.rx_packets_count, 3);
@@ -2164,7 +2145,9 @@ mod tests {
 
         // A -> DATA -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
-        expect_on_message!(socket_z.poll_event());
+        assert_eq!(socket_z.messages_ready_count(), 2);
+        socket_z.get_next_message().unwrap();
+        socket_z.get_next_message().unwrap();
 
         // Delayed sack
         let now = socket_z.poll_timeout().unwrap();
@@ -2177,6 +2160,7 @@ mod tests {
         let metrics = socket_a.get_metrics().unwrap();
         assert_eq!(metrics.unack_data_count, 0);
         assert_eq!(metrics.rx_packets_count, 5);
+        // With all reassembled messages consumed from `socket_z`, the receiver window recovers.
         assert_eq!(metrics.peer_rwnd_bytes, initial_a_rwnd);
     }
 
@@ -2267,15 +2251,10 @@ mod tests {
         // A fourth packet should not be attempted to be sent, until an ack is received.
         expect_no_event!(socket_a.poll_event());
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(message.ppid, PpId(53));
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2317,14 +2296,14 @@ mod tests {
         socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s);
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s);
 
-        let (_, mut events_z) = exchange_packets(&mut socket_a, &mut new_socket_z);
-        let msg = expect_on_message!(events_z.pop_front());
+        exchange_packets(&mut socket_a, &mut new_socket_z);
+        let msg = new_socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
-        let msg = expect_on_message!(events_z.pop_front());
+        let msg = new_socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(2));
-        let msg = expect_on_message!(events_z.pop_front());
+        let msg = new_socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
-        expect_no_event!(events_z.pop_front());
+        assert!(new_socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2394,15 +2373,10 @@ mod tests {
         socket_a
             .send(Message::new(StreamId(1), PpId(52), vec![0; options.mtu - 100]), &send_options);
 
-        let (.., events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(message.ppid, PpId(52));
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(52));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2487,19 +2461,22 @@ mod tests {
         socket_a.reset_streams(&[StreamId(3)]);
 
         exchange_packets(&mut socket_a, &mut socket_z);
+        // Drain any received messages.
+        socket_z.get_next_message();
+        socket_z.get_next_message();
+        socket_z.get_next_message();
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s);
         socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s);
         socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2]), &s);
 
-        let (_, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let msg = expect_on_message!(events_z.pop_front());
+        exchange_packets(&mut socket_a, &mut socket_z);
+        let msg = socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
-        let msg = expect_on_message!(events_z.pop_front());
+        let msg = socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(2));
-        let msg = expect_on_message!(events_z.pop_front());
+        let msg = socket_z.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(3));
-        expect_no_event!(events_z.pop_front());
     }
 
     #[test]
@@ -2591,16 +2568,14 @@ mod tests {
         socket_a.send(Message::new(StreamId(1), PpId(103), vec![0; 10]), &s);
 
         socket_a.connect();
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let received_ppids = events_z
-            .iter()
-            .filter_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e.ppid.0),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(received_ppids, vec![101, 102, 103, 201, 301]);
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(101));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(102));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(103));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(201));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(301));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2626,16 +2601,14 @@ mod tests {
         socket_a.send(Message::new(StreamId(1), PpId(103), payload.clone()), &s);
 
         socket_a.connect();
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let received_ppids = events_z
-            .iter()
-            .filter_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e.ppid.0),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(received_ppids, vec![101, 102, 103, 201, 301]);
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(101));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(102));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(103));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(201));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(301));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2662,16 +2635,12 @@ mod tests {
         socket_a.send(Message::new(StreamId(1), PpId(101), vec![0; 10]), &s);
         socket_a.send(Message::new(StreamId(1), PpId(102), vec![0; 20 * options.mtu]), &s);
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let received_ppids = events_z
-            .iter()
-            .filter_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e.ppid.0),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(received_ppids, vec![101, 102, 201]);
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(101));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(102));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(201));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2877,9 +2846,9 @@ mod tests {
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
         socket_z.handle_input(&data2);
-        assert_eq!(expect_on_message!(socket_z.poll_event()).ppid, PpId(53));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
         socket_z.handle_input(&data3);
-        assert_eq!(expect_on_message!(socket_z.poll_event()).ppid, PpId(54));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(54));
         // A <- SACK <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
@@ -2908,16 +2877,10 @@ mod tests {
 
         // Send a new message after the stream has been reset.
         socket_a.send(Message::new(StreamId(1), PpId(55), vec![0; 100]), &SendOptions::default());
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(message.ppid, PpId(55));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(55));
+        assert!(socket_z.get_next_message().is_none());
     }
 
     #[test]
@@ -2939,10 +2902,10 @@ mod tests {
 
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
 
-        assert_eq!(expect_on_message!(events_z.pop_front()).ppid, PpId(51));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(51));
         expect_on_streams_reset_performed!(events_a.pop_front());
         expect_on_incoming_stream_reset!(events_z.pop_front());
-        assert_eq!(expect_on_message!(events_z.pop_front()).ppid, PpId(52));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(52));
     }
 
     #[test]
@@ -3174,19 +3137,11 @@ mod tests {
         assert_eq!(c.data.ssn, Ssn(1));
         assert_eq!(c.data.ppid, PpId(53));
 
-        let (_, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
+        exchange_packets(&mut socket_a, &mut socket_z);
 
-        let messages: Vec<_> = events_z
-            .iter()
-            .filter_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].ppid, PpId(52));
-        assert_eq!(messages[1].ppid, PpId(53));
+        assert_eq!(socket_z.messages_ready_count(), 2);
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(52));
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
     }
 
     #[test]
@@ -3273,13 +3228,7 @@ mod tests {
         assert!(events_a.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
         assert!(events_z.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
 
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        let message = socket_z.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, payload);
     }
@@ -3313,14 +3262,9 @@ mod tests {
         assert!(events_a.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
         assert!(events_z.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
 
-        let message = events_z
-            .iter()
-            .find_map(|e| match e {
-                SocketEvent::OnMessage(e) => Some(e),
-                _ => None,
-            })
-            .unwrap();
+        let message = socket_z.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, payload);
+        assert!(socket_z.get_next_message().is_none());
     }
 }
