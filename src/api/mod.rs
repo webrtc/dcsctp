@@ -48,15 +48,24 @@ impl fmt::Display for LifecycleId {
 }
 
 impl LifecycleId {
+    /// Creates a new `LifecycleId`.
+    ///
+    /// Returns `None` if the value is zero, as zero is not a valid lifecycle identifier.
     pub fn new(n: u64) -> Option<LifecycleId> {
         NonZeroU64::new(n).map(LifecycleId)
     }
 
+    /// Creates a new `LifecycleId` from a non-zero value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is zero.
     pub fn from(n: u64) -> LifecycleId {
         debug_assert!(n != 0);
         LifecycleId(NonZeroU64::new(n).unwrap())
     }
 
+    /// Returns the underlying value.
     pub fn value(&self) -> u64 {
         self.0.into()
     }
@@ -129,17 +138,22 @@ pub struct Message {
 }
 
 impl Message {
+    /// Creates a new `Message`.
     pub fn new(stream_id: StreamId, ppid: PpId, payload: Vec<u8>) -> Self {
         Message { stream_id, ppid, payload }
     }
 }
 
+/// The alternate error detection method to use when zero-checksum is enabled.
+/// See <https://datatracker.ietf.org/doc/html/rfc9653.html>.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ZeroChecksumAlternateErrorDetectionMethod(pub u32);
 
+/// No alternate error detection method. This is the default.
 pub const ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE:
     ZeroChecksumAlternateErrorDetectionMethod = ZeroChecksumAlternateErrorDetectionMethod(0);
 
+/// Use the lower-layer DTLS protocol as the alternate error detection method.
 pub const ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS:
     ZeroChecksumAlternateErrorDetectionMethod = ZeroChecksumAlternateErrorDetectionMethod(1);
 
@@ -163,36 +177,47 @@ pub enum SctpImplementation {
     Other,
 }
 
+/// Represents the category of an error that has occurred.
+///
+/// This enum is used in [`SocketEvent::OnError`] and [`SocketEvent::OnAborted`] to provide
+/// information about the nature of the error.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ErrorKind {
     /// Indicates that no error has occurred. This will never be the case when
     /// [`SocketEvent::OnError`] or [`SocketEvent::OnAborted`] is called.
     NoError,
 
-    /// There have been too many retries or timeouts, and the library has given up.
+    /// The operation could not be completed because of too many retransmissions or timeouts.
+    /// This typically indicates a loss of connectivity to the peer.
     TooManyRetries,
 
-    /// A command was received that is only possible to execute when the socket is connected, which
-    /// it is not.
+    /// A command was received that is only possible to execute when the socket is connected,
+    /// but the socket is not in a `Connected` state.
     NotConnected,
 
-    /// Parsing of the command or its parameters failed.
+    /// Parsing of an incoming SCTP packet or its parameters failed. This can happen if the
+    /// packet is malformed.
     ParseFailed,
 
-    /// Commands are received in the wrong sequence, which indicates a synchronisation mismatch
-    /// between the peers.
+    /// SCTP chunks were received in an unexpected sequence, which may indicate a
+    /// synchronization mismatch between the peers.
     WrongSequence,
 
-    /// The peer has reported an issue using ERROR or ABORT command.
+    /// The peer has reported an issue by sending an `ERROR` or `ABORT` chunk. The specific
+    /// cause is included in the string provided with the event.
     PeerReported,
 
-    /// The peer has performed a protocol violation.
+    /// The peer has performed a protocol violation, such as sending an invalid chunk or
+    /// parameter that violates the SCTP specification.
     ProtocolViolation,
 
-    /// The receive or send buffers have been exhausted.
+    /// The socket's internal send or receive buffers have been exhausted, and no more data
+    /// can be queued. This can happen if data is being produced faster than it can be sent
+    /// or processed.
     ResourceExhaustion,
 
-    /// The client has performed an invalid operation.
+    /// The client application has attempted to perform an invalid or unsupported operation on
+    /// the socket.
     UnsupportedOperation,
 }
 
@@ -372,20 +397,18 @@ impl Default for Options {
             announced_maximum_incoming_streams: u16::MAX,
             announced_maximum_outgoing_streams: u16::MAX,
 
-            // The largest safe SCTP packet. Starting from the minimum guaranteed MTU value of 1,280
-            // for IPv6 (which may not support fragmentation), take off 85 bytes for
-            // DTLS/TURN/TCP/IP and ciphertext overhead.
+            // A safe default SCTP packet size. It is derived from the minimum guaranteed
+            // MTU for IPv6 (1280 bytes), which may not support fragmentation, by subtracting
+            // conservative estimates for headers and overhead.
             //
-            // Additionally, it's possible that TURN adds an additional 4 bytes of overhead after a
-            // channel has been established, so an additional 4 bytes is subtracted
-            //
-            // 1280 IPV6 MTU
-            //  -40 IPV6 header
-            //   -8 UDP
-            //  -24 GCM Cipher
-            //  -13 DTLS record header
-            //   -4 TURN ChannelData
-            // = 1191 bytes.
+            // Calculation:
+            //   1280 (IPv6 MTU)
+            //    -40 (IPv6 header)
+            //     -8 (UDP header)
+            //    -24 (GCM AEAD overhead)
+            //    -13 (DTLS record header)
+            //     -4 (TURN ChannelData header)
+            //   = 1191 bytes
             mtu: 1191,
 
             max_message_size: 256 * 1024,
@@ -508,10 +531,10 @@ pub enum SocketEvent {
     /// Emitted when a non-expired message has been acknowledged by the peer as delivered.
     ///
     /// Note that this will trigger only when the peer moves its cumulative TSN ack beyond this
-    /// message, and will not fire for messages acked using gap-ack-blocks as those are renegable.
+    /// message, and will not fire for messages acked using gap-ack-blocks as those are renegeable.
     /// This means that this may fire a bit later than the message was actually first "acked" by
-    /// the peer, as - according to the protocol - those acks may be unacked later by the
-    /// client.
+    /// the peer, as - according to the protocol - those acks may be un-acked later by the
+    /// peer.
     ///
     /// See [`Self::OnLifecycleMessageFullySent`] for possible transitions to and from this event.
     OnLifecycleMessageDelivered(LifecycleId),
@@ -524,7 +547,7 @@ pub enum SocketEvent {
     /// having been generated in case of errors, such as attempting to send an empty message or
     /// failing to enqueue a message if the send queue is full.
     ///
-    /// NOTE: When the socket is deallocated, there will be no [`Self::OnLifecycleEnd`] events sent
+    /// NOTE: When the socket is dropped, there will be no [`Self::OnLifecycleEnd`] events sent
     /// for messages that were enqueued. But as long as the socket is alive,
     /// [`Self::OnLifecycleEnd`] events are guaranteed to be sent as messages are either expired or
     /// successfully acknowledged.
@@ -551,6 +574,7 @@ pub enum SocketState {
     ShuttingDown,
 }
 
+/// The result of a `send` operation.
 #[derive(Debug, PartialEq)]
 pub enum SendStatus {
     /// The message was enqueued successfully. As sending the message is done asynchronously, this
@@ -572,7 +596,7 @@ pub enum SendStatus {
     ErrorShuttingDown,
 }
 
-/// Return value of ResetStreams.
+/// The result of a `reset_streams` operation.
 #[derive(Debug, PartialEq)]
 pub enum ResetStreamsStatus {
     /// If the connection is not yet established, this will be returned.
@@ -731,18 +755,20 @@ pub trait DcSctpSocket {
 
     /// Sends the messages `messages` using the provided send options.
     ///
-    /// Sending a message is an asynchronous operation, and the [`SocketEvent::OnError`] event may
+    /// Sending messages is an asynchronous operation, and the [`SocketEvent::OnError`] event may
     /// be generated to indicate any errors in sending the message.
     ///
-    /// This has identical semantics to Send, except that it may coalesce many messages into a
-    /// single SCTP packet if they would fit.
+    /// This has identical semantics to [`DcSctpSocket::send`], except that it may coalesce many
+    /// messages into a single SCTP packet if they would fit.
     fn send_many(
         &mut self,
         messages: &mut [Message],
         send_options: &SendOptions,
     ) -> Vec<SendStatus>;
 
-    /// Resetting streams is an asynchronous operation and the results will be notified using
+    /// Resets outgoing streams.
+    ///
+    /// This is an asynchronous operation, and the results will be notified using
     /// [`SocketEvent::OnStreamsResetPerformed`] on success and
     /// [`SocketEvent::OnStreamsResetFailed`] on failure. Note that only outgoing streams can be
     /// reset.
@@ -751,11 +777,11 @@ pub trait DcSctpSocket {
     /// [`SocketEvent::OnIncomingStreamReset`] is called.
     ///
     /// Note that resetting a stream will also remove all queued messages on those streams, but will
-    /// ensure that the currently sent message (if any) is fully sent before closing the stream.
+    /// ensure that the currently transmitted message (if any) is fully sent before closing the
+    /// stream.
     ///
     /// Resetting streams can only be done on an established association that supports stream
-    /// resetting. Calling this method on e.g. a closed association or streams that don't support
-    /// resetting will not perform any operation.
+    /// resetting.
     fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> ResetStreamsStatus;
 
     /// Returns the number of bytes of data currently queued to be sent on a given stream.
@@ -766,24 +792,29 @@ pub trait DcSctpSocket {
     fn buffered_amount_low_threshold(&self, stream_id: StreamId) -> usize;
 
     /// Specifies the number of bytes of buffered outgoing data that is considered "low" for a given
-    /// stream, which will trigger an OnBufferedAmountLow event. The default value is zero.
+    /// stream, which will trigger an [`SocketEvent::OnBufferedAmountLow`] event. The default value
+    /// is zero.
     fn set_buffered_amount_low_threshold(&mut self, stream_id: StreamId, bytes: usize);
 
-    /// Retrieves the latest metrics. If the socket is not fully connected, None will be returned.
-    /// Note that metrics are not guaranteed to be carried over if this socket is handed over by
-    /// calling [`Self::get_handover_state_and_close`].
+    /// Retrieves the latest metrics.
+    ///
+    /// Returns `None` if the socket is not fully connected. Note that metrics are not guaranteed
+    /// to be carried over if this socket is handed over by calling
+    /// [`Self::get_handover_state_and_close`].
     fn get_metrics(&self) -> Option<Metrics>;
 
-    /// Indicates if the component can be snapshot by calling
+    /// Indicates if the component can be snapshotted by calling
     /// [`Self::get_handover_state_and_close`]. The return value is invalidated by a call to any
     /// method that mutates the component.
     fn get_handover_readiness(&self) -> HandoverReadiness;
 
     /// Collects a snapshot of the socket state that can be used to reconstruct this socket in
-    /// another process. On success this socket object is closed synchronously and no events will be
-    /// made after the method has returned. The method fails if the socket is not in a state ready
-    /// for handover. None indicates the failure. [`SocketEvent::OnClosed`] will be called on
-    /// success.
+    /// another process.
+    ///
+    /// On success, this socket object is closed synchronously, and no more events will be emitted
+    /// after this method has returned. [`SocketEvent::OnClosed`] will be called on success.
+    ///
+    /// Returns `None` if the socket is not in a state ready for handover.
     fn get_handover_state_and_close(&mut self) -> Option<SocketHandoverState>;
 }
 
