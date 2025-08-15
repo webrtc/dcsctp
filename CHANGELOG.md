@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Added
+
+- Exposed Socket in the public API.
+
 ### Changed
 
 - A pull-based API for receiving messages, which allows for back-pressure to be
