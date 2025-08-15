@@ -21,6 +21,8 @@ use std::time::Instant;
 
 pub mod handover;
 
+pub use crate::socket::Socket;
+
 /// An identifier that can be set on sent messages, and picked by the sending client. If set,
 /// lifecycle events will be generated, and eventually [`SocketEvent::OnLifecycleEnd`] will be
 /// generated to indicate that the lifecycle isn't tracked any longer. The value zero (0) is not a
