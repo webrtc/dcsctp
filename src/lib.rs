@@ -21,6 +21,8 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub use socket::Socket;
+
 pub(crate) mod events;
 pub(crate) mod packet;
 pub(crate) mod rx;

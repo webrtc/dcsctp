@@ -287,6 +287,12 @@ macro_rules! transition_between {
   };
 }
 
+/// An SCTP socket.
+///
+/// The socket is the main entry point for using the `dcsctp` library. It is used to send and
+/// receive messages, and to manage the connection.
+///
+/// To create a socket, use the [`Socket::new`] method.
 pub struct Socket<'a> {
     name: String,
     start_time: Instant,
@@ -413,6 +419,10 @@ fn compute_capabilities(
 }
 
 impl Socket<'_> {
+    /// Creates a new `Socket`.
+    ///
+    /// The provided `name` is only used for logging to identify this socket, and `start_time`
+    /// is the initial time, used as a basline for all time-based operations.
     pub fn new(name: &str, start_time: Instant, options: &Options) -> Self {
         let now = Rc::new(RefCell::new(start_time));
         let events: Rc<RefCell<Events>> = Rc::new(RefCell::new(Events::new()));
