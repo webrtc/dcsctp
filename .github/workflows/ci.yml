@@ -20,6 +20,21 @@ jobs:
       - name: Test
         run: cargo test --verbose
 
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Sanity check fuzzers
+        run: |
+          cargo install cargo-fuzz
+          cd fuzz
+          cargo fuzz run parse_parameters -- -max_total_time=5
+          cargo fuzz run parse_error_causes -- -max_total_time=5
+          cargo fuzz run parse_packet -- -max_total_time=5
+
   check-rustfmt:
     name: check (rustfmt)
     runs-on: ubuntu-latest
