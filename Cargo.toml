@@ -18,5 +18,8 @@ thiserror = "2.0.12"
 [dev-dependencies]
 itertools = "0.14.0"
 
+[features]
+fuzz-internals = []
+
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(feature, values("fuzz-internals"))'] }

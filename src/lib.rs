@@ -39,7 +39,7 @@ pub(crate) mod testing;
 
 // Fuzzers, who are defined in a separate crate, need to access internal (non-public) functions that
 // they will fuzz. Expose these only for the fuzzing configuration.
-#[cfg(fuzzing)]
+#[cfg(feature = "fuzz-internals")]
 pub mod fuzzer;
 
 pub(crate) mod logging {
