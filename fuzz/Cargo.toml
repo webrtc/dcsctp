@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.dcsctp]
 path = ".."
+features = ["fuzz-internals"]
 
 [[bin]]
 name = "parse_parameters"
