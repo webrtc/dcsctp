@@ -1238,4 +1238,68 @@ mod tests {
         observe(&mut d, now, &[11]);
         assert!(d.get_handover_readiness().is_ready());
     }
+
+    #[test]
+    fn observe_out_of_order_and_fill_gap_moves_cumulative_tsn_ack() {
+        let now = Instant::now();
+        let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
+
+        // Receive 12, 14, 15. Then 11 (which advances cum_ack), then 13 (which fills the gap).
+        observe(&mut d, now, &[12, 14, 15, 11, 13]);
+
+        let sack = d.create_selective_ack(A_RWND);
+        assert_eq!(sack.cumulative_tsn_ack, Tsn(15));
+        assert!(sack.gap_ack_blocks.is_empty());
+        assert!(sack.duplicate_tsns.is_empty());
+    }
+
+    #[test]
+    fn observe_out_of_order_and_fill_gap_moves_cumulative_tsn_ack_multiple_blocks() {
+        let now = Instant::now();
+        let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
+
+        // Create two separate blocks: 12-13 and 15-16
+        observe(&mut d, now, &[12, 13, 15, 16]);
+        // Now fill the gap between them with 14. This should merge the blocks.
+        // The current implementation of `add_additional_tsn` is buggy and will
+        // result in `[12..14, 14..17]`.
+        observe(&mut d, now, &[14]);
+        // Now receive 11, which should advance the cumulative ack over all blocks.
+        observe(&mut d, now, &[11]);
+
+        let sack = d.create_selective_ack(A_RWND);
+        assert_eq!(sack.cumulative_tsn_ack, Tsn(16));
+        assert!(sack.gap_ack_blocks.is_empty());
+        assert!(sack.duplicate_tsns.is_empty());
+    }
+
+    #[test]
+    fn observe_fill_gap_of_three_blocks_advances_cumulative_tsn() {
+        let now = Instant::now();
+        let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
+
+        // Create two separate blocks: 13 and 15.
+        // State: additional_tsn_blocks = [13..14, 15..16]
+        observe(&mut d, now, &[13, 15]);
+
+        // Fill the gap between them with 14.
+        // This hits a bug in `add_additional_tsn` where expanding a block to the left
+        // doesn't check if it can merge with the block before it, resulting in adjacent blocks.
+        // State: additional_tsn_blocks = [13..14, 14..16]
+        observe(&mut d, now, &[14]);
+
+        // Add 12, which expands the first block to the left.
+        // State: additional_tsn_blocks = [12..14, 14..16]
+        observe(&mut d, now, &[12]);
+
+        // Now receive 11, which should advance the cumulative ack over all blocks.
+        // But `observe` only processes one block, leaving last_cumulative_acked_tsn
+        // at 13 instead of 15.
+        observe(&mut d, now, &[11]);
+
+        let sack = d.create_selective_ack(A_RWND);
+        assert_eq!(sack.cumulative_tsn_ack, Tsn(15));
+        assert!(sack.gap_ack_blocks.is_empty());
+        assert!(sack.duplicate_tsns.is_empty());
+    }
 }
