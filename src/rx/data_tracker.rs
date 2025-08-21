@@ -20,7 +20,6 @@ use crate::packet::sack_chunk::SackChunk;
 use crate::timer::Timer;
 use crate::types::Tsn;
 use std::cmp::min;
-use std::cmp::Ordering;
 use std::ops::Range;
 use std::time::Duration;
 use std::time::Instant;
@@ -126,50 +125,38 @@ impl DataTracker {
     }
 
     fn add_additional_tsn(&mut self, tsn: Tsn) -> bool {
-        let idx = self
-            .additional_tsn_blocks
-            .binary_search_by(|s| if s.end < tsn { Ordering::Less } else { Ordering::Greater })
-            .unwrap_err();
+        let idx = self.additional_tsn_blocks.partition_point(|r| r.start <= tsn);
 
-        match self.additional_tsn_blocks.get(idx) {
-            None => {
-                // No matching block found. There is no greater than, or equal block - which means
-                // that this TSN is greater than any block. It can then be inserted at the end.
-                self.additional_tsn_blocks.push(tsn..tsn + 1);
-                true
+        // Check if it's a duplicate in the block before insertion point.
+        if idx > 0 && self.additional_tsn_blocks[idx - 1].contains(&tsn) {
+            return false;
+        }
+
+        let extend_prev = idx > 0 && self.additional_tsn_blocks[idx - 1].end == tsn;
+        let extend_next = idx < self.additional_tsn_blocks.len()
+            && self.additional_tsn_blocks[idx].start == tsn + 1;
+
+        match (extend_prev, extend_next) {
+            (true, true) => {
+                // Merge with previous and next block.
+                let next_end = self.additional_tsn_blocks[idx].end;
+                self.additional_tsn_blocks[idx - 1].end = next_end;
+                self.additional_tsn_blocks.remove(idx);
             }
-            Some(range) if range.contains(&tsn) => {
-                // It's already in this block.
-                false
+            (true, false) => {
+                // Extend previous block.
+                self.additional_tsn_blocks[idx - 1].end = tsn + 1;
             }
-            Some(range) if range.end == tsn => {
-                // This block can be expanded to the right, or merged with the next.
-                if idx + 1 < self.additional_tsn_blocks.len()
-                    && self.additional_tsn_blocks[idx + 1].start == tsn + 1
-                {
-                    // Expanding it would make it adjacent to next block - merge those.
-                    self.additional_tsn_blocks[idx].end = self.additional_tsn_blocks[idx + 1].end;
-                    self.additional_tsn_blocks.remove(idx + 1);
-                } else {
-                    // Expand to the right.
-                    self.additional_tsn_blocks[idx].end = tsn + 1;
-                }
-                true
-            }
-            Some(range) if tsn + 1 == range.start => {
-                // This block can be expanded to the left. Merging to the left would've been covered
-                // by the above "merge to the right". Both blocks (expand a right-most block to the
-                // left and expand a left-most block to the right) would match, but the left-most
-                // would be returned by std::lower_bound.
+            (false, true) => {
+                // Extend next block.
                 self.additional_tsn_blocks[idx].start = tsn;
-                true
             }
-            Some(_) => {
-                // Need to create a new block in the middle.
+            (false, false) => {
+                // Insert new block.
                 self.additional_tsn_blocks.insert(idx, tsn..tsn + 1);
-                true
             }
         }
+        true
     }
 
     /// Call for every incoming data chunk. Returns `true` if `tsn` was seen for the first time, and
