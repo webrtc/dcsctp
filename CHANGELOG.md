@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.1 - 2025-08-21
+
 ### Added
 
 - Exposed Socket in the public API.
