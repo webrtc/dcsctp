@@ -89,7 +89,7 @@ pub struct RetransmissionQueue {
     rtx_bytes_count: u64,
 
     /// If set, fast recovery is enabled until this TSN has been cumulative acked.
-    fast_recoverty_exit_tsn: Option<Tsn>,
+    fast_recovery_exit_tsn: Option<Tsn>,
 
     /// All the outstanding data chunks that are in-flight and that have not been cumulative acked.
     /// Note that it also contains chunks that have been acked in gap ack blocks.
@@ -127,7 +127,7 @@ impl RetransmissionQueue {
             partial_bytes_acked: 0,
             rtx_packets_count: 0,
             rtx_bytes_count: 0,
-            fast_recoverty_exit_tsn: None,
+            fast_recovery_exit_tsn: None,
             outstanding_data: OutstandingData::new(data_chunk_header_size, my_initial_tsn - 1),
             t3_rtx: Timer::new(
                 options.rto_initial,
@@ -183,15 +183,15 @@ impl RetransmissionQueue {
     }
 
     fn maybe_exit_fast_recovery(&mut self, cumulative_tsn_ack: Tsn) {
-        if let Some(fast_recoverty_exit_tsn) = self.fast_recoverty_exit_tsn {
-            if cumulative_tsn_ack >= fast_recoverty_exit_tsn {
-                self.fast_recoverty_exit_tsn = None;
+        if let Some(fast_recovery_exit_tsn) = self.fast_recovery_exit_tsn {
+            if cumulative_tsn_ack >= fast_recovery_exit_tsn {
+                self.fast_recovery_exit_tsn = None;
             }
         }
     }
 
     fn is_in_fast_recovery(&self) -> bool {
-        self.fast_recoverty_exit_tsn.is_some()
+        self.fast_recovery_exit_tsn.is_some()
     }
 
     fn update_receiver_window(&mut self, a_rwnd: usize) {
@@ -304,10 +304,10 @@ impl RetransmissionQueue {
             //
             //   If not in Fast Recovery, enter Fast Recovery and mark the highest outstanding TSN
             //   as the Fast Recovery exit point.
-            self.fast_recoverty_exit_tsn = Some(self.outstanding_data.highest_outstanding_tsn());
+            self.fast_recovery_exit_tsn = Some(self.outstanding_data.highest_outstanding_tsn());
             log::debug!(
                 "fast recovery initiated with exit_point={}",
-                self.fast_recoverty_exit_tsn.unwrap()
+                self.fast_recovery_exit_tsn.unwrap()
             );
         } else {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4-5.6.1>:
@@ -706,7 +706,7 @@ impl RetransmissionQueue {
     pub(crate) fn get_handover_readiness(&self) -> HandoverReadiness {
         HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA & !self.outstanding_data.is_empty()
             | (HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
-                & self.fast_recoverty_exit_tsn.is_some())
+                & self.fast_recovery_exit_tsn.is_some())
             | (HandoverReadiness::RETRANSMISSION_QUEUE_NOT_EMPTY
                 & self.outstanding_data.has_data_to_be_retransmitted())
     }
