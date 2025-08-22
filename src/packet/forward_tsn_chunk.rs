@@ -21,19 +21,12 @@ use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
-use crate::types::Mid;
+use crate::packet::SkippedStream;
 use crate::types::Ssn;
-use crate::types::StreamKey;
 use crate::types::Tsn;
 use anyhow::ensure;
 use anyhow::Error;
 use std::fmt;
-
-#[derive(Debug, PartialEq)]
-pub enum SkippedStream {
-    ForwardTsn(StreamId, Ssn),
-    IForwardTsn(StreamKey, Mid),
-}
 
 pub(crate) const CHUNK_TYPE: u8 = 192;
 

@@ -92,12 +92,22 @@ macro_rules! write_u64_be {
     };
 }
 
+use crate::api::StreamId;
+use crate::types::Mid;
+use crate::types::Ssn;
+use crate::types::StreamKey;
 pub(crate) use read_u16_be;
 pub(crate) use read_u32_be;
 pub(crate) use read_u64_be;
 pub(crate) use write_u16_be;
 pub(crate) use write_u32_be;
 pub(crate) use write_u64_be;
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum SkippedStream {
+    ForwardTsn(StreamId, Ssn),
+    IForwardTsn(StreamKey, Mid),
+}
 
 /// Trait for serialization/deserialization methods on TLV data types (chunks, parameters, error
 /// causes) that have the same framing, but handle metadata (type, flags etc) differently.

@@ -17,7 +17,7 @@ use crate::api::handover::SocketHandoverState;
 use crate::api::Message;
 use crate::api::StreamId;
 use crate::packet::data::Data;
-use crate::packet::forward_tsn_chunk::SkippedStream;
+use crate::packet::SkippedStream;
 use crate::types::Tsn;
 
 /// Implementations of this interface will be called when data is received, when data should be

@@ -17,7 +17,7 @@ use crate::api::handover::SocketHandoverState;
 use crate::api::Message;
 use crate::api::StreamId;
 use crate::packet::data::Data;
-use crate::packet::forward_tsn_chunk::SkippedStream;
+use crate::packet::SkippedStream;
 use crate::rx::interleaved_reassembly_streams::InterleavedReassemblyStreams;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::rx::traditional_reassembly_streams::TraditionalReassemblyStreams;
