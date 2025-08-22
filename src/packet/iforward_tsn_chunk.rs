@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::forward_tsn_chunk::SkippedStream;
 use crate::api::StreamId;
 use crate::packet::chunk::write_chunk_header;
 use crate::packet::chunk::RawChunk;
@@ -22,6 +21,7 @@ use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::SkippedStream;
 use crate::types::Mid;
 use crate::types::StreamKey;
 use crate::types::Tsn;

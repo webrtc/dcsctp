@@ -44,7 +44,6 @@ use crate::packet::error_causes::ErrorCause;
 use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
-use crate::packet::forward_tsn_chunk::SkippedStream;
 use crate::packet::forward_tsn_supported_parameter::ForwardTsnSupportedParameter;
 use crate::packet::heartbeat_ack_chunk::HeartbeatAckChunk;
 use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
@@ -81,6 +80,7 @@ use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCaus
 use crate::packet::write_u32_be;
 use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
 use crate::packet::SerializableTlv;
+use crate::packet::SkippedStream;
 use crate::socket::capabilities::Capabilities;
 use crate::socket::state_cookie::StateCookie;
 use crate::socket::transmission_control_block::CurrentResetRequest;
