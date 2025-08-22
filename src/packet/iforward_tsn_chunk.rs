@@ -70,18 +70,16 @@ impl TryFrom<RawChunk<'_>> for IForwardTsnChunk {
         );
 
         let new_cumulative_tsn = Tsn(read_u32_be!(&raw.value[0..4]));
-        let num_skipped = (raw.value.len() - 4) / 8;
 
-        let mut skipped_streams = Vec::<SkippedStream>::with_capacity(num_skipped);
-        let mut offset = 4;
-        for _ in 0..num_skipped {
-            let stream_id = StreamId(read_u16_be!(&raw.value[offset..offset + 2]));
-            let is_unordered = (raw.value[offset + 3] & 1) != 0;
-            let mid = Mid(read_u32_be!(&raw.value[offset + 4..offset + 8]));
-            skipped_streams
-                .push(SkippedStream::IForwardTsn(StreamKey::from(is_unordered, stream_id), mid));
-            offset += 8;
-        }
+        let skipped_streams = raw.value[4..]
+            .chunks_exact(8)
+            .map(|c| {
+                let stream_id = StreamId(read_u16_be!(&c[0..2]));
+                let is_unordered = (c[3] & 1) != 0;
+                let mid = Mid(read_u32_be!(&c[4..8]));
+                SkippedStream::IForwardTsn(StreamKey::from(is_unordered, stream_id), mid)
+            })
+            .collect();
 
         Ok(Self { new_cumulative_tsn, skipped_streams })
     }
