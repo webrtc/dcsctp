@@ -123,16 +123,17 @@ impl SerializableTlv for SackChunk {
         write_u16_be!(&mut value[8..10], self.gap_ack_blocks.len() as u16);
         write_u16_be!(&mut value[10..12], self.duplicate_tsns.len() as u16);
 
-        let mut offset = 12;
-        for block in &self.gap_ack_blocks {
-            write_u16_be!(&mut value[offset..offset + 2], block.start);
-            write_u16_be!(&mut value[offset + 2..offset + 4], block.end);
-            offset += 4;
+        let gap_blocks_end = 12 + self.gap_ack_blocks.len() * 4;
+
+        let mut chunks = value[12..gap_blocks_end].chunks_exact_mut(4);
+        for (block, chunk) in self.gap_ack_blocks.iter().zip(&mut chunks) {
+            write_u16_be!(&mut chunk[0..2], block.start);
+            write_u16_be!(&mut chunk[2..4], block.end);
         }
 
-        for dup_tsn in &self.duplicate_tsns {
-            write_u32_be!(&mut value[offset..offset + 4], dup_tsn.0);
-            offset += 4;
+        let mut chunks = value[gap_blocks_end..].chunks_exact_mut(4);
+        for (dup_tsn, chunk) in self.duplicate_tsns.iter().zip(&mut chunks) {
+            write_u32_be!(chunk, dup_tsn.0);
         }
     }
 
