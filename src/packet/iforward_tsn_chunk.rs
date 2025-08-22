@@ -90,18 +90,17 @@ impl SerializableTlv for IForwardTsnChunk {
         let value = write_chunk_header(CHUNK_TYPE, 0, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.new_cumulative_tsn.0);
 
-        let mut offset = 4;
-        for skipped in &self.skipped_streams {
+        let mut chunks = value[4..].chunks_exact_mut(8);
+        for (skipped, chunk) in self.skipped_streams.iter().zip(&mut chunks) {
             match skipped {
                 SkippedStream::IForwardTsn(stream_key, mid) => {
-                    write_u16_be!(&mut value[offset..offset + 2], stream_key.id().0);
-                    value[offset + 2] = 0;
-                    value[offset + 3] = if stream_key.is_unordered() { 1 } else { 0 };
-                    write_u32_be!(&mut value[offset + 4..offset + 8], mid.0);
+                    write_u16_be!(&mut chunk[0..2], stream_key.id().0);
+                    chunk[2] = 0;
+                    chunk[3] = if stream_key.is_unordered() { 1 } else { 0 };
+                    write_u32_be!(&mut chunk[4..8], mid.0);
                 }
                 _ => panic!("Unsupported skipped stream"),
             }
-            offset += 8;
         }
     }
 

@@ -84,8 +84,9 @@ impl SerializableTlv for OutgoingSsnResetRequestParameter {
         write_u32_be!(&mut value[0..4], self.request_seq_nbr);
         write_u32_be!(&mut value[4..8], self.response_seq_nbr);
         write_u32_be!(&mut value[8..12], self.sender_last_assigned_tsn.0);
-        for (idx, stream_id) in self.streams.iter().enumerate() {
-            write_u16_be!(&mut value[12 + idx * 2..12 + idx * 2 + 2], stream_id.0);
+        let mut chunks = value[12..].chunks_exact_mut(2);
+        for (stream_id, chunk) in self.streams.iter().zip(&mut chunks) {
+            write_u16_be!(chunk, stream_id.0);
         }
     }
 

@@ -68,8 +68,9 @@ impl SerializableTlv for IncomingSsnResetRequestParameter {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_parameter_header(PARAMETER_TYPE, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.request_seq_nbr);
-        for (idx, stream_id) in self.streams.iter().enumerate() {
-            write_u16_be!(&mut value[4 + idx * 2..4 + idx * 2 + 2], stream_id.0);
+        let mut chunks = value[4..].chunks_exact_mut(2);
+        for (stream_id, chunk) in self.streams.iter().zip(&mut chunks) {
+            write_u16_be!(chunk, stream_id.0);
         }
     }
 
