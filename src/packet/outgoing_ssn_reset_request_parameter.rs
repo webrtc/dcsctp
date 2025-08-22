@@ -67,9 +67,7 @@ impl TryFrom<RawParameter<'_>> for OutgoingSsnResetRequestParameter {
             ChunkParseError::InvalidLength
         );
 
-        let streams = (0..(raw.value.len() - 12) / 2)
-            .map(|i| StreamId(read_u16_be!(&raw.value[12 + i * 2..12 + i * 2 + 2])))
-            .collect();
+        let streams = raw.value[12..].chunks_exact(2).map(|c| StreamId(read_u16_be!(c))).collect();
 
         Ok(Self {
             request_seq_nbr: read_u32_be!(&raw.value[0..4]),

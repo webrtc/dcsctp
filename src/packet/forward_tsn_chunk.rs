@@ -62,16 +62,15 @@ impl TryFrom<RawChunk<'_>> for ForwardTsnChunk {
         ensure!(raw.value.len() >= 4 && (raw.value.len() % 4) == 0, ChunkParseError::InvalidLength);
 
         let new_cumulative_tsn = Tsn(read_u32_be!(&raw.value[0..4]));
-        let num_skipped = (raw.value.len() - 4) / 4;
 
-        let mut skipped_streams = Vec::<SkippedStream>::with_capacity(num_skipped);
-        let mut offset = 4;
-        for _ in 0..num_skipped {
-            let stream_id = StreamId(read_u16_be!(&raw.value[offset..offset + 2]));
-            let ssn = Ssn(read_u16_be!(&raw.value[offset + 2..offset + 4]));
-            skipped_streams.push(SkippedStream::ForwardTsn(stream_id, ssn));
-            offset += 4;
-        }
+        let skipped_streams = raw.value[4..]
+            .chunks_exact(4)
+            .map(|c| {
+                let stream_id = StreamId(read_u16_be!(&c[0..2]));
+                let ssn = Ssn(read_u16_be!(&c[2..4]));
+                SkippedStream::ForwardTsn(stream_id, ssn)
+            })
+            .collect();
 
         Ok(Self { new_cumulative_tsn, skipped_streams })
     }
