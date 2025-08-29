@@ -20,6 +20,10 @@
 #![deny(warnings)]
 #![forbid(unsafe_code)]
 
+use crate::api::DcSctpSocket;
+use crate::api::Options;
+use std::time::Instant;
+
 pub mod api;
 pub(crate) mod events;
 pub(crate) mod packet;
@@ -36,6 +40,19 @@ trait EventSink {
 
 #[cfg(test)]
 pub(crate) mod testing;
+
+/// Returns the version of this crate.
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Creates a new `Socket`.
+///
+/// The provided `name` is only used for logging to identify this socket, and `start_time`
+/// is the initial time, used as a basline for all time-based operations.
+pub fn new_socket(name: &str, start_time: Instant, options: &Options) -> Box<dyn DcSctpSocket> {
+    Box::new(socket::Socket::new(name, start_time, options))
+}
 
 // Fuzzers, who are defined in a separate crate, need to access internal (non-public) functions that
 // they will fuzz. Expose these only for the fuzzing configuration.
