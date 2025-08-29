@@ -1,3 +1,10 @@
+[workspace]
+members = [
+    ".",
+    "dcsctp-cxx",
+    "fuzz",
+]
+
 [package]
 name = "dcsctp"
 description = "An SCTP implementation for WebRTC Data Channels"

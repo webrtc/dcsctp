@@ -72,3 +72,15 @@ jobs:
         env:
           RUSTDOCFLAGS: "--deny warnings"
         run: cargo doc --no-deps --all-features --document-private-items
+
+  build-cxx:
+    name: cxx (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build and sanity test
+        run: |
+          cd dcsctp-cxx/
+          make clean all run

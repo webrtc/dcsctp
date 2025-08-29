@@ -1,5 +1,7 @@
+/dcsctp-cxx/examples/main
 /fuzz/artifacts/
 /fuzz/corpus/
 /fuzz/coverage/
 /fuzz/target/
 /target/
+*.o
