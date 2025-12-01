@@ -65,7 +65,7 @@ impl TryFrom<RawChunk<'_>> for IForwardTsnChunk {
     fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
         ensure!(
-            raw.value.len() >= 4 && ((raw.value.len() - 4) % 8) == 0,
+            raw.value.len() >= 4 && (raw.value.len() - 4).is_multiple_of(8),
             ChunkParseError::InvalidLength
         );
 

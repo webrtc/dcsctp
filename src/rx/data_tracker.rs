@@ -406,7 +406,7 @@ mod tests {
     }
 
     fn expect_gaps(d: &SackChunk, offsets: &[u16]) {
-        assert!(offsets.len() % 2 == 0);
+        assert!(offsets.len().is_multiple_of(2));
         let count = offsets.len() / 2;
         assert!(d.gap_ack_blocks.len() == count);
         let mut idx = 0;

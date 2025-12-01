@@ -63,7 +63,7 @@ impl TryFrom<RawParameter<'_>> for OutgoingSsnResetRequestParameter {
     fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
         ensure!(raw.typ == PARAMETER_TYPE, ChunkParseError::InvalidType);
         ensure!(
-            raw.value.len() >= 12 && (raw.value.len() % 2) == 0,
+            raw.value.len() >= 12 && raw.value.len().is_multiple_of(2),
             ChunkParseError::InvalidLength
         );
 

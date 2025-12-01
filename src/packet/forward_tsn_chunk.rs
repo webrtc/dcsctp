@@ -59,7 +59,10 @@ impl TryFrom<RawChunk<'_>> for ForwardTsnChunk {
 
     fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
-        ensure!(raw.value.len() >= 4 && (raw.value.len() % 4) == 0, ChunkParseError::InvalidLength);
+        ensure!(
+            raw.value.len() >= 4 && raw.value.len().is_multiple_of(4),
+            ChunkParseError::InvalidLength
+        );
 
         let new_cumulative_tsn = Tsn(read_u32_be!(&raw.value[0..4]));
 
