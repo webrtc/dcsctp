@@ -55,7 +55,10 @@ impl TryFrom<RawParameter<'_>> for IncomingSsnResetRequestParameter {
 
     fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
         ensure!(raw.typ == PARAMETER_TYPE, ChunkParseError::InvalidType);
-        ensure!(raw.value.len() >= 4 && (raw.value.len() % 2) == 0, ChunkParseError::InvalidLength);
+        ensure!(
+            raw.value.len() >= 4 && raw.value.len().is_multiple_of(2),
+            ChunkParseError::InvalidLength
+        );
 
         let request_seq_nbr = read_u32_be!(&raw.value[0..4]);
         let streams = raw.value[4..].chunks_exact(2).map(|c| StreamId(read_u16_be!(c))).collect();
