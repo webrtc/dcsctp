@@ -2,9 +2,9 @@
 #include <iostream>
 
 int main() {
-  std::cout << "dcsctp version: " << version().c_str() << std::endl;
+  std::cout << "dcsctp version: " << dcsctp_cxx::version().c_str() << std::endl;
 
-  DcSctpSocket *socket = new_socket();
+  dcsctp_cxx::DcSctpSocket *socket = dcsctp_cxx::new_socket();
 
   if (socket) {
     std::cout << "Successfully created a socket." << std::endl;
@@ -13,7 +13,7 @@ int main() {
     return 1;
   }
 
-  if (state(*socket) == SocketState::Closed) {
+  if (dcsctp_cxx::state(*socket) == dcsctp_cxx::SocketState::Closed) {
     std::cout << "Socket is initially closed" << std::endl;
   } else {
     std::cout << "Socket is in an unexpected state" << std::endl;
@@ -21,6 +21,6 @@ int main() {
   }
 
   std::cout << "Socket is about to be deleted." << std::endl;
-  delete_socket(socket);
+  dcsctp_cxx::delete_socket(socket);
   return 0;
 }
