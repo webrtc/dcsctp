@@ -14,6 +14,7 @@
 
 use dcsctp::api::DcSctpSocket as DcSctpSocketTrait;
 use dcsctp::api::Options;
+use dcsctp::api::SocketEvent as DcSctpSocketEvent;
 use dcsctp::api::SocketState as DcSctpSocketState;
 use std::time::Instant;
 
@@ -27,6 +28,18 @@ mod ffi {
         ShuttingDown,
     }
 
+    #[derive(Debug)]
+    enum EventType {
+        Nothing,
+        OnConnected,
+        SendPacket,
+    }
+
+    struct Event {
+        event_type: EventType,
+        packet: Vec<u8>,
+    }
+
     extern "Rust" {
         type DcSctpSocket;
 
@@ -34,6 +47,9 @@ mod ffi {
         fn new_socket() -> *mut DcSctpSocket;
         unsafe fn delete_socket(socket: *mut DcSctpSocket);
         fn state(socket: &DcSctpSocket) -> SocketState;
+        fn connect(socket: &mut DcSctpSocket);
+        fn handle_input(socket: &mut DcSctpSocket, data: &[u8]);
+        fn poll_event(socket: &mut DcSctpSocket) -> Event;
     }
 }
 
@@ -64,5 +80,25 @@ fn state(socket: &DcSctpSocket) -> ffi::SocketState {
         DcSctpSocketState::Connecting => ffi::SocketState::Connecting,
         DcSctpSocketState::Connected => ffi::SocketState::Connected,
         DcSctpSocketState::ShuttingDown => ffi::SocketState::ShuttingDown,
+    }
+}
+
+fn connect(socket: &mut DcSctpSocket) {
+    socket.0.connect();
+}
+
+fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
+    socket.0.handle_input(data)
+}
+
+fn poll_event(socket: &mut DcSctpSocket) -> ffi::Event {
+    match socket.0.poll_event() {
+        Some(DcSctpSocketEvent::SendPacket(p)) => {
+            ffi::Event { event_type: ffi::EventType::SendPacket, packet: p }
+        }
+        Some(DcSctpSocketEvent::OnConnected()) => {
+            ffi::Event { event_type: ffi::EventType::OnConnected, packet: Vec::new() }
+        }
+        _ => ffi::Event { event_type: ffi::EventType::Nothing, packet: Vec::new() },
     }
 }
