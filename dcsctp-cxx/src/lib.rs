@@ -3,7 +3,7 @@ use dcsctp::api::Options;
 use dcsctp::api::SocketState as DcSctpSocketState;
 use std::time::Instant;
 
-#[cxx::bridge]
+#[cxx::bridge(namespace = "dcsctp_cxx")]
 mod ffi {
     #[derive(Debug)]
     enum SocketState {
