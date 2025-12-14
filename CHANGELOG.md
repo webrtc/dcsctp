@@ -8,6 +8,12 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.2 - 2025-12-15
+
+### Added
+
+- Added cxx child crate for C++ interoperability. 
+
 ## 0.1.1 - 2025-08-21
 
 ### Added
