@@ -151,8 +151,6 @@ pub enum ChunkParseError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn read_big_endian() {
         let a = &[1, 2, 3, 4, 5, 6, 7, 8];

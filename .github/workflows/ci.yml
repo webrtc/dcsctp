@@ -6,6 +6,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  STABLE_TOOLCHAIN: 1.92.0
+  NIGHTLY_TOOLCHAIN: nightly-2025-12-16
 
 jobs:
   build_and_test:
@@ -14,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.STABLE_TOOLCHAIN }}
       - name: Build
         run: cargo build --verbose
       - name: Test
@@ -26,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY_TOOLCHAIN }}
       - name: Sanity check fuzzers
         run: |
           cargo install cargo-fuzz
@@ -40,19 +46,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: ${{ env.NIGHTLY_TOOLCHAIN }}
           components: rustfmt
-      - run: cargo +nightly fmt --all -- --check
+      - run: cargo fmt --all -- --check
 
   check-clippy:
     name: check (clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.STABLE_TOOLCHAIN }}
           components: clippy
       - run: cargo clippy --all-features --all-targets -- -D warnings
 
@@ -61,7 +68,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.STABLE_TOOLCHAIN }}
       # NOTE: We need to run `cargo test --doc` separately from normal tests:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: Run doctests
@@ -79,7 +88,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.STABLE_TOOLCHAIN }}
       - name: Build and sanity test
         run: |
           cd dcsctp-cxx/
