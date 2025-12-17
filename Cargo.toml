@@ -16,7 +16,7 @@ keywords = ["webrtc", "sctp"]
 categories = ["network-programming"]
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.100"
 crc-any = "2.5.0"
 log = "0.4.29"
 rand = "0.9.1"
