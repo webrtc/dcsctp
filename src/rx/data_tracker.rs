@@ -1248,9 +1248,9 @@ mod tests {
         // Create two separate blocks: 12-13 and 15-16
         observe(&mut d, now, &[12, 13, 15, 16]);
         // Now fill the gap between them with 14. This should merge the blocks.
-        // The current implementation of `add_additional_tsn` is buggy and will
-        // result in `[12..14, 14..17]`.
         observe(&mut d, now, &[14]);
+        assert_eq!(d.additional_tsn_blocks, vec![Tsn(12)..Tsn(17)]);
+
         // Now receive 11, which should advance the cumulative ack over all blocks.
         observe(&mut d, now, &[11]);
 
@@ -1268,21 +1268,20 @@ mod tests {
         // Create two separate blocks: 13 and 15.
         // State: additional_tsn_blocks = [13..14, 15..16]
         observe(&mut d, now, &[13, 15]);
+        assert_eq!(d.additional_tsn_blocks, vec![Tsn(13)..Tsn(14), Tsn(15)..Tsn(16)]);
 
         // Fill the gap between them with 14.
-        // This hits a bug in `add_additional_tsn` where expanding a block to the left
-        // doesn't check if it can merge with the block before it, resulting in adjacent blocks.
-        // State: additional_tsn_blocks = [13..14, 14..16]
         observe(&mut d, now, &[14]);
+        assert_eq!(d.additional_tsn_blocks, vec![Tsn(13)..Tsn(16)]);
 
         // Add 12, which expands the first block to the left.
-        // State: additional_tsn_blocks = [12..14, 14..16]
         observe(&mut d, now, &[12]);
+        assert_eq!(d.additional_tsn_blocks, vec![Tsn(12)..Tsn(16)]);
 
         // Now receive 11, which should advance the cumulative ack over all blocks.
-        // But `observe` only processes one block, leaving last_cumulative_acked_tsn
-        // at 13 instead of 15.
         observe(&mut d, now, &[11]);
+        assert_eq!(d.last_cumulative_acked_tsn, Tsn(15));
+        assert_eq!(d.additional_tsn_blocks, vec![]);
 
         let sack = d.create_selective_ack(A_RWND);
         assert_eq!(sack.cumulative_tsn_ack, Tsn(15));
