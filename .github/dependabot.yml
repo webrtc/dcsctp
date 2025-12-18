@@ -6,7 +6,7 @@ updates:
     schedule:
       interval: weekly
     groups:
-      all:
+      cargo-all:
         patterns:
           - "*"
   - package-ecosystem: github-actions
@@ -14,6 +14,6 @@ updates:
     schedule:
       interval: weekly
     groups:
-      all:
+      github-all:
         patterns:
           - "*"
