@@ -12,25 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: all clean run
+.PHONY: all clean
 
-all: examples/main
+CC = $(CXX)
+CXX = c++
+CXXFLAGS = -std=c++14
 
-examples/main: examples/main.cpp Cargo.toml src/lib.rs src/lib.cpp include/dcsctp.h
-	@echo "Building rust library..."
-	@cargo build
-	@echo "Building C++ example..."
-	@CXX_INCLUDE_PATH=$$(find ../target/debug/build/dcsctp-cxx-*/out/cxxbridge/include -print -quit) && \
-	c++ -std=c++14 \
-		-Iinclude \
-		-I$${CXX_INCLUDE_PATH} \
-		examples/main.cpp \
-		-o examples/main \
-		../target/debug/libdcsctp_cxx.a
+GEN_DIR := ../../../target
+GEN_HEADER := $(GEN_DIR)/cxxbridge/dcsctp-cxx/src/lib.rs.h
+GEN_LIB := $(GEN_DIR)/debug/libdcsctp_cxx.a
+GEN_FILES := \
+	$(GEN_DIR)/cxxbridge/dcsctp-cxx/src/lib.rs.cc \
+	$(GEN_HEADER) \
+	$(GEN_LIB)
 
-run: examples/main
-	./examples/main
+all: main
+
+$(GEN_FILES): ../../src/lib.rs ../../Cargo.toml
+	cargo build --package dcsctp-cxx
+
+main.o: main.cc $(GEN_HEADER)
+
+main: main.o $(GEN_LIB)
 
 clean:
-	@cargo clean
-	@rm -f examples/main
+	cargo clean --package dcsctp-cxx
+	rm -f *.o main
