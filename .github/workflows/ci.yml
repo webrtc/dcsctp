@@ -93,5 +93,6 @@ jobs:
           toolchain: ${{ env.STABLE_TOOLCHAIN }}
       - name: Build and sanity test
         run: |
-          cd dcsctp-cxx/
-          make clean all run
+          cd dcsctp-cxx/examples/pingpong/
+          make clean all
+          ./main

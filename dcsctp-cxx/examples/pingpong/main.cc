@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "dcsctp.h"
-
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "../../../target/cxxbridge/dcsctp-cxx/src/lib.rs.h"
 
 // Exchanges all packets between two sockets until there are no more packets to
 // exchange. All other events are collected and returned.

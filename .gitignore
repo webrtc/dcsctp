@@ -1,4 +1,4 @@
-/dcsctp-cxx/examples/main
+/dcsctp-cxx/examples/pingpong/main
 /fuzz/artifacts/
 /fuzz/corpus/
 /fuzz/coverage/
