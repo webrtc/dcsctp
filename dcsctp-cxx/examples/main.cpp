@@ -18,42 +18,55 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
-// Polls for the next event and expects it to be a SendPacket.
-// Returns the packet payload. Throws a runtime_error if the event is not a
-// SendPacket.
-rust::Vec<uint8_t> expect_send_packet(dcsctp_cxx::DcSctpSocket& socket,
-                                      const std::string& socket_name) {
-  dcsctp_cxx::Event event = dcsctp_cxx::poll_event(socket);
-  if (event.event_type != dcsctp_cxx::EventType::SendPacket) {
-    throw std::runtime_error("Expected SendPacket from " + socket_name +
-                             ", but got something else.");
-  }
-  std::cout << "Polled SendPacket from " << socket_name
-            << " (size: " << event.packet.size() << ")" << std::endl;
-  return event.packet;
-}
+// Exchanges all packets between two sockets until there are no more packets to
+// exchange. All other events are collected and returned.
+std::pair<std::vector<dcsctp_cxx::Event>, std::vector<dcsctp_cxx::Event>>
+exchange_packets(dcsctp_cxx::DcSctpSocket& socket_a,
+                 dcsctp_cxx::DcSctpSocket& socket_z) {
+  std::vector<dcsctp_cxx::Event> events_a;
+  std::vector<dcsctp_cxx::Event> events_z;
 
-// Polls for the next event and expects it to be OnConnected.
-// Throws a runtime_error if the event is not OnConnected.
-void expect_on_connected(dcsctp_cxx::DcSctpSocket& socket,
-                         const std::string& socket_name) {
-  dcsctp_cxx::Event event = dcsctp_cxx::poll_event(socket);
-  if (event.event_type != dcsctp_cxx::EventType::OnConnected) {
-    throw std::runtime_error("Expected OnConnected from " + socket_name +
-                             ", but got something else.");
-  }
-  std::cout << "Polled OnConnected from " << socket_name << std::endl;
-}
+  while (true) {
+    bool again = false;
 
-// Polls for the next event and expects it to be Nothing.
-void expect_no_event(dcsctp_cxx::DcSctpSocket& socket,
-                     const std::string& socket_name) {
-  dcsctp_cxx::Event event = dcsctp_cxx::poll_event(socket);
-  if (event.event_type != dcsctp_cxx::EventType::Nothing) {
-    throw std::runtime_error("Expected Nothing from " + socket_name +
-                             ", but got something else.");
+    while (true) {
+      dcsctp_cxx::Event ev_a = dcsctp_cxx::poll_event(socket_a);
+      if (ev_a.event_type == dcsctp_cxx::EventType::Nothing) {
+        break;
+      }
+      again = true;
+      if (ev_a.event_type == dcsctp_cxx::EventType::SendPacket) {
+        std::cout << "A -> Z (size: " << ev_a.packet.size() << ")" << std::endl;
+        dcsctp_cxx::handle_input(socket_z,
+                                 {ev_a.packet.data(), ev_a.packet.size()});
+      } else {
+        events_a.push_back(std::move(ev_a));
+      }
+    }
+
+    while (true) {
+      dcsctp_cxx::Event ev_z = dcsctp_cxx::poll_event(socket_z);
+      if (ev_z.event_type == dcsctp_cxx::EventType::Nothing) {
+        break;
+      }
+      again = true;
+      if (ev_z.event_type == dcsctp_cxx::EventType::SendPacket) {
+        std::cout << "Z -> A (size: " << ev_z.packet.size() << ")" << std::endl;
+        dcsctp_cxx::handle_input(socket_a,
+                                 {ev_z.packet.data(), ev_z.packet.size()});
+      } else {
+        events_z.push_back(std::move(ev_z));
+      }
+    }
+
+    if (!again) {
+      break;
+    }
   }
+  return {std::move(events_a), std::move(events_z)};
 }
 
 int main() {
@@ -66,34 +79,7 @@ int main() {
   try {
     dcsctp_cxx::connect(*socket_a);
 
-    // A -> INIT -> Z
-    rust::Vec<uint8_t> init_packet = expect_send_packet(*socket_a, "A");
-    dcsctp_cxx::handle_input(*socket_z,
-                             {init_packet.data(), init_packet.size()});
-
-    // A <- INIT_ACK <- Z
-    rust::Vec<uint8_t> init_ack_packet = expect_send_packet(*socket_z, "Z");
-    dcsctp_cxx::handle_input(*socket_a, {init_ack_packet.data(),
-                                         init_ack_packet.size()});
-
-    // A -> COOKIE_ECHO -> Z
-    rust::Vec<uint8_t> cookie_echo_packet = expect_send_packet(*socket_a, "A");
-    dcsctp_cxx::handle_input(
-        *socket_z, {cookie_echo_packet.data(), cookie_echo_packet.size()});
-
-    // Z becomes connected
-    expect_on_connected(*socket_z, "Z");
-
-    // A <- COOKIE_ACK <- Z
-    rust::Vec<uint8_t> cookie_ack_packet = expect_send_packet(*socket_z, "Z");
-    dcsctp_cxx::handle_input(
-        *socket_a, {cookie_ack_packet.data(), cookie_ack_packet.size()});
-
-    // A becomes connected
-    expect_on_connected(*socket_a, "A");
-
-    expect_no_event(*socket_a, "A");
-    expect_no_event(*socket_z, "Z");
+    exchange_packets(*socket_a, *socket_z);
 
     if (dcsctp_cxx::state(*socket_a) == dcsctp_cxx::SocketState::Connected &&
         dcsctp_cxx::state(*socket_z) == dcsctp_cxx::SocketState::Connected) {

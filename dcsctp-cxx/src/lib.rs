@@ -33,6 +33,7 @@ mod ffi {
         Nothing,
         OnConnected,
         SendPacket,
+        Other,
     }
 
     struct Event {
@@ -99,6 +100,7 @@ fn poll_event(socket: &mut DcSctpSocket) -> ffi::Event {
         Some(DcSctpSocketEvent::OnConnected()) => {
             ffi::Event { event_type: ffi::EventType::OnConnected, packet: Vec::new() }
         }
-        _ => ffi::Event { event_type: ffi::EventType::Nothing, packet: Vec::new() },
+        Some(_) => ffi::Event { event_type: ffi::EventType::Other, packet: Vec::new() },
+        None => ffi::Event { event_type: ffi::EventType::Nothing, packet: Vec::new() },
     }
 }
