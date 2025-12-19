@@ -16,13 +16,35 @@
 
 use crate::api::DcSctpSocket as DcSctpSocketTrait;
 use crate::api::ErrorKind as DcSctpErrorKind;
+use crate::api::Message as DcSctpMessage;
 use crate::api::Options as DcSctpOptions;
+use crate::api::PpId;
+use crate::api::SendOptions as DcSctpSendOptions;
+use crate::api::SendStatus as DcSctpSendStatus;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
+use crate::api::StreamId;
 use std::time::Duration;
+
+const MAX_LIFETIME_MS: u64 = 3600 * 1000;
 
 #[cxx::bridge(namespace = "dcsctp_cxx")]
 mod bridge {
+    #[derive(Debug, Default)]
+    struct Message {
+        stream_id: u16,
+        ppid: u32,
+        payload: Vec<u8>,
+    }
+
+    #[derive(Debug)]
+    struct SendOptions {
+        unordered: bool,
+        lifetime_ms: u64,
+        max_retransmissions: u16,
+        lifecycle_id: u64,
+    }
+
     #[derive(Debug)]
     enum SocketState {
         Closed,
@@ -75,6 +97,15 @@ mod bridge {
         OnLifecycleMessageDelivered,
         // Valid fields in Event: lifecycle_id.
         OnLifecycleEnd,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum SendStatus {
+        Success,
+        ErrorMessageEmpty,
+        ErrorMessageTooLarge,
+        ErrorResourceExhaustion,
+        ErrorShuttingDown,
     }
 
     struct Event {
@@ -140,6 +171,16 @@ mod bridge {
         fn poll_event(socket: &mut DcSctpSocket) -> Event;
         fn advance_time(socket: &mut DcSctpSocket, ns: u64);
         fn poll_timeout(socket: &DcSctpSocket) -> u64;
+        fn message_ready_count(socket: &DcSctpSocket) -> usize;
+        fn get_next_message(socket: &mut DcSctpSocket) -> Message;
+        fn new_send_options() -> SendOptions;
+        fn send(
+            socket: &mut DcSctpSocket,
+            stream_id: u16,
+            ppid: u32,
+            payload: &[u8],
+            options: &SendOptions,
+        ) -> SendStatus;
     }
 }
 
@@ -450,4 +491,51 @@ fn advance_time(socket: &mut DcSctpSocket, ns: u64) {
 
 fn poll_timeout(socket: &DcSctpSocket) -> u64 {
     Duration::from(socket.0.poll_timeout()).as_nanos().try_into().unwrap_or(u64::MAX)
+}
+
+fn message_ready_count(socket: &DcSctpSocket) -> usize {
+    socket.0.messages_ready_count()
+}
+
+fn get_next_message(socket: &mut DcSctpSocket) -> bridge::Message {
+    match socket.0.get_next_message() {
+        Some(msg) => {
+            bridge::Message { stream_id: msg.stream_id.0, ppid: msg.ppid.0, payload: msg.payload }
+        }
+        None => bridge::Message::default(),
+    }
+}
+
+fn new_send_options() -> bridge::SendOptions {
+    bridge::SendOptions {
+        unordered: false,
+        lifetime_ms: MAX_LIFETIME_MS,
+        max_retransmissions: u16::MAX,
+        lifecycle_id: 0,
+    }
+}
+
+fn send(
+    socket: &mut DcSctpSocket,
+    stream_id: u16,
+    ppid: u32,
+    payload: &[u8],
+    options: &bridge::SendOptions,
+) -> bridge::SendStatus {
+    let msg = DcSctpMessage::new(StreamId(stream_id), PpId(ppid), payload.to_vec());
+    let rust_options = DcSctpSendOptions {
+        unordered: options.unordered,
+        lifetime: (options.lifetime_ms < MAX_LIFETIME_MS)
+            .then_some(Duration::from_millis(options.lifetime_ms)),
+        max_retransmissions: (options.max_retransmissions != u16::MAX)
+            .then_some(options.max_retransmissions),
+        lifecycle_id: crate::api::LifecycleId::new(options.lifecycle_id),
+    };
+    match socket.0.send(msg, &rust_options) {
+        DcSctpSendStatus::Success => bridge::SendStatus::Success,
+        DcSctpSendStatus::ErrorMessageEmpty => bridge::SendStatus::ErrorMessageEmpty,
+        DcSctpSendStatus::ErrorMessageTooLarge => bridge::SendStatus::ErrorMessageTooLarge,
+        DcSctpSendStatus::ErrorResourceExhaustion => bridge::SendStatus::ErrorResourceExhaustion,
+        DcSctpSendStatus::ErrorShuttingDown => bridge::SendStatus::ErrorShuttingDown,
+    }
 }
