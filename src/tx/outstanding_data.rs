@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::api::LifecycleId;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::math::round_up_to_4;
 use crate::packet::data::Data;
@@ -30,7 +31,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::time::Duration;
-use std::time::Instant;
 
 #[derive(Debug, PartialEq)]
 enum Lifecycle {
@@ -104,13 +104,13 @@ const NUMBER_OF_NACKS_FOR_RETRANSMISSION: u8 = 3;
 #[derive(Debug)]
 struct Item {
     message_id: OutgoingMessageId,
-    time_sent: Instant,
+    time_sent: SocketTime,
     max_retransmissions: u16,
     lifecycle: Lifecycle,
     ack_state: AckState,
     nack_count: u8,
     num_retransmissions: u16,
-    expires_at: Instant,
+    expires_at: SocketTime,
     lifecycle_id: Option<LifecycleId>,
     data: Data,
 }
@@ -138,7 +138,7 @@ impl Item {
     }
     /// Given the current time, and the current state of this DATA chunk, it will indicate if it has
     /// expired (SCTP Partial Reliability Extension).
-    pub fn has_expired(&self, now: Instant) -> bool {
+    pub fn has_expired(&self, now: SocketTime) -> bool {
         self.expires_at <= now
     }
 
@@ -464,7 +464,7 @@ impl OutstandingData {
 
     /// Given the current time `now`, expire and abandon outstanding (sent at least once) chunks
     /// that have a limited lifetime.
-    pub fn expire_outstanding_chunks(&mut self, now: Instant) {
+    pub fn expire_outstanding_chunks(&mut self, now: SocketTime) {
         let mut tsns_to_expire: Vec<Tsn> = Vec::new();
         let mut tsn = self.last_cumulative_tsn_ack;
         for item in self.outstanding_data.iter_mut() {
@@ -524,9 +524,9 @@ impl OutstandingData {
         &mut self,
         message_id: OutgoingMessageId,
         data: &Data,
-        time_sent: Instant,
+        time_sent: SocketTime,
         max_retransmissions: u16,
-        expires_at: Instant,
+        expires_at: SocketTime,
         lifecycle_id: Option<LifecycleId>,
     ) -> Option<Tsn> {
         // Verify that the client has called `get_unsent_messages_to_discard`, so that this message
@@ -604,13 +604,13 @@ impl OutstandingData {
         let data = Data { stream_key, ssn, mid, is_end: true, ..Default::default() };
         let item = Item {
             message_id,
-            time_sent: Instant::now(),
+            time_sent: SocketTime::zero(),
             max_retransmissions: 0,
             lifecycle: Lifecycle::Abandoned,
             ack_state: AckState::Acked,
             nack_count: 0,
             num_retransmissions: 0,
-            expires_at: Instant::now(),
+            expires_at: SocketTime::zero(),
             lifecycle_id: None,
             data,
         };
@@ -703,7 +703,7 @@ impl OutstandingData {
     /// Given the current time and a TSN, it returns the measured RTT between when the chunk was
     /// sent and now. It takes into account Karn's algorithm, so if the chunk has ever been
     /// retransmitted, it will return `None`.
-    pub fn measure_rtt(&mut self, now: Instant, tsn: Tsn) -> Option<Duration> {
+    pub fn measure_rtt(&mut self, now: SocketTime, tsn: Tsn) -> Option<Duration> {
         if tsn > self.last_cumulative_tsn_ack && tsn < self.next_tsn() {
             let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
@@ -765,12 +765,12 @@ mod tests {
     const MESSAGE_ID: OutgoingMessageId = OutgoingMessageId(17);
     const DATA_CHUNK_HEADER_SIZE: usize = 16;
 
-    fn now() -> Instant {
-        Instant::now()
+    fn now() -> SocketTime {
+        SocketTime::zero()
     }
 
-    fn no_expiry() -> Instant {
-        Instant::now() + Duration::from_secs(10000)
+    fn no_expiry() -> SocketTime {
+        SocketTime::infinite_future()
     }
 
     fn insert(buf: &mut OutstandingData, data: Data) -> Tsn {
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[test]
     fn expires_chunk_before_it_is_inserted() {
-        let now = Instant::now();
+        let now = now();
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
         let mut gen = DataGenerator::new(StreamId(1));
 
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn expires_chunk_before_it_is_inserted_adds_placeholder() {
-        let now = Instant::now();
+        let now = now();
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
         let mut gen = DataGenerator::new(StreamId(1));
 
@@ -1252,7 +1252,7 @@ mod tests {
     fn measure_rtt() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
         let mut gen = DataGenerator::new(StreamId(1));
-        let now = Instant::now();
+        let now = now();
 
         buf.insert(OutgoingMessageId(1), &gen.ordered("a", "BE"), now, u16::MAX, no_expiry(), None);
         let tsn = buf

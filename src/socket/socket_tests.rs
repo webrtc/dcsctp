@@ -26,6 +26,7 @@ mod tests {
     use crate::api::SendStatus;
     use crate::api::SocketEvent;
     use crate::api::SocketState;
+    use crate::api::SocketTime;
     use crate::api::StreamId;
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS;
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
@@ -70,7 +71,6 @@ mod tests {
     use std::collections::HashSet;
     use std::collections::VecDeque;
     use std::time::Duration;
-    use std::time::Instant;
 
     fn unordered_eq<T>(a: &[T], b: &[T]) -> bool
     where
@@ -119,12 +119,8 @@ mod tests {
                 again = true;
             }
             if !again {
-                if let Some(timeout) = match (socket_a.poll_timeout(), socket_z.poll_timeout()) {
-                    (None, None) => None,
-                    (None, Some(t)) => Some(t),
-                    (Some(t), None) => Some(t),
-                    (Some(t1), Some(t2)) => Some(min(t1, t2)),
-                } {
+                let timeout = min(socket_a.poll_timeout(), socket_z.poll_timeout());
+                if timeout != SocketTime::infinite_future() {
                     socket_a.advance_time(timeout);
                     socket_z.advance_time(timeout);
                     again = true;
@@ -181,9 +177,8 @@ mod tests {
     #[test]
     fn establish_connection() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
@@ -206,9 +201,8 @@ mod tests {
     #[test]
     fn establish_connection_with_setup_collision() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         socket_z.connect();
 
@@ -221,9 +215,8 @@ mod tests {
     #[test]
     fn shutting_down_while_establishing_connection() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
 
         // A -> INIT -> Z
@@ -263,9 +256,8 @@ mod tests {
     #[test]
     fn establish_simultaneous_connection() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // INIT isn't received by Z, as it wasn't ready yet.
@@ -294,9 +286,8 @@ mod tests {
     #[test]
     fn attempt_connect_without_cookie() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
@@ -336,9 +327,8 @@ mod tests {
     #[test]
     fn establish_connection_lost_cookie_ack() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
@@ -354,8 +344,8 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Connecting);
         assert_eq!(socket_z.state(), SocketState::Connected);
 
-        let expected_timeout = now + options.t1_cookie_timeout;
-        assert_eq!(socket_a.poll_timeout(), Some(expected_timeout));
+        let expected_timeout = SocketTime::from(options.t1_cookie_timeout);
+        assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO
         socket_a.advance_time(expected_timeout);
@@ -374,16 +364,15 @@ mod tests {
     #[test]
     fn resend_init_and_establish_connection() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT ->/lost/ Z
         expect_sent_packet!(socket_a.poll_event());
 
-        let expected_timeout = now + options.t1_init_timeout;
-        assert_eq!(socket_a.poll_timeout(), Some(expected_timeout));
+        let expected_timeout = SocketTime::from(options.t1_init_timeout);
+        assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO
         socket_a.advance_time(expected_timeout);
@@ -408,8 +397,8 @@ mod tests {
     #[test]
     fn resending_init_too_many_times_aborts() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
 
         socket_a.connect();
         // A -> INIT -> / lost/
@@ -417,7 +406,7 @@ mod tests {
         expect_no_event!(socket_a.poll_event());
 
         for i in 0..options.max_init_retransmits.unwrap() {
-            now += options.t1_init_timeout * (1 << i);
+            now = now + options.t1_init_timeout * (1 << i);
             socket_a.advance_time(now);
             // A -> INIT -> / lost/
             expect_sent_packet!(socket_a.poll_event());
@@ -425,7 +414,7 @@ mod tests {
         }
 
         // Let the last retransmit expire as well.
-        now += options.t1_init_timeout * (1 << options.max_init_retransmits.unwrap());
+        now = now + options.t1_init_timeout * (1 << options.max_init_retransmits.unwrap());
         socket_a.advance_time(now);
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -435,9 +424,8 @@ mod tests {
     #[test]
     fn resend_cookie_echo_and_establish_connection() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
@@ -450,8 +438,8 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Connecting);
         assert_eq!(socket_z.state(), SocketState::Closed);
 
-        let expected_timeout = now + options.t1_cookie_timeout;
-        assert_eq!(socket_a.poll_timeout(), Some(expected_timeout));
+        let expected_timeout = SocketTime::from(options.t1_cookie_timeout);
+        assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO.
         socket_a.advance_time(expected_timeout);
@@ -472,9 +460,9 @@ mod tests {
     #[test]
     fn resending_cookie_echo_too_many_times_aborts() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
@@ -487,7 +475,7 @@ mod tests {
         expect_no_event!(socket_a.poll_event());
 
         for i in 0..options.max_init_retransmits.unwrap() {
-            now += options.t1_cookie_timeout * (1 << i);
+            now = now + options.t1_cookie_timeout * (1 << i);
             socket_a.advance_time(now);
             // A -> COOKIE_ECHO ->/lost/ Z
             expect_sent_packet!(socket_a.poll_event());
@@ -495,7 +483,7 @@ mod tests {
         }
 
         // Let the last retransmit expire as well.
-        now += options.t1_cookie_timeout * (1 << options.max_init_retransmits.unwrap());
+        now = now + options.t1_cookie_timeout * (1 << options.max_init_retransmits.unwrap());
         socket_a.advance_time(now);
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -505,9 +493,9 @@ mod tests {
     #[test]
     fn doesnt_send_more_packets_until_cookie_ack_has_been_received() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         let payload_size = options.mtu + 100;
         socket_a.send(
@@ -532,12 +520,12 @@ mod tests {
         // drives retransmissions, so when the T3-RTX expires, nothing should be retransmitted.
 
         assert!(options.rto_initial < options.t1_cookie_timeout);
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
         expect_no_event!(socket_a.poll_event());
 
         // When T1-COOKIE expires, both the COOKIE-ECHO and DATA should be present.
-        now += options.t1_cookie_timeout - options.rto_initial;
+        now = now + options.t1_cookie_timeout - options.rto_initial;
         socket_a.advance_time(now);
         let packet = expect_sent_packet!(socket_a.poll_event());
         let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
@@ -546,7 +534,7 @@ mod tests {
         expect_no_event!(socket_a.poll_event());
 
         // COOKIE_ECHO has exponential backoff.
-        now += options.t1_cookie_timeout * 2;
+        now = now + options.t1_cookie_timeout * 2;
         socket_a.advance_time(now);
 
         // A -> COOKIE_ECHO -> Z
@@ -566,8 +554,8 @@ mod tests {
 
     #[test]
     fn shutdown_connection() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.shutdown();
@@ -590,10 +578,10 @@ mod tests {
 
     #[test]
     fn shutdown_timer_expires_too_many_time_closes_connection() {
-        let mut now = Instant::now();
+        let mut now = SocketTime::zero();
         let options = default_options();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.shutdown();
@@ -605,7 +593,7 @@ mod tests {
 
         for i in 0..options.max_retransmissions.unwrap() {
             // Dropping every shutdown chunk.
-            now += options.rto_initial * (1 << i);
+            now = now + options.rto_initial * (1 << i);
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
@@ -615,7 +603,7 @@ mod tests {
         }
 
         // The last expiry, makes it abort the connection.
-        now += options.rto_initial * (1 << options.max_retransmissions.unwrap());
+        now = now + options.rto_initial * (1 << options.max_retransmissions.unwrap());
         socket_a.advance_time(now);
 
         assert_eq!(socket_a.state(), SocketState::Closed);
@@ -633,9 +621,8 @@ mod tests {
     #[test]
     fn establish_connection_while_sending_data() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
@@ -667,9 +654,8 @@ mod tests {
     #[test]
     fn send_message_after_established() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_z.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
@@ -689,16 +675,15 @@ mod tests {
     #[test]
     fn timeout_resends_packet() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_z.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
         // A /lost/ <- DATA <- Z
         expect_sent_packet!(socket_z.poll_event());
-        let expected_timeout = now + options.rto_initial;
-        assert_eq!(socket_z.poll_timeout(), Some(expected_timeout));
+        let expected_timeout = SocketTime::from(options.rto_initial);
+        assert_eq!(socket_z.poll_timeout(), expected_timeout);
         socket_z.advance_time(expected_timeout);
 
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
@@ -716,9 +701,8 @@ mod tests {
     #[test]
     fn send_a_lot_of_bytes_missed_second_packet() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let payload: Vec<u8> = vec![0; 20 * options.mtu];
@@ -742,9 +726,8 @@ mod tests {
     #[test]
     fn sending_heartbeat_answers_with_ack() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         const HEARTBEAT_PAYLOAD: &[u8; 4] = &[1, 2, 3, 4];
@@ -780,14 +763,13 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
 
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // There should only be the heartbeat timer running.
-        let expected_timeout = now + options.heartbeat_interval;
-        assert_eq!(socket_a.poll_timeout(), Some(expected_timeout));
+        let expected_timeout = SocketTime::from(options.heartbeat_interval);
+        assert_eq!(socket_a.poll_timeout(), expected_timeout);
         socket_a.advance_time(expected_timeout);
         let request_packet = expect_sent_packet!(socket_a.poll_event());
         let packet = SctpPacket::from_bytes(&request_packet, &options).unwrap();
@@ -809,14 +791,14 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
 
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Verify that the heartbeat timer is restarted when sending any data.
         let original_heartbeat_timeout = now + options.heartbeat_interval;
-        now += Duration::from_secs(20);
+        now = now + Duration::from_secs(20);
         let restarted_heartbeat_timeout = now + options.heartbeat_interval;
 
         socket_a.advance_time(now);
@@ -846,20 +828,20 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
         options.max_retransmissions = Some(0);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Dropping heartbeat
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
         let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
@@ -875,31 +857,31 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
         options.max_retransmissions = Some(1);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Dropping heartbeat
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
         let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         // Dropping second heartbeat
-        now += options.heartbeat_interval - options.rto_initial;
+        now = now + options.heartbeat_interval - options.rto_initial;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
         let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
@@ -915,9 +897,9 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
         options.max_retransmissions = Some(10);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Force-close socket Z so that it doesn't interfere from now on.
@@ -925,7 +907,7 @@ mod tests {
 
         let mut time_to_next_heartbeat = options.heartbeat_interval;
         for _ in 0..options.max_retransmissions.unwrap() {
-            now += time_to_next_heartbeat;
+            now = now + time_to_next_heartbeat;
             socket_a.advance_time(now);
 
             // Dropping every heartbeat.
@@ -934,14 +916,14 @@ mod tests {
             assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
             // Letting the heartbeat expire
-            now += Duration::from_secs(1);
+            now = now + Duration::from_secs(1);
             socket_a.advance_time(now);
 
             time_to_next_heartbeat = options.heartbeat_interval - Duration::from_secs(1);
         }
 
         // Letting HEARTBEAT interval timer expire - sending...
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
 
         // Last heartbeat
@@ -949,7 +931,7 @@ mod tests {
         let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
-        now += Duration::from_secs(1);
+        now = now + Duration::from_secs(1);
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
@@ -964,9 +946,9 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
         options.max_retransmissions = Some(10);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Force-close socket Z so that it doesn't interfere from now on.
@@ -974,7 +956,7 @@ mod tests {
 
         let mut time_to_next_heartbeat = options.heartbeat_interval;
         for _ in 0..options.max_retransmissions.unwrap() - 1 {
-            now += time_to_next_heartbeat;
+            now = now + time_to_next_heartbeat;
             socket_a.advance_time(now);
 
             // Dropping every heartbeat.
@@ -983,14 +965,14 @@ mod tests {
             assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
             // Letting the heartbeat expire
-            now += Duration::from_secs(1);
+            now = now + Duration::from_secs(1);
             socket_a.advance_time(now);
 
             time_to_next_heartbeat = options.heartbeat_interval - Duration::from_secs(1);
         }
 
         // Letting HEARTBEAT interval timer expire - sending...
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
 
         // Last heartbeat
@@ -1012,12 +994,12 @@ mod tests {
         socket_a.handle_input(&ack_packet);
 
         // Should suffice as exceeding RTO - which will not fire.
-        now += Duration::from_secs(1);
+        now = now + Duration::from_secs(1);
         socket_a.advance_time(now);
         expect_no_event!(socket_a.poll_event());
 
         // Verify that we get new heartbeats again.
-        now += time_to_next_heartbeat;
+        now = now + time_to_next_heartbeat;
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
@@ -1030,13 +1012,13 @@ mod tests {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
         options.max_retransmissions = Some(1);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Drop first heartbeat.
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
@@ -1045,11 +1027,11 @@ mod tests {
             Chunk::HeartbeatRequest(_)
         ));
 
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         // Ack second heartbeat. This will clear the TX error counter.
-        now += options.heartbeat_interval - options.rto_initial;
+        now = now + options.heartbeat_interval - options.rto_initial;
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
@@ -1069,7 +1051,7 @@ mod tests {
         );
 
         // Drop third heartbeat. As it's recovered on previous ack, this is okey.
-        now += options.heartbeat_interval;
+        now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
@@ -1078,7 +1060,7 @@ mod tests {
             Chunk::HeartbeatRequest(_)
         ));
 
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         // The socket should not abort.
@@ -1088,10 +1070,9 @@ mod tests {
     #[test]
     fn reset_stream() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
@@ -1126,10 +1107,8 @@ mod tests {
     fn send_reset_stream_when_streams_ready() {
         let options = Options { cwnd_mtus_initial: 1, ..default_options() };
 
-        let now = Instant::now();
-
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let ordered = SendOptions { unordered: false, ..Default::default() };
@@ -1150,10 +1129,9 @@ mod tests {
     #[test]
     fn reset_stream_will_make_chunks_start_at_zero_ssn() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -1213,8 +1191,8 @@ mod tests {
     #[test]
     fn reset_stream_will_only_reset_the_requested_streams() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Send two ordered messages on SID 1
@@ -1262,9 +1240,8 @@ mod tests {
 
     #[test]
     fn one_peer_reconnects() {
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &default_options());
-        let mut socket_z = Socket::new("Z", now, &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
 
         connect_sockets(&mut socket_a, &mut socket_z);
 
@@ -1278,9 +1255,8 @@ mod tests {
     #[test]
     fn one_peer_reconnects_with_pending_data() {
         let options = default_options();
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         connect_sockets(&mut socket_a, &mut socket_z);
 
@@ -1294,7 +1270,7 @@ mod tests {
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
 
         // Create a new association, z2 - and don't use z anymore.
-        let mut socket_z2 = Socket::new("Z2", now, &options);
+        let mut socket_z2 = Socket::new("Z2", &options);
 
         socket_z2.connect();
 
@@ -1310,10 +1286,9 @@ mod tests {
     #[test]
     fn send_message_with_limited_rtx() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
         let s = SendOptions { max_retransmissions: Some(0), ..Default::default() };
         let data = vec![0; options.mtu - 100];
@@ -1342,7 +1317,7 @@ mod tests {
         // Now the missing data chunk will be marked as nacked, but it might still be in-flight and
         // the reported gap could be due to out-of-order delivery. So the RetransmissionQueue will
         // not mark it as "to be retransmitted" until after the t3-rtx timer has expired.
-        let now = socket_a.poll_timeout().unwrap();
+        let now = socket_a.poll_timeout();
         socket_a.advance_time(now);
         socket_z.advance_time(now);
 
@@ -1354,7 +1329,7 @@ mod tests {
         assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
 
         // Delayed SACK
-        let now = socket_z.poll_timeout().unwrap();
+        let now = socket_z.poll_timeout();
         socket_z.advance_time(now);
 
         // A <- SACK <- Z
@@ -1368,9 +1343,9 @@ mod tests {
     fn close_connection_after_first_failed_transmission() {
         let mut options = default_options();
         options.max_retransmissions = Some(0);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
@@ -1381,7 +1356,7 @@ mod tests {
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Letting it expire.
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1396,9 +1371,9 @@ mod tests {
     fn close_connection_after_one_failed_retransmission() {
         let mut options = default_options();
         options.max_retransmissions = Some(1);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
@@ -1408,14 +1383,14 @@ mod tests {
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Dropping the one allowed re-transmission.
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
         let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
-        now += options.rto_initial * 2;
+        now = now + options.rto_initial * 2;
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1430,9 +1405,9 @@ mod tests {
     fn error_counter_is_reset_on_data_ack() {
         let mut options = default_options();
         options.max_retransmissions = Some(1);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
@@ -1442,7 +1417,7 @@ mod tests {
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Acking the retransmission
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1468,7 +1443,7 @@ mod tests {
         let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
 
         // The socket should not abort, but retransmit the packet.
@@ -1489,12 +1464,12 @@ mod tests {
             Options { heartbeat_interval: Duration::from_millis(1000), ..default_options() };
         let options_z =
             Options { heartbeat_interval: Duration::from_millis(1100), ..default_options() };
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options_a);
-        let mut socket_z = Socket::new("Z", now, &options_z);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options_a);
+        let mut socket_z = Socket::new("Z", &options_z);
         connect_sockets(&mut socket_a, &mut socket_z);
 
-        now += options_a.heartbeat_interval;
+        now = now + options_a.heartbeat_interval;
         socket_a.advance_time(now);
         socket_z.advance_time(now);
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1508,7 +1483,7 @@ mod tests {
         socket_z.handle_input(&packet);
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
-        now += options_z.heartbeat_interval - options_a.heartbeat_interval;
+        now = now + options_z.heartbeat_interval - options_a.heartbeat_interval;
         socket_a.advance_time(now);
         socket_z.advance_time(now);
         let packet = expect_sent_packet!(socket_z.poll_event());
@@ -1524,9 +1499,9 @@ mod tests {
     fn close_connection_after_too_many_retransmissions() {
         let mut options = default_options();
         options.max_retransmissions = Some(10);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
@@ -1537,7 +1512,7 @@ mod tests {
 
         for i in 0..options.max_retransmissions.unwrap() {
             // Dropping every re-transmission.
-            now += options.rto_initial * (1 << i);
+            now = now + options.rto_initial * (1 << i);
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1547,7 +1522,7 @@ mod tests {
 
         // The last retransmission times out as well.
         println!("Waiting for last retransmission to time out");
-        now += options.rto_initial * (1 << options.max_retransmissions.unwrap());
+        now = now + options.rto_initial * (1 << options.max_retransmissions.unwrap());
         socket_a.advance_time(now);
         println!("Done");
 
@@ -1563,9 +1538,9 @@ mod tests {
     fn recover_on_last_retransmission() {
         let mut options = default_options();
         options.max_retransmissions = Some(10);
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default());
@@ -1576,7 +1551,7 @@ mod tests {
 
         for i in 0..options.max_retransmissions.unwrap() - 1 {
             // Dropping every re-transmission.
-            now += options.rto_initial * (1 << i);
+            now = now + options.rto_initial * (1 << i);
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1585,7 +1560,7 @@ mod tests {
         }
 
         // The last retransmission is actually received and acked.
-        now += options.rto_initial * (1 << (options.max_retransmissions.unwrap() - 1));
+        now = now + options.rto_initial * (1 << (options.max_retransmissions.unwrap() - 1));
         socket_a.advance_time(now);
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -1597,8 +1572,8 @@ mod tests {
     #[test]
     fn send_many_fragmented_messages_with_limited_rtx() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s =
@@ -1635,8 +1610,8 @@ mod tests {
     #[test]
     fn receiving_unknown_chunk_responds_with_error() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let packet = SctpPacketBuilder::new(
@@ -1655,8 +1630,8 @@ mod tests {
     #[test]
     fn receiving_error_chunk_reports_as_callback() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let packet = SctpPacketBuilder::new(
@@ -1678,15 +1653,15 @@ mod tests {
 
     #[test]
     fn set_max_message_size() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
         socket_a.set_max_message_size(42);
         assert_eq!(socket_a.options().max_message_size, 42);
     }
 
     #[test]
     fn send_many_messages() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         const ITERATIONS: usize = 100;
@@ -1701,9 +1676,9 @@ mod tests {
 
     #[test]
     fn sends_messages_with_low_lifetime() {
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Queue a few small messages with low lifetime, both ordered and unordered, and validate
@@ -1720,7 +1695,7 @@ mod tests {
 
         loop {
             // Mock that the time always goes forward.
-            now += Duration::from_millis(1);
+            now = now + Duration::from_millis(1);
             socket_a.advance_time(now);
             socket_z.advance_time(now);
 
@@ -1747,9 +1722,9 @@ mod tests {
     #[test]
     fn discards_messages_with_low_lifetime_if_must_buffer() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Fill up the send buffer with a large message.
@@ -1771,7 +1746,7 @@ mod tests {
 
         loop {
             // Mock that the time always goes forward.
-            now += Duration::from_millis(1);
+            now = now + Duration::from_millis(1);
             socket_a.advance_time(now);
             socket_z.advance_time(now);
 
@@ -1805,7 +1780,7 @@ mod tests {
             per_stream_send_queue_limit: 1000,
             ..default_options()
         };
-        let mut socket = Socket::new("A", Instant::now(), &options);
+        let mut socket = Socket::new("A", &options);
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
 
@@ -1843,7 +1818,7 @@ mod tests {
 
     #[test]
     fn cannot_send_empty_messages() {
-        let mut socket = Socket::new("A", Instant::now(), &default_options());
+        let mut socket = Socket::new("A", &default_options());
 
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
@@ -1859,7 +1834,7 @@ mod tests {
     #[test]
     fn cannot_send_too_large_message() {
         let options = Options { max_message_size: 100, ..default_options() };
-        let mut socket = Socket::new("A", Instant::now(), &options);
+        let mut socket = Socket::new("A", &options);
 
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
@@ -1875,8 +1850,8 @@ mod tests {
     #[test]
     fn has_reasonable_buffered_amount_values() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         assert_eq!(socket_a.buffered_amount(StreamId(1)), 0);
@@ -1900,7 +1875,7 @@ mod tests {
 
     #[test]
     fn has_default_on_buffered_amount_low_value_zero() {
-        let socket_a = Socket::new("A", Instant::now(), &Options::default());
+        let socket_a = Socket::new("A", &Options::default());
         assert_eq!(socket_a.buffered_amount_low_threshold(StreamId(1)), 0);
     }
 
@@ -1908,8 +1883,8 @@ mod tests {
     fn triggers_on_buffered_amount_low_with_default_value_zero() {
         let options =
             Options { default_stream_buffered_amount_low_threshold: 0, ..default_options() };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1923,8 +1898,8 @@ mod tests {
 
     #[test]
     fn doesnt_trigger_on_buffered_amount_low_if_below_threshold() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1949,8 +1924,8 @@ mod tests {
 
     #[test]
     fn triggers_on_buffered_amount_multiple_times() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1987,8 +1962,8 @@ mod tests {
 
     #[test]
     fn triggers_on_buffered_amount_low_only_when_crossing_threshold() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.set_buffered_amount_low_threshold(StreamId(1), 1500);
@@ -2007,8 +1982,8 @@ mod tests {
 
     #[test]
     fn doesnt_trigger_on_total_buffer_amount_low_when_below() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
@@ -2026,8 +2001,8 @@ mod tests {
             default_stream_buffered_amount_low_threshold: usize::MAX,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Fill up the send queue completely.
@@ -2048,7 +2023,7 @@ mod tests {
 
     #[test]
     fn initial_metrics_are_unset() {
-        let socket_a = Socket::new("A", Instant::now(), &default_options());
+        let socket_a = Socket::new("A", &default_options());
         assert!(socket_a.get_metrics().is_none());
     }
 
@@ -2058,8 +2033,8 @@ mod tests {
         for (a_enable, z_enable) in combinations {
             let a_options = Options { enable_message_interleaving: a_enable, ..Default::default() };
             let z_options = Options { enable_message_interleaving: z_enable, ..Default::default() };
-            let mut socket_a = Socket::new("A", Instant::now(), &a_options);
-            let mut socket_z = Socket::new("Z", Instant::now(), &z_options);
+            let mut socket_a = Socket::new("A", &a_options);
+            let mut socket_z = Socket::new("Z", &z_options);
             connect_sockets(&mut socket_a, &mut socket_z);
 
             assert_eq!(
@@ -2076,8 +2051,8 @@ mod tests {
     #[test]
     fn rx_and_tx_packet_metrics_increase() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let initial_a_rwnd =
@@ -2150,7 +2125,7 @@ mod tests {
         socket_z.get_next_message().unwrap();
 
         // Delayed sack
-        let now = socket_z.poll_timeout().unwrap();
+        let now = socket_z.poll_timeout();
         socket_a.advance_time(now);
         socket_z.advance_time(now);
 
@@ -2167,8 +2142,8 @@ mod tests {
     #[test]
     fn retransmission_metrics_are_set_for_fast_retransmit() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Enough to trigger fast retransmit of the missing second packet.
@@ -2194,8 +2169,8 @@ mod tests {
     #[test]
     fn retransmission_metrics_are_set_for_normal_retransmit() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 12]), &SendOptions::default());
@@ -2211,8 +2186,8 @@ mod tests {
     #[test]
     fn unack_data_also_includes_send_queue() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let message_bytes = options.mtu * 10;
@@ -2236,8 +2211,8 @@ mod tests {
     #[test]
     fn doesnt_send_more_than_max_burst_packets() {
         let options = &Options { max_burst: 3, cwnd_mtus_initial: 500, ..default_options() };
-        let mut socket_a = Socket::new("A", Instant::now(), options);
-        let mut socket_z = Socket::new("Z", Instant::now(), options);
+        let mut socket_a = Socket::new("A", options);
+        let mut socket_z = Socket::new("Z", options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -2259,8 +2234,8 @@ mod tests {
 
     #[test]
     fn is_ready_for_handover_when_established() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
 
         // A closed socket is ready.
         assert!(socket_a.get_handover_readiness().is_ready());
@@ -2279,8 +2254,8 @@ mod tests {
 
     #[test]
     fn send_messages_after_handover() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
@@ -2289,7 +2264,7 @@ mod tests {
         // Send message before handover to move socket to a not initial state
         exchange_packets(&mut socket_a, &mut socket_z);
 
-        let mut new_socket_z = Socket::new("Z2", Instant::now(), &default_options());
+        let mut new_socket_z = Socket::new("Z2", &default_options());
         handover_socket(&mut socket_z, &mut new_socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s);
@@ -2308,8 +2283,8 @@ mod tests {
 
     #[test]
     fn can_detect_dcsctp_implementation() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         socket_a.connect();
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2328,8 +2303,8 @@ mod tests {
 
     #[test]
     fn both_can_detect_dcsctp_implementation() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         socket_a.connect();
         socket_z.connect();
 
@@ -2350,8 +2325,8 @@ mod tests {
     #[test]
     fn can_lose_first_ordered_message() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let send_options = SendOptions {
@@ -2381,8 +2356,8 @@ mod tests {
 
     #[test]
     fn close_two_streams_at_the_same_time() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
@@ -2408,8 +2383,8 @@ mod tests {
     fn close_three_streams_at_the_same_time() {
         // Similar to `test_close_two_streams_at_the_same_time`, but ensuring that the two remaining
         // streams are reset at the same time in the second request.
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
@@ -2444,8 +2419,8 @@ mod tests {
         // Checks that stream reset requests are properly paused when they can't be immediately
         // reset - i.e. when there is already an ongoing stream reset request (and there can only be
         // a single one in-flight).
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions { unordered: false, ..Default::default() };
@@ -2482,7 +2457,7 @@ mod tests {
     #[test]
     fn stream_has_initial_priority() {
         let options = Options { default_stream_priority: 42, ..Default::default() };
-        let socket_a = Socket::new("A", Instant::now(), &options);
+        let socket_a = Socket::new("A", &options);
 
         assert_eq!(socket_a.get_stream_priority(StreamId(1)), 42);
         assert_eq!(socket_a.get_stream_priority(StreamId(2)), 42);
@@ -2490,7 +2465,7 @@ mod tests {
 
     #[test]
     fn can_change_stream_priority() {
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
 
         socket_a.set_stream_priority(StreamId(1), 42);
         assert_eq!(socket_a.get_stream_priority(StreamId(1)), 42);
@@ -2506,8 +2481,8 @@ mod tests {
         // This is an issue found by fuzzing, and doesn't really make sense in WebRTC data channels
         // as a SCTP connection is never ever closed and then reconnected. SCTP connections are
         // closed when the peer connection is deleted, and then it doesn't do more with SCTP.
-        let mut socket_a = Socket::new("A", Instant::now(), &default_options());
-        let mut socket_z = Socket::new("Z", Instant::now(), &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.set_stream_priority(StreamId(1), 43);
@@ -2517,7 +2492,7 @@ mod tests {
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
-        let mut new_socket_a = Socket::new("A2", Instant::now(), &default_options());
+        let mut new_socket_a = Socket::new("A2", &default_options());
         handover_socket(&mut socket_a, &mut new_socket_a);
 
         assert_eq!(new_socket_a.get_stream_priority(StreamId(1)), 43);
@@ -2529,9 +2504,8 @@ mod tests {
         // This is an issue found by fuzzing, and doesn't really make sense in WebRTC data channels
         // as a SCTP connection is never ever closed and then reconnected. SCTP connections are
         // closed when the peer connection is deleted, and then it doesn't do more with SCTP.
-        let now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &default_options());
-        let mut socket_z = Socket::new("Z", now, &default_options());
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &default_options());
 
         connect_sockets(&mut socket_a, &mut socket_z);
 
@@ -2549,10 +2523,9 @@ mod tests {
     #[test]
     fn small_sent_messages_with_prio_will_arrive_in_specific_order() {
         let options = Options { enable_message_interleaving: true, ..default_options() };
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.set_stream_priority(StreamId(1), 700);
         socket_a.set_stream_priority(StreamId(2), 200);
@@ -2581,10 +2554,9 @@ mod tests {
     #[test]
     fn large_sent_messages_with_prio_will_arrive_in_specific_order() {
         let options = Options { enable_message_interleaving: true, ..default_options() };
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.set_stream_priority(StreamId(1), 700);
         socket_a.set_stream_priority(StreamId(2), 200);
@@ -2614,11 +2586,10 @@ mod tests {
     #[test]
     fn message_with_higher_prio_will_interrupt_lower_prio_message() {
         let options = Options { enable_message_interleaving: true, ..default_options() };
-        let now = Instant::now();
         let s = SendOptions::default();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.set_stream_priority(StreamId(2), 128);
@@ -2646,10 +2617,9 @@ mod tests {
     #[test]
     fn lifecycle_events_are_generated_for_acked_messages() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -2675,10 +2645,9 @@ mod tests {
     #[test]
     fn lifecycle_events_for_fail_max_retransmissions() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -2723,10 +2692,9 @@ mod tests {
     #[test]
     fn lifecycle_events_for_expired_message_with_retransmit_limit() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -2751,10 +2719,9 @@ mod tests {
     #[test]
     fn lifecycle_events_for_expired_message_with_lifetime_limit() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         // Send it before the socket is connected, to prevent it from being sent too quickly. The
         // idea is that it should be expired before even attempting to send it in full.
@@ -2766,7 +2733,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        socket_a.advance_time(now + Duration::from_millis(200));
+        socket_a.advance_time(SocketTime::from(Duration::from_millis(200)));
         socket_a.connect();
 
         let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
@@ -2787,8 +2754,8 @@ mod tests {
             ..default_options()
         };
 
-        let mut socket_a = Socket::new("A", Instant::now(), &options_a);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options_z);
+        let mut socket_a = Socket::new("A", &options_a);
+        let mut socket_z = Socket::new("Z", &options_z);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let metrics = socket_a.get_metrics().unwrap();
@@ -2803,9 +2770,8 @@ mod tests {
     #[test]
     fn reset_streams_deferred() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Guaranteed to be fragmented into two fragments.
@@ -2854,8 +2820,7 @@ mod tests {
 
         // Z sent "in progress", which will make A buffer packets until it's sure that the
         // reconfiguration has been applied. A will retry - wait for that.
-        now += options.rto_initial;
-        socket_a.advance_time(now);
+        socket_a.advance_time(SocketTime::from(options.rto_initial));
 
         let packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
@@ -2886,8 +2851,8 @@ mod tests {
     #[test]
     fn reset_streams_with_paused_sender_resumes_when_performed() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // Guaranteed to be fragmented into two fragments.
@@ -2926,8 +2891,8 @@ mod tests {
                 ..default_options()
             };
 
-            let mut socket_a = Socket::new("A", Instant::now(), &options_a);
-            let mut socket_z = Socket::new("Z", Instant::now(), &options_z);
+            let mut socket_a = Socket::new("A", &options_a);
+            let mut socket_z = Socket::new("Z", &options_z);
             connect_sockets(&mut socket_a, &mut socket_z);
 
             let metrics = socket_a.get_metrics().unwrap();
@@ -2945,7 +2910,7 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
         socket_a.connect();
         // A -> INIT -> Z
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -2960,8 +2925,8 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
@@ -2979,8 +2944,8 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
@@ -3000,8 +2965,8 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
@@ -3024,8 +2989,8 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default());
@@ -3042,8 +3007,8 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..default_options()
         };
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
-        let mut socket_z = Socket::new("Z", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -3079,9 +3044,9 @@ mod tests {
     #[test]
     fn handles_forward_tsn_out_of_order_with_stream_resetting() {
         let options = default_options();
-        let mut now = Instant::now();
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.send(
@@ -3092,7 +3057,7 @@ mod tests {
         // Packet is lost.
         expect_sent_packet!(socket_a.poll_event());
 
-        now += options.rto_initial;
+        now = now + options.rto_initial;
         socket_a.advance_time(now);
         socket_z.advance_time(now);
 
@@ -3147,14 +3112,14 @@ mod tests {
     #[test]
     fn resent_init_has_same_parameters() {
         let options = default_options();
-        let mut socket_a = Socket::new("A", Instant::now(), &options);
+        let mut socket_a = Socket::new("A", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
         let packet1 = expect_sent_packet!(socket_a.poll_event());
         expect_no_event!(socket_a.poll_event());
 
-        let now = socket_a.poll_timeout().unwrap();
+        let now = socket_a.poll_timeout();
         socket_a.advance_time(now);
 
         let packet2 = expect_sent_packet!(socket_a.poll_event());
@@ -3172,10 +3137,9 @@ mod tests {
     #[test]
     fn resent_init_ack_has_different_parameters() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         socket_a.connect();
         // A -> INIT -> Z
@@ -3202,10 +3166,9 @@ mod tests {
     #[test]
     fn connection_can_continue_from_first_init_ack() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         let payload: Vec<u8> = vec![0; options.mtu + 20];
         socket_a
@@ -3236,10 +3199,9 @@ mod tests {
     #[test]
     fn connection_can_continue_from_second_init_ack() {
         let options = default_options();
-        let now = Instant::now();
 
-        let mut socket_a = Socket::new("A", now, &options);
-        let mut socket_z = Socket::new("Z", now, &options);
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
 
         let payload: Vec<u8> = vec![0; options.mtu + 20];
         socket_a

@@ -16,12 +16,62 @@ use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
 use std::fmt;
 use std::num::NonZeroU64;
+use std::ops::Add;
+use std::ops::Sub;
 use std::time::Duration;
-use std::time::Instant;
 
 pub mod handover;
 
 pub use crate::socket::Socket;
+
+/// Represents a point in time relative to the creation of the socket.
+///
+/// This is an absolute timestamp within the "Socket Epoch".
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SocketTime(Duration);
+
+impl SocketTime {
+    /// The moment the socket was created (t=0).
+    pub const fn zero() -> SocketTime {
+        SocketTime(Duration::ZERO)
+    }
+    pub const fn infinite_future() -> SocketTime {
+        SocketTime(Duration::MAX)
+    }
+}
+
+impl Add<Duration> for SocketTime {
+    type Output = SocketTime;
+    fn add(self, rhs: Duration) -> SocketTime {
+        SocketTime(self.0 + rhs)
+    }
+}
+
+impl Sub<Duration> for SocketTime {
+    type Output = SocketTime;
+    fn sub(self, rhs: Duration) -> SocketTime {
+        SocketTime(self.0 - rhs)
+    }
+}
+
+impl Sub<SocketTime> for SocketTime {
+    type Output = Duration;
+    fn sub(self, rhs: SocketTime) -> Duration {
+        self.0 - rhs.0
+    }
+}
+
+impl From<Duration> for SocketTime {
+    fn from(value: Duration) -> Self {
+        SocketTime(value)
+    }
+}
+
+impl From<SocketTime> for Duration {
+    fn from(value: SocketTime) -> Self {
+        value.0
+    }
+}
 
 /// An identifier that can be set on sent messages, and picked by the sending client. If set,
 /// lifecycle events will be generated, and eventually [`SocketEvent::OnLifecycleEnd`] will be
@@ -690,22 +740,39 @@ pub trait DcSctpSocket {
     /// To be called when an incoming SCTP packet is to be processed.
     fn handle_input(&mut self, packet: &[u8]);
 
-    /// Advance time and expire timers.
+    /// Advances the internal clock to a specific point in the socket's lifetime.
     ///
-    /// This method should be called whenever time has passed and at least when a timer has expired,
-    /// meaning when the system clock reaches the latest instant that was returned by
-    /// [`Self::poll_timeout`].
+    /// The `now` parameter represents the absolute time on the socket's internal timeline
+    /// and must be derived from the time elapsed since the socket was created.
     ///
-    /// It's safe to call this method at any time. If no timer has expired, this method is a no-op,
-    /// but it updates the internal cached representation of the current time, which is used to when
-    /// starting timers during other API calls.
-    fn advance_time(&mut self, now: Instant);
+    /// Time should always move forward. If you provide a `now` value that is older than
+    /// a previous call (meaning time went backwards), the operation is safe but ignored,
+    /// and the internal clock remains unchanged.
+    ///
+    /// This method triggers any timers scheduled to expire at or before `now`. Even if no
+    /// timers expire, calling this method updates the socket's internal current time. This
+    /// updated time is used as the start time for any new timers created during subsequent
+    /// API calls, such as sending data.
+    ///
+    /// You should call this method whenever the external system clock advances. Specifically,
+    /// it must be called when the system clock reaches the time returned by [`Self::poll_timeout`].
+    /// It is also recommended to call it before invoking other methods, like `handle_input` or
+    /// `send`, if significant time has passed, ensuring that internal timestamps remain accurate.
+    fn advance_time(&mut self, now: SocketTime);
 
-    /// Returns the next time when [`Self::advance_time`] should be called.
+    /// Returns the next absolute time on the socket's timeline when a timer expires.
     ///
-    /// This function can change its return value as a consequence of calling any mutable method on
-    /// the socket.
-    fn poll_timeout(&self) -> Option<Instant>;
+    /// This value is monotonic and will never be earlier than the `now` parameter passed to
+    /// the last [`Self::advance_time`] call. If a timer is overdue or due immediately, the
+    /// current internal socket time is returned to ensure immediate processing.
+    ///
+    /// The return value can change as a consequence of calling any mutable method on the socket.
+    /// For example, receiving a packet might stop a retransmission timer, effectively removing
+    /// or pushing back the timeout. Therefore, the driving loop should consider this value
+    /// invalidated after performing other operations on the socket.
+    ///
+    /// Returns `SocketTime::infinite_future()` if there are no active timers.
+    fn poll_timeout(&self) -> SocketTime;
 
     /// Connects the socket. This is an asynchronous operation, and [`SocketEvent::OnConnected`]
     /// will be generated on success.

@@ -16,7 +16,6 @@ use dcsctp::api::DcSctpSocket as DcSctpSocketTrait;
 use dcsctp::api::Options;
 use dcsctp::api::SocketEvent as DcSctpSocketEvent;
 use dcsctp::api::SocketState as DcSctpSocketState;
-use std::time::Instant;
 
 #[cxx::bridge(namespace = "dcsctp_cxx")]
 mod ffi {
@@ -62,7 +61,7 @@ fn version() -> String {
 
 fn new_socket() -> *mut DcSctpSocket {
     let options = Options::default();
-    let socket = dcsctp::new_socket("cxx-socket", Instant::now(), &options);
+    let socket = dcsctp::new_socket("cxx-socket", &options);
     let boxed_socket = Box::new(DcSctpSocket(socket));
     Box::into_raw(boxed_socket)
 }

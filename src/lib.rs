@@ -22,7 +22,6 @@
 
 use crate::api::DcSctpSocket;
 use crate::api::Options;
-use std::time::Instant;
 
 pub mod api;
 pub(crate) mod events;
@@ -48,10 +47,9 @@ pub fn version() -> &'static str {
 
 /// Creates a new `Socket`.
 ///
-/// The provided `name` is only used for logging to identify this socket, and `start_time`
-/// is the initial time, used as a basline for all time-based operations.
-pub fn new_socket(name: &str, start_time: Instant, options: &Options) -> Box<dyn DcSctpSocket> {
-    Box::new(socket::Socket::new(name, start_time, options))
+/// The provided `name` is only used for logging to identify this socket.
+pub fn new_socket(name: &str, options: &Options) -> Box<dyn DcSctpSocket> {
+    Box::new(socket::Socket::new(name, options))
 }
 
 // Fuzzers, who are defined in a separate crate, need to access internal (non-public) functions that

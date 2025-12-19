@@ -16,6 +16,7 @@ use crate::api::handover::HandoverCapabilities;
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
 use crate::api::Options;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::math::round_down_to_4;
 use crate::packet::chunk::Chunk;
@@ -38,7 +39,6 @@ use crate::types::Tsn;
 use crate::EventSink;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
 
 #[derive(Clone)]
 pub(crate) struct PreparedResetRequest {
@@ -188,7 +188,7 @@ impl TransmissionControlBlock {
 
     pub fn start_ssn_reset_request(
         &mut self,
-        now: Instant,
+        now: SocketTime,
         streams: Vec<StreamId>,
         builder: &mut SctpPacketBuilder,
     ) {
