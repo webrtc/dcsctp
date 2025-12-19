@@ -16,6 +16,7 @@ use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
 use crate::api::Options;
 use crate::api::SocketEvent;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::math::is_divisible_by_4;
 use crate::math::round_down_to_4;
@@ -38,7 +39,6 @@ use std::cmp::max;
 use std::cmp::min;
 use std::rc::Rc;
 use std::time::Duration;
-use std::time::Instant;
 
 #[derive(Debug, PartialEq)]
 enum CongestionAlgorithmPhase {
@@ -139,7 +139,7 @@ impl RetransmissionQueue {
         }
     }
 
-    fn start_t3_rtx_if_outstanding_data(&mut self, now: Instant) {
+    fn start_t3_rtx_if_outstanding_data(&mut self, now: SocketTime) {
         // Note: Can't use `unacked_bytes` as that one doesn't count chunks to be retransmitted.
         if self.outstanding_data.is_empty() {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.2-2.2.1>:
@@ -162,7 +162,7 @@ impl RetransmissionQueue {
         }
     }
 
-    pub fn next_timeout(&self) -> Option<Instant> {
+    pub fn next_timeout(&self) -> Option<SocketTime> {
         self.t3_rtx.next_expiry()
     }
 
@@ -321,7 +321,7 @@ impl RetransmissionQueue {
 
     // Handles a received SACK. Returns true if the `sack` was processed and false if it was
     // discarded due to received out-of-order and not relevant.
-    pub fn handle_sack(&mut self, now: Instant, sack: &SackChunk) -> HandleSackResult {
+    pub fn handle_sack(&mut self, now: SocketTime, sack: &SackChunk) -> HandleSackResult {
         if !self.is_sack_valid(sack) {
             return HandleSackResult::Invalid;
         }
@@ -398,7 +398,7 @@ impl RetransmissionQueue {
     }
 
     /// Handles an expired retransmission timer and returns true if it has expired.
-    pub fn handle_timeout(&mut self, now: Instant) -> bool {
+    pub fn handle_timeout(&mut self, now: SocketTime) -> bool {
         // TODO: Make the implementation compliant with RFC 9260.
 
         if !self.t3_rtx.expire(now) {
@@ -461,7 +461,7 @@ impl RetransmissionQueue {
     /// `bytes_in_packet` bytes available. The current value of `cwnd` is ignored.
     pub fn get_chunks_for_fast_retransmit(
         &mut self,
-        now: Instant,
+        now: SocketTime,
         bytes_remaining_in_packet: usize,
     ) -> Vec<(Tsn, Data)> {
         debug_assert!(is_divisible_by_4!(bytes_remaining_in_packet));
@@ -526,7 +526,7 @@ impl RetransmissionQueue {
     ///   chunks, as those have expired already.
     pub fn get_chunks_to_send(
         &mut self,
-        now: Instant,
+        now: SocketTime,
         bytes_remaining_in_packet: usize,
         mut produce: impl FnMut(usize, &[(StreamId, OutgoingMessageId)]) -> Option<DataToSend>,
     ) -> Vec<(Tsn, Data)> {
@@ -608,7 +608,7 @@ impl RetransmissionQueue {
         }
     }
 
-    fn chunk_expires_at(&self, now: Instant, chunk: &DataToSend) -> Instant {
+    fn chunk_expires_at(&self, now: SocketTime, chunk: &DataToSend) -> SocketTime {
         if self.partial_reliability {
             chunk.expires_at
         } else {
@@ -681,7 +681,7 @@ impl RetransmissionQueue {
         min(self.rwnd, left)
     }
 
-    pub fn should_send_forward_tsn(&mut self, now: Instant) -> bool {
+    pub fn should_send_forward_tsn(&mut self, now: SocketTime) -> bool {
         if !self.partial_reliability {
             return false;
         }
@@ -745,6 +745,7 @@ mod tests {
 
     const A_RWND: u32 = 100000;
     const MTU: usize = 1280;
+    const START_TIME: SocketTime = SocketTime::zero();
 
     fn make_events() -> Rc<RefCell<Events>> {
         Rc::new(RefCell::new(Events::new()))
@@ -773,7 +774,7 @@ mod tests {
         chunks.iter().map(|(tsn, data)| (data.stream_key.id(), *tsn)).collect()
     }
 
-    fn add_message(sq: &mut SendQueue<'_>, now: Instant) {
+    fn add_message(sq: &mut SendQueue<'_>, now: SocketTime) {
         sq.add(
             now,
             Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
@@ -783,7 +784,7 @@ mod tests {
 
     fn handle_sack(
         rtx: &mut RetransmissionQueue,
-        now: Instant,
+        now: SocketTime,
         cumulative_tsn_ack: Tsn,
     ) -> HandleSackResult {
         rtx.handle_sack(
@@ -806,7 +807,7 @@ mod tests {
 
     #[test]
     fn send_one_chunk() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -827,7 +828,7 @@ mod tests {
 
     #[test]
     fn send_one_chunk_and_ack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -847,7 +848,7 @@ mod tests {
 
     #[test]
     fn send_three_chunks_and_ack_two() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -872,7 +873,7 @@ mod tests {
 
     #[test]
     fn ack_with_gap_blocks_from_rfc4960_section334() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -912,7 +913,7 @@ mod tests {
 
     #[test]
     fn resend_packets_when_nacked_three_times() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1045,7 +1046,7 @@ mod tests {
     fn restarts_t3_rtx_on_retransmit_first_outstanding_tsn() {
         // Verifies that if fast retransmit is retransmitting the first outstanding TSN, it will
         // also restart T3-RTX.
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1060,7 +1061,7 @@ mod tests {
         );
 
         // Ack 10, 12, after 100ms.
-        now += Duration::from_millis(100);
+        now = now + Duration::from_millis(100);
         rtx.handle_sack(
             now,
             &SackChunk {
@@ -1087,7 +1088,7 @@ mod tests {
         );
 
         // Ack 10, 12-13, after 100ms.
-        now += Duration::from_millis(100);
+        now = now + Duration::from_millis(100);
         rtx.handle_sack(
             now,
             &SackChunk {
@@ -1115,7 +1116,7 @@ mod tests {
         );
 
         // Ack 10, 12-14, after 100ms.
-        now += Duration::from_millis(100);
+        now = now + Duration::from_millis(100);
         rtx.handle_sack(
             now,
             &SackChunk {
@@ -1159,7 +1160,7 @@ mod tests {
     fn can_only_produce_two_packets_but_wants_to_send_three() {
         // Verifies that if fast retransmit is retransmitting the first outstanding TSN, it will
         // also restart T3-RTX.
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1185,7 +1186,7 @@ mod tests {
 
     #[test]
     fn retransmits_on_t3_expiry() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1231,7 +1232,7 @@ mod tests {
 
     #[test]
     fn limited_retransmission_only_with_rfc3758_support() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1265,7 +1266,7 @@ mod tests {
 
     #[test]
     fn limits_retransmissions_as_udp() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1300,7 +1301,7 @@ mod tests {
 
     #[test]
     fn limits_retransmissions_to_three_sends() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1360,7 +1361,7 @@ mod tests {
 
     #[test]
     fn retransmits_when_send_buffer_is_full_t3_expiry() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1409,7 +1410,7 @@ mod tests {
 
     #[test]
     fn produces_valid_forward_tsn() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1469,7 +1470,7 @@ mod tests {
 
     #[test]
     fn produces_valid_forward_tsn_when_fully_sent() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1529,7 +1530,7 @@ mod tests {
     #[test]
     #[ignore]
     fn produces_valid_i_forward_tsn() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let mut sq = SendQueue::new(MTU, &Options::default(), events.clone());
         let mut rtx = create_queue(
@@ -1634,7 +1635,7 @@ mod tests {
 
     #[test]
     fn measure_rtt() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1646,7 +1647,7 @@ mod tests {
             [Tsn(10)]
         );
 
-        now += Duration::from_millis(123);
+        now = now + Duration::from_millis(123);
 
         let HandleSackResult::Valid { rtt, .. } = handle_sack(&mut rtx, now, Tsn(10)) else {
             panic!()
@@ -1657,7 +1658,7 @@ mod tests {
 
     #[test]
     fn validate_cum_tsn_at_rest() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let mut rtx = create_queue(/* supports_partial_reliability */ true, false, events);
 
@@ -1671,7 +1672,7 @@ mod tests {
 
     #[test]
     fn validate_cum_tsn_ack_on_inflight_data() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1703,7 +1704,7 @@ mod tests {
 
     #[test]
     fn handle_gap_ack_blocks_matching_no_inflight_data() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let mut sq = SendQueue::new(MTU, &Options::default(), events.clone());
         let mut rtx = create_queue(/* supports_partial_reliability */ true, false, events);
@@ -1760,7 +1761,7 @@ mod tests {
 
     #[test]
     fn handle_invalid_gap_ack_blocks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let mut rtx = create_queue(/* supports_partial_reliability */ true, false, events);
 
@@ -1782,7 +1783,7 @@ mod tests {
 
     #[test]
     fn gap_ack_blocks_do_not_move_cum_tsn_ack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1828,7 +1829,7 @@ mod tests {
 
     #[test]
     fn stays_within_available_size() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         const MTU: usize = 1191;
@@ -1887,7 +1888,7 @@ mod tests {
     fn accounts_nacked_abandoned_chunks_as_not_outstanding() {
         // Verifies that unacked_bytes/unacked_items are set correctly for abandoned items, and when
         // acking them.
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -1980,7 +1981,7 @@ mod tests {
     fn expire_from_send_queue_when_partially_sent() {
         // Add a 16 byte message, consume 3*4 bytes, leave 4 bytes in the send queue, then expire
         // the message.
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2041,7 +2042,7 @@ mod tests {
     fn expire_correct_message_from_send_queue() {
         // Add two messages, interleaved, and make sure the right one is discarded when expired.
 
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2111,7 +2112,7 @@ mod tests {
         // Add two messages, interleaved. They both expire, and placeholder end chunks should be
         // created for both messages
 
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2180,7 +2181,7 @@ mod tests {
 
     #[test]
     fn limits_retransmissions_only_when_nacked_three_times() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2261,7 +2262,7 @@ mod tests {
     fn abandons_rtx_limit2_when_nacked_nine_times() {
         // Sends a lot of messages with max_retransmissions=2, then let one message become nacked 9
         // times, which will make it abandon at that time.
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2331,7 +2332,7 @@ mod tests {
 
     #[test]
     fn cwnd_recovers_when_acking() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2359,7 +2360,7 @@ mod tests {
 
     #[test]
     fn ready_for_handover_when_has_no_outstanding_data() {
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2384,7 +2385,7 @@ mod tests {
     fn ready_for_handover_when_nothing_to_retransmit() {
         // This is a variant of `test_resend_packets_when_nacked_three_times`` that verifies that
         // the queue is not ready for handover in some scenarios.
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2493,7 +2494,7 @@ mod tests {
     fn handover_test() {
         // This is a variant of `test_resend_packets_when_nacked_three_times` that verifies that the
         // queue is not ready for handover in some scenarios.
-        let now = Instant::now();
+        let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
@@ -2528,7 +2529,7 @@ mod tests {
 
     #[test]
     fn can_always_send_one_packet() {
-        let mut now = Instant::now();
+        let mut now = START_TIME;
         let options = Options { mtu: MTU, ..Default::default() };
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;

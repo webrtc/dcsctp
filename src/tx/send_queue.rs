@@ -20,6 +20,7 @@ use crate::api::Message;
 use crate::api::Options;
 use crate::api::SendOptions;
 use crate::api::SocketEvent;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::packet::data::Data;
 use crate::tx::stream_scheduler::StreamScheduler;
@@ -36,7 +37,6 @@ use std::ops::AddAssign;
 use std::ops::SubAssign;
 use std::rc::Rc;
 use std::time::Duration;
-use std::time::Instant;
 
 const DEFAULT_EXPIRY: Duration = Duration::from_secs(3600);
 
@@ -44,14 +44,14 @@ pub(crate) struct DataToSend {
     pub message_id: OutgoingMessageId,
     pub data: Data,
     pub max_retransmissions: u16,
-    pub expires_at: Instant,
+    pub expires_at: SocketTime,
     pub lifecycle_id: Option<LifecycleId>,
 }
 
 struct MessageAttributes {
     pub unordered: bool,
     pub max_retransmissions: u16,
-    pub expires_at: Instant,
+    pub expires_at: SocketTime,
     pub lifecycle_id: Option<LifecycleId>,
 }
 
@@ -236,7 +236,7 @@ impl<'a> SendQueue<'a> {
 
     fn get_stream_to_produce_from(
         &mut self,
-        now: Instant,
+        now: SocketTime,
         max_size: usize,
     ) -> Option<(StreamId, usize)> {
         loop {
@@ -273,7 +273,7 @@ impl<'a> SendQueue<'a> {
         })
     }
 
-    pub fn add(&mut self, now: Instant, message: Message, send_options: &SendOptions) {
+    pub fn add(&mut self, now: SocketTime, message: Message, send_options: &SendOptions) {
         let attributes = MessageAttributes {
             unordered: send_options.unordered,
             max_retransmissions: send_options.max_retransmissions.unwrap_or(u16::MAX),
@@ -305,7 +305,7 @@ impl<'a> SendQueue<'a> {
         }
     }
 
-    pub fn produce(&mut self, now: Instant, max_size: usize) -> Option<DataToSend> {
+    pub fn produce(&mut self, now: SocketTime, max_size: usize) -> Option<DataToSend> {
         let (stream_id, size) = self.get_stream_to_produce_from(now, max_size)?;
 
         let stream = self.streams.get_mut(&stream_id).unwrap();
@@ -617,6 +617,7 @@ mod tests {
     const DEFAULT_PRIORITY: u16 = 256;
     const MTU: usize = 1280;
     const PPID: PpId = PpId(53);
+    const START_TIME: SocketTime = SocketTime::zero();
 
     fn make_events() -> Rc<RefCell<Events>> {
         Rc::new(RefCell::new(Events::new()))
@@ -627,18 +628,14 @@ mod tests {
     }
 
     fn add(q: &mut SendQueue<'_>, sid: StreamId, ppid: PpId, payload: Vec<u8>) {
-        q.add(
-            Instant::now(),
-            Message::new(sid, ppid, payload),
-            &SendOptions { ..Default::default() },
-        );
+        q.add(START_TIME, Message::new(sid, ppid, payload), &SendOptions { ..Default::default() });
     }
 
     #[test]
     fn empty_buffer() {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         assert_eq!(q.total_buffered_amount(), 0);
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -646,7 +643,7 @@ mod tests {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         add(&mut q, StreamId(1), PPID, vec![1, 2, 4, 5, 6]);
         assert!(q.total_buffered_amount() > 0);
-        let chunk = q.produce(Instant::now(), MTU).unwrap();
+        let chunk = q.produce(START_TIME, MTU).unwrap();
         assert!(chunk.data.is_beginning);
         assert!(chunk.data.is_end);
     }
@@ -656,19 +653,19 @@ mod tests {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         add(&mut q, StreamId(1), PPID, vec![0; 60]);
 
-        let chunk_beg = q.produce(Instant::now(), 20).unwrap();
+        let chunk_beg = q.produce(START_TIME, 20).unwrap();
         assert!(chunk_beg.data.is_beginning);
         assert!(!chunk_beg.data.is_end);
 
-        let chunk_mid = q.produce(Instant::now(), 20).unwrap();
+        let chunk_mid = q.produce(START_TIME, 20).unwrap();
         assert!(!chunk_mid.data.is_beginning);
         assert!(!chunk_mid.data.is_end);
 
-        let chunk_end = q.produce(Instant::now(), 20).unwrap();
+        let chunk_end = q.produce(START_TIME, 20).unwrap();
         assert!(!chunk_end.data.is_beginning);
         assert!(chunk_end.data.is_end);
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -677,19 +674,19 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 60]);
         add(&mut q, StreamId(3), PpId(54), vec![0; 60]);
 
-        let chunk_one = q.produce(Instant::now(), MTU).unwrap();
+        let chunk_one = q.produce(START_TIME, MTU).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.ppid, PpId(53));
         assert!(chunk_one.data.is_beginning);
         assert!(chunk_one.data.is_end);
 
-        let chunk_one = q.produce(Instant::now(), MTU).unwrap();
+        let chunk_one = q.produce(START_TIME, MTU).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(chunk_one.data.ppid, PpId(54));
         assert!(chunk_one.data.is_beginning);
         assert!(chunk_one.data.is_end);
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -708,15 +705,15 @@ mod tests {
         add(&mut q, StreamId(5), PpId(54), vec![0; 600]);
         assert!(q.total_buffered_amount() >= 1000);
 
-        let chunk_one = q.produce(Instant::now(), 1000).unwrap();
+        let chunk_one = q.produce(START_TIME, 1000).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
 
-        let chunk_two = q.produce(Instant::now(), 1000).unwrap();
+        let chunk_two = q.produce(START_TIME, 1000).unwrap();
         assert_eq!(chunk_two.data.stream_key, StreamKey::Ordered(StreamId(3)));
 
         assert!(q.total_buffered_amount() < 1000);
 
-        let chunk_three = q.produce(Instant::now(), 1000).unwrap();
+        let chunk_three = q.produce(START_TIME, 1000).unwrap();
         assert_eq!(chunk_three.data.stream_key, StreamKey::Ordered(StreamId(5)));
         assert_eq!(q.total_buffered_amount(), 00);
     }
@@ -725,7 +722,7 @@ mod tests {
     fn lifetime_discarded_messages_decrease_buffered_amount() {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
 
-        let now = Instant::now();
+        let now = START_TIME;
         q.add(
             now,
             Message::new(StreamId(1), PpId(54), vec![0; 100]),
@@ -751,27 +748,27 @@ mod tests {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         add(&mut q, StreamId(1), PpId(53), vec![0; 20]);
 
-        let chunk_one = q.produce(Instant::now(), MTU).unwrap();
+        let chunk_one = q.produce(START_TIME, MTU).unwrap();
         assert_eq!(chunk_one.data.ppid, PpId(53));
         assert!(!chunk_one.data.stream_key.is_unordered());
 
         q.add(
-            Instant::now(),
+            START_TIME,
             Message::new(StreamId(1), PpId(54), vec![0; 20]),
             &SendOptions { unordered: true, ..Default::default() },
         );
 
-        let chunk_two = q.produce(Instant::now(), MTU).unwrap();
+        let chunk_two = q.produce(START_TIME, MTU).unwrap();
         assert_eq!(chunk_two.data.ppid, PpId(54));
         assert!(chunk_two.data.stream_key.is_unordered());
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
     fn produce_with_lifetime_expiry() {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
-        let mut now = Instant::now();
+        let mut now = START_TIME;
 
         // Default is no expiry
         q.add(
@@ -787,7 +784,7 @@ mod tests {
             Message::new(StreamId(1), PpId(50), vec![0; 20]),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
-        now += Duration::from_secs(2);
+        now = now + Duration::from_secs(2);
         assert!(q.produce(now, 100).is_some());
 
         // Add and consume just outside lifetime
@@ -796,7 +793,7 @@ mod tests {
             Message::new(StreamId(1), PpId(50), vec![0; 20]),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
-        now += Duration::from_millis(2001);
+        now = now + Duration::from_millis(2001);
         assert!(q.produce(now, 100).is_none());
 
         // A long time after expiry.
@@ -805,7 +802,7 @@ mod tests {
             Message::new(StreamId(1), PpId(50), vec![0; 20]),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
-        now += Duration::from_secs(1000);
+        now = now + Duration::from_secs(1000);
         assert!(q.produce(now, 100).is_none());
 
         // Expire one message, but produce the second that is not expired.
@@ -819,7 +816,7 @@ mod tests {
             Message::new(StreamId(1), PpId(51), vec![0; 20]),
             &SendOptions { lifetime: Some(Duration::from_secs(4)), ..Default::default() },
         );
-        now += Duration::from_millis(2001);
+        now = now + Duration::from_millis(2001);
         assert_eq!(q.produce(now, 100).unwrap().data.ppid, PpId(51));
         assert!(q.produce(now, 100).is_none());
     }
@@ -830,22 +827,22 @@ mod tests {
         add(&mut q, StreamId(1), PpId(50), vec![0; 120]);
         add(&mut q, StreamId(2), PpId(51), vec![0; 120]);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert!(!chunk1.data.is_end);
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         q.discard(StreamId(1), chunk1.message_id);
 
-        let chunk2 = q.produce(Instant::now(), 100).unwrap();
+        let chunk2 = q.produce(START_TIME, 100).unwrap();
         assert!(!chunk2.data.is_end);
         assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(2)));
 
-        let chunk3 = q.produce(Instant::now(), 100).unwrap();
+        let chunk3 = q.produce(START_TIME, 100).unwrap();
         assert!(chunk3.data.is_end);
         assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(2)));
 
         // Calling it again shouldn't cause issues.
         q.discard(StreamId(1), chunk1.message_id);
-        assert!(q.produce(Instant::now(), 100).is_none());
+        assert!(q.produce(START_TIME, 100).is_none());
     }
 
     #[test]
@@ -869,7 +866,7 @@ mod tests {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         add(&mut q, StreamId(1), PpId(53), vec![0; 120]);
         add(&mut q, StreamId(1), PpId(53), vec![0; 120]);
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.payload.len(), 50);
 
@@ -888,14 +885,14 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 50]);
         assert_eq!(q.total_buffered_amount(), 50);
 
-        assert!(q.produce(Instant::now(), 50).is_none());
+        assert!(q.produce(START_TIME, 50).is_none());
         assert!(q.has_streams_ready_to_be_reset());
         assert_eq!(q.get_streams_ready_to_reset(), vec![StreamId(1)]);
 
         q.commit_reset_streams();
         assert_eq!(q.total_buffered_amount(), 50);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.payload.len(), 50);
 
@@ -910,7 +907,7 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 100]);
         assert_eq!(q.total_buffered_amount(), 200);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.payload.len(), 50);
         assert_eq!(q.total_buffered_amount(), 150);
@@ -924,13 +921,13 @@ mod tests {
         assert_eq!(q.total_buffered_amount(), 150);
 
         // Should still produce fragments until end of message.
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_two.data.payload.len(), 50);
         assert_eq!(q.total_buffered_amount(), 100);
 
         // But shouldn't produce any more messages as the stream is paused.
-        assert!(q.produce(Instant::now(), 50).is_none());
+        assert!(q.produce(START_TIME, 50).is_none());
     }
 
     #[test]
@@ -941,10 +938,10 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 50]);
         assert_eq!(q.total_buffered_amount(), 100);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.ssn, Ssn(0));
 
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.data.ssn, Ssn(1));
 
         q.prepare_reset_stream(StreamId(1));
@@ -953,7 +950,7 @@ mod tests {
         assert_eq!(q.get_streams_ready_to_reset(), [StreamId(1)]);
         q.commit_reset_streams();
 
-        let chunk_three = q.produce(Instant::now(), 50).unwrap();
+        let chunk_three = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_three.data.ssn, Ssn(0));
     }
 
@@ -965,10 +962,10 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 50]);
         assert_eq!(q.total_buffered_amount(), 100);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.message_id, OutgoingMessageId(0));
 
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.message_id, OutgoingMessageId(1));
 
         q.prepare_reset_stream(StreamId(1));
@@ -977,7 +974,7 @@ mod tests {
         assert_eq!(q.get_streams_ready_to_reset(), [StreamId(1)]);
         q.commit_reset_streams();
 
-        let chunk_three = q.produce(Instant::now(), 50).unwrap();
+        let chunk_three = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_three.message_id, OutgoingMessageId(2));
     }
 
@@ -989,9 +986,9 @@ mod tests {
         add(&mut q, StreamId(3), PpId(53), vec![0; 50]);
         assert_eq!(q.total_buffered_amount(), 100);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.ssn, Ssn(0));
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.data.ssn, Ssn(0));
 
         q.prepare_reset_stream(StreamId(3));
@@ -1003,10 +1000,10 @@ mod tests {
         assert_eq!(q.get_streams_ready_to_reset(), [StreamId(3)]);
         q.commit_reset_streams();
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.ssn, Ssn(1));
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(chunk_two.data.ssn, Ssn(0));
     }
@@ -1019,9 +1016,9 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 50]);
         assert_eq!(q.total_buffered_amount(), 100);
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.ssn, Ssn(0));
-        let chunk_two = q.produce(Instant::now(), 50).unwrap();
+        let chunk_two = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_two.data.ssn, Ssn(1));
 
         q.prepare_reset_stream(StreamId(1));
@@ -1032,7 +1029,7 @@ mod tests {
         assert_eq!(q.get_streams_ready_to_reset(), [StreamId(1)]);
         q.rollback_reset_streams();
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk_one.data.ssn, Ssn(2));
     }
@@ -1043,19 +1040,19 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 200]);
         add(&mut q, StreamId(2), PpId(53), vec![0; 200]);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
 
-        let chunk2 = q.produce(Instant::now(), 100).unwrap();
+        let chunk2 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(1)));
 
-        let chunk3 = q.produce(Instant::now(), 100).unwrap();
+        let chunk3 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(2)));
 
-        let chunk4 = q.produce(Instant::now(), 100).unwrap();
+        let chunk4 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk4.data.stream_key, StreamKey::Ordered(StreamId(2)));
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -1064,23 +1061,23 @@ mod tests {
         add(&mut q, StreamId(1), PpId(53), vec![0; 101]);
         add(&mut q, StreamId(2), PpId(53), vec![0; 101]);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk1.data.payload.len(), 100);
 
-        let chunk2 = q.produce(Instant::now(), 100).unwrap();
+        let chunk2 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk2.data.payload.len(), 1);
 
-        let chunk3 = q.produce(Instant::now(), 100).unwrap();
+        let chunk3 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(2)));
         assert_eq!(chunk3.data.payload.len(), 100);
 
-        let chunk4 = q.produce(Instant::now(), 100).unwrap();
+        let chunk4 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk4.data.stream_key, StreamKey::Ordered(StreamId(2)));
         assert_eq!(chunk4.data.payload.len(), 1);
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -1095,39 +1092,39 @@ mod tests {
         add(&mut q, StreamId(4), PpId(53), vec![0; 7]);
         add(&mut q, StreamId(4), PpId(53), vec![0; 8]);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk1.data.payload.len(), 1);
 
-        let chunk2 = q.produce(Instant::now(), 100).unwrap();
+        let chunk2 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(2)));
         assert_eq!(chunk2.data.payload.len(), 3);
 
-        let chunk3 = q.produce(Instant::now(), 100).unwrap();
+        let chunk3 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(chunk3.data.payload.len(), 5);
 
-        let chunk4 = q.produce(Instant::now(), 100).unwrap();
+        let chunk4 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk4.data.stream_key, StreamKey::Ordered(StreamId(4)));
         assert_eq!(chunk4.data.payload.len(), 7);
 
-        let chunk5 = q.produce(Instant::now(), 100).unwrap();
+        let chunk5 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk5.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk5.data.payload.len(), 2);
 
-        let chunk6 = q.produce(Instant::now(), 100).unwrap();
+        let chunk6 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk6.data.stream_key, StreamKey::Ordered(StreamId(2)));
         assert_eq!(chunk6.data.payload.len(), 4);
 
-        let chunk7 = q.produce(Instant::now(), 100).unwrap();
+        let chunk7 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk7.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(chunk7.data.payload.len(), 6);
 
-        let chunk8 = q.produce(Instant::now(), 100).unwrap();
+        let chunk8 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk8.data.stream_key, StreamKey::Ordered(StreamId(4)));
         assert_eq!(chunk8.data.payload.len(), 8);
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -1150,7 +1147,7 @@ mod tests {
         add(&mut q, StreamId(1), PPID, vec![0; 1]);
         assert_eq!(q.buffered_amount(StreamId(1)), 1);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk1.data.payload.len(), 1);
 
@@ -1168,7 +1165,7 @@ mod tests {
 
         add(&mut q, StreamId(1), PPID, vec![0; 1]);
         assert_eq!(q.buffered_amount(StreamId(1)), 1);
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk1.data.payload.len(), 1);
         let stream_id = expect_buffered_amount_low!(next_event(&events));
@@ -1176,7 +1173,7 @@ mod tests {
 
         add(&mut q, StreamId(1), PPID, vec![0; 1]);
         assert_eq!(q.buffered_amount(StreamId(1)), 1);
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk1.data.payload.len(), 1);
         let stream_id = expect_buffered_amount_low!(next_event(&events));
@@ -1195,21 +1192,21 @@ mod tests {
 
         add(&mut q, StreamId(1), PPID, vec![0; 10]);
         assert_eq!(q.buffered_amount(StreamId(1)), 10);
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 10);
         expect_no_event!(next_event(&events));
 
         add(&mut q, StreamId(1), PPID, vec![0; 20]);
         assert_eq!(q.buffered_amount(StreamId(1)), 20);
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 20);
         expect_no_event!(next_event(&events));
 
         add(&mut q, StreamId(1), PPID, vec![0; 21]);
         assert_eq!(q.buffered_amount(StreamId(1)), 21);
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 21);
         assert_eq!(expect_buffered_amount_low!(next_event(&events)), StreamId(1));
@@ -1225,26 +1222,26 @@ mod tests {
 
         add(&mut q, StreamId(1), PPID, vec![0; 1000]);
 
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 100);
         assert_eq!(q.buffered_amount(StreamId(1)), 900);
         expect_no_event!(next_event(&events));
 
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 100);
         assert_eq!(q.buffered_amount(StreamId(1)), 800);
         expect_no_event!(next_event(&events));
 
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 100);
         assert_eq!(q.buffered_amount(StreamId(1)), 700);
         assert_eq!(expect_buffered_amount_low!(next_event(&events)), StreamId(1));
 
         // Doesn't trigger when reducing even further.
-        let chunk = q.produce(Instant::now(), 100).unwrap();
+        let chunk = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 100);
         assert_eq!(q.buffered_amount(StreamId(1)), 600);
@@ -1261,7 +1258,7 @@ mod tests {
 
         add(&mut q, StreamId(1), PPID, vec![0; 1000]);
 
-        let chunk = q.produce(Instant::now(), 400).unwrap();
+        let chunk = q.produce(START_TIME, 400).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 400);
         assert_eq!(q.buffered_amount(StreamId(1)), 600);
@@ -1270,7 +1267,7 @@ mod tests {
         add(&mut q, StreamId(1), PPID, vec![0; 200]);
         assert_eq!(q.buffered_amount(StreamId(1)), 800);
 
-        let chunk = q.produce(Instant::now(), 200).unwrap();
+        let chunk = q.produce(START_TIME, 200).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk.data.payload.len(), 200);
         assert_eq!(q.buffered_amount(StreamId(1)), 600);
@@ -1336,7 +1333,7 @@ mod tests {
         expect_no_event!(next_event(&events));
 
         // Drain it a bit - will trigger.
-        let chunk = q.produce(Instant::now(), 200).unwrap();
+        let chunk = q.produce(START_TIME, 200).unwrap();
         assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
         expect_total_buffered_amount_low!(next_event(&events));
     }
@@ -1346,14 +1343,14 @@ mod tests {
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         add(&mut q, StreamId(5), PpId(53), vec![0; 1]);
 
-        let chunk1 = q.produce(Instant::now(), 100).unwrap();
+        let chunk1 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(5)));
         assert_eq!(chunk1.data.payload.len(), 1);
 
         // Next, it should pick a different stream.
         add(&mut q, StreamId(1), PpId(53), vec![0; 200]);
 
-        let chunk2 = q.produce(Instant::now(), 100).unwrap();
+        let chunk2 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk2.data.payload.len(), 100);
 
@@ -1361,16 +1358,16 @@ mod tests {
         // stream, as it's the stream following 5.
         add(&mut q, StreamId(6), PpId(53), vec![0; 1]);
 
-        let chunk3 = q.produce(Instant::now(), 100).unwrap();
+        let chunk3 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(chunk3.data.payload.len(), 100);
 
         // After stream id 1 is complete, it's time to do stream 6.
-        let chunk4 = q.produce(Instant::now(), 100).unwrap();
+        let chunk4 = q.produce(START_TIME, 100).unwrap();
         assert_eq!(chunk4.data.stream_key, StreamKey::Ordered(StreamId(6)));
         assert_eq!(chunk4.data.payload.len(), 1);
 
-        assert!(q.produce(Instant::now(), MTU).is_none());
+        assert!(q.produce(START_TIME, MTU).is_none());
     }
 
     #[test]
@@ -1413,7 +1410,7 @@ mod tests {
         add(&mut q, StreamId(2), PpId(53), vec![0; 1]);
         q.set_priority(StreamId(2), 34);
 
-        let chunk = q.produce(Instant::now(), MTU).unwrap();
+        let chunk = q.produce(START_TIME, MTU).unwrap();
         assert!(chunk.data.is_beginning);
         assert!(chunk.data.is_end);
 
@@ -1430,13 +1427,13 @@ mod tests {
         add(&mut q, StreamId(2), PpId(53), vec![0; 1]);
         assert_eq!(q.get_handover_readiness(), HandoverReadiness::SEND_QUEUE_NOT_EMPTY);
 
-        q.produce(Instant::now(), MTU);
+        q.produce(START_TIME, MTU);
         assert!(q.get_handover_readiness().is_ready());
     }
 
     #[test]
     fn will_send_messages_by_prio() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut q = SendQueue::new(MTU, &Options::default(), make_events());
         q.enable_message_interleaving(true);
 
@@ -1462,7 +1459,7 @@ mod tests {
 
         let mut q = SendQueue::new(MTU, &Options::default(), events_clone);
 
-        let now = Instant::now();
+        let now = START_TIME;
         q.add(
             now,
             Message::new(StreamId(1), PpId(54), vec![0; 20]),
@@ -1488,7 +1485,7 @@ mod tests {
 
         let mut q = SendQueue::new(MTU, &Options::default(), events_clone);
 
-        let now = Instant::now();
+        let now = START_TIME;
         q.add(
             now,
             Message::new(StreamId(1), PPID, vec![0; 120]),
@@ -1500,7 +1497,7 @@ mod tests {
             &SendOptions { lifecycle_id: LifecycleId::new(2), ..Default::default() },
         );
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(q.total_buffered_amount(), 240 - 50);
         expect_no_event!(next_event(&events));
@@ -1520,14 +1517,14 @@ mod tests {
 
         let mut q = SendQueue::new(MTU, &Options::default(), events_clone);
 
-        let now = Instant::now();
+        let now = START_TIME;
         q.add(
             now,
             Message::new(StreamId(1), PPID, vec![0; 120]),
             &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
         );
 
-        let chunk_one = q.produce(Instant::now(), 50).unwrap();
+        let chunk_one = q.produce(START_TIME, 50).unwrap();
         assert_eq!(chunk_one.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(q.total_buffered_amount(), 120 - 50);
         expect_no_event!(next_event(&events));

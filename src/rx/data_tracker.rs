@@ -15,6 +15,7 @@
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
 use crate::api::Options;
+use crate::api::SocketTime;
 use crate::packet::sack_chunk::GapAckBlock;
 use crate::packet::sack_chunk::SackChunk;
 use crate::timer::Timer;
@@ -22,7 +23,6 @@ use crate::types::Tsn;
 use std::cmp::min;
 use std::ops::Range;
 use std::time::Duration;
-use std::time::Instant;
 
 /// The maximum number of accepted in-flight DATA chunks. This indicates the maximum difference from
 /// this buffer's last cumulative ack TSN, and any received data. Data received beyond this limit
@@ -99,7 +99,7 @@ impl DataTracker {
         self.delayed_ack_timer.set_duration(delayed_ack_tmo);
     }
 
-    pub fn next_timeout(&self) -> Option<Instant> {
+    pub fn next_timeout(&self) -> Option<SocketTime> {
         self.delayed_ack_timer.next_expiry()
     }
 
@@ -161,7 +161,7 @@ impl DataTracker {
 
     /// Call for every incoming data chunk. Returns `true` if `tsn` was seen for the first time, and
     /// `false` if it has been seen before (a duplicate `tsn`).
-    pub fn observe(&mut self, now: Instant, tsn: Tsn, immediate_ack: bool) -> bool {
+    pub fn observe(&mut self, now: SocketTime, tsn: Tsn, immediate_ack: bool) -> bool {
         let mut is_duplicate = false;
 
         // is_tsn_valid must be called prior to calling this method.
@@ -240,7 +240,7 @@ impl DataTracker {
     }
 
     /// Called for incoming FORWARD-TSN/I-FORWARD-TSN chunks. Indicates if the chunk had any effect.
-    pub fn handle_forward_tsn(&mut self, now: Instant, new_cumulative_tsn: Tsn) -> bool {
+    pub fn handle_forward_tsn(&mut self, now: SocketTime, new_cumulative_tsn: Tsn) -> bool {
         // ForwardTSN is sent to make the receiver (this socket) "forget" about partly received (or
         // not received at all) data, up until `new_cumulative_ack`.
 
@@ -332,7 +332,7 @@ impl DataTracker {
     ///
     /// If the delayed ack timer is running, this method will return false _unless_
     /// `also_if_delayed` is set to true. Then it will return true as well.
-    pub fn should_send_ack(&mut self, now: Instant, also_if_delayed: bool) -> bool {
+    pub fn should_send_ack(&mut self, now: SocketTime, also_if_delayed: bool) -> bool {
         if self.ack_state == AckState::Immediate
             || (also_if_delayed
                 && (self.ack_state == AckState::BecomingDelayed
@@ -349,24 +349,24 @@ impl DataTracker {
         tsn == self.last_cumulative_acked_tsn + 1
     }
 
-    pub fn force_immediate_sack(&mut self, now: Instant) {
+    pub fn force_immediate_sack(&mut self, now: SocketTime) {
         self.update_ack_state(now, AckState::Immediate);
     }
 
-    pub fn handle_timeout(&mut self, now: Instant) {
+    pub fn handle_timeout(&mut self, now: SocketTime) {
         if self.delayed_ack_timer.expire(now) {
             self.update_ack_state(now, AckState::Immediate);
         }
     }
 
     /// Called at the end of processing an SCTP packet.
-    pub fn observe_packet_end(&mut self, now: Instant) {
+    pub fn observe_packet_end(&mut self, now: SocketTime) {
         if self.ack_state == AckState::BecomingDelayed {
             self.update_ack_state(now, AckState::Delayed);
         }
     }
 
-    fn update_ack_state(&mut self, now: Instant, new_state: AckState) {
+    fn update_ack_state(&mut self, now: SocketTime, new_state: AckState) {
         if self.ack_state != new_state {
             if self.ack_state == AckState::Delayed {
                 self.delayed_ack_timer.stop();
@@ -398,8 +398,9 @@ mod tests {
 
     const INITIAL_TSN: Tsn = Tsn(11);
     const A_RWND: u32 = 10000;
+    const START_TIME: SocketTime = SocketTime::zero();
 
-    fn observe(d: &mut DataTracker, now: Instant, tsns: &[u32]) {
+    fn observe(d: &mut DataTracker, now: SocketTime, tsns: &[u32]) {
         for tsn in tsns.iter() {
             d.observe(now, Tsn(*tsn), /* immediate_ack */ false);
         }
@@ -436,7 +437,7 @@ mod tests {
 
     #[test]
     fn observer_single_in_order_packet() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         d.observe(now, Tsn(11), false);
         let sack = d.create_selective_ack(A_RWND);
@@ -447,7 +448,7 @@ mod tests {
 
     #[test]
     fn observer_many_in_order_moves_cumulative_tsn_ack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 13]);
         let sack = d.create_selective_ack(A_RWND);
@@ -458,7 +459,7 @@ mod tests {
 
     #[test]
     fn observe_out_of_order_moves_cumulative_tsn_ack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 11]);
         let sack = d.create_selective_ack(A_RWND);
@@ -469,7 +470,7 @@ mod tests {
 
     #[test]
     fn single_gap() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         d.observe(now, Tsn(12), false);
         let sack = d.create_selective_ack(A_RWND);
@@ -482,7 +483,7 @@ mod tests {
 
     #[test]
     fn example_from_rfc4960_section334() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 14, 15, 17]);
         let sack = d.create_selective_ack(A_RWND);
@@ -493,7 +494,7 @@ mod tests {
 
     #[test]
     fn ack_already_received_chunk() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         d.observe(now, Tsn(11), false);
         let sack = d.create_selective_ack(A_RWND);
@@ -508,7 +509,7 @@ mod tests {
 
     #[test]
     fn double_send_retransmitted_chunk() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 13, 14, 15]);
         let sack = d.create_selective_ack(A_RWND);
@@ -532,7 +533,7 @@ mod tests {
 
     #[test]
     fn forward_tsn_simple() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 15]);
         d.handle_forward_tsn(now, Tsn(13));
@@ -543,7 +544,7 @@ mod tests {
 
     #[test]
     fn forward_tsn_skips_from_gap_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 14]);
         d.handle_forward_tsn(now, Tsn(13));
@@ -554,7 +555,7 @@ mod tests {
 
     #[test]
     fn example_from_rfc3758() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[102, 104, 105, 107]);
 
@@ -566,7 +567,7 @@ mod tests {
 
     #[test]
     fn empty_all_acks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 13, 14, 15]);
 
@@ -589,7 +590,7 @@ mod tests {
 
     #[test]
     fn will_increase_cum_ack_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         assert_eq!(d.last_cumulative_acked_tsn(), Tsn(10));
         assert!(!d.will_increase_cum_ack_tsn(Tsn(10)));
@@ -605,7 +606,7 @@ mod tests {
 
     #[test]
     fn force_should_send_sack_immediately() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         assert!(!d.should_send_ack(now, false));
 
@@ -632,7 +633,7 @@ mod tests {
 
     #[test]
     fn report_single_duplicate_tsns() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         assert!(d.observe(now, Tsn(11), false));
         assert!(d.observe(now, Tsn(12), false));
@@ -645,7 +646,7 @@ mod tests {
 
     #[test]
     fn report_multiple_duplicate_tsns() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 13, 14]);
         observe(&mut d, now, &[12, 13, 12, 13]);
@@ -659,7 +660,7 @@ mod tests {
 
     #[test]
     fn report_duplicate_tsns_in_gap_ack_blocks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, /* 12, */ 13, 14]);
         observe(&mut d, now, &[13, 14]);
@@ -673,7 +674,7 @@ mod tests {
 
     #[test]
     fn clears_duplicate_tsns_after_creating_sack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 13, 14]);
         observe(&mut d, now, &[12, 13, 12, 13]);
@@ -694,7 +695,7 @@ mod tests {
 
     #[test]
     fn limits_number_of_duplicates_reported() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         for i in 0..MAX_DUPLICATE_TSN_REPORTED + 10 {
             let tsn = Tsn(11 + i as u32);
@@ -709,7 +710,7 @@ mod tests {
 
     #[test]
     fn limits_number_of_gap_ack_blocks_reported() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         for i in 0..MAX_GAP_ACK_BLOCKS_REPORTED + 10 {
             let tsn = Tsn(11 + (i * 2) as u32);
@@ -723,7 +724,7 @@ mod tests {
 
     #[test]
     fn sends_sack_for_first_packet_observed() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         d.observe(now, Tsn(11), false);
 
@@ -733,7 +734,7 @@ mod tests {
 
     #[test]
     fn sends_sack_every_second_packet_when_there_is_no_packet_loss() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         d.observe(now, Tsn(11), false);
@@ -764,7 +765,7 @@ mod tests {
 
     #[test]
     fn sends_sack_every_packet_on_packet_loss() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         d.observe(now, Tsn(11), false);
@@ -811,7 +812,7 @@ mod tests {
 
     #[test]
     fn sends_sack_on_duplicate_data_chunks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         d.observe(now, Tsn(11), false);
@@ -844,7 +845,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_add_single_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12]);
         let sack = d.create_selective_ack(A_RWND);
@@ -854,7 +855,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_adds_another() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 14]);
         let sack = d.create_selective_ack(A_RWND);
@@ -864,7 +865,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_adds_duplicate() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 12]);
         let sack = d.create_selective_ack(A_RWND);
@@ -875,7 +876,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_expands_to_right() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13]);
         let sack = d.create_selective_ack(A_RWND);
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_expands_to_right_with_other() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 20, 30, 21]);
         let sack = d.create_selective_ack(A_RWND);
@@ -895,7 +896,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_expands_to_left() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[13, 12]);
         let sack = d.create_selective_ack(A_RWND);
@@ -905,7 +906,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_expands_to_left_with_other() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 21, 30, 20]);
         let sack = d.create_selective_ack(A_RWND);
@@ -915,7 +916,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_expands_to_l_right_and_merges() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 20, 22, 30, 21]);
         let sack = d.create_selective_ack(A_RWND);
@@ -925,7 +926,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_merges_many_blocks_into_one() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[22]);
         expect_gaps(&d.create_selective_ack(A_RWND), &[12, 12]);
@@ -957,7 +958,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_before_cum_ack_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -969,7 +970,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_before_first_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -981,7 +982,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_at_beginning_of_first_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -993,7 +994,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_at_middle_of_first_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1005,7 +1006,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_at_end_of_first_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1017,7 +1018,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_right_after_first_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1029,7 +1030,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_right_before_second_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1041,7 +1042,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_right_at_start_of_second_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1053,7 +1054,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_right_at_middle_of_second_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1065,7 +1066,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_right_at_end_of_second_block() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1077,7 +1078,7 @@ mod tests {
 
     #[test]
     fn gap_ack_block_remove_far_after_all_blocks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 20, 21, 22, 30, 31]);
 
@@ -1089,7 +1090,7 @@ mod tests {
 
     #[test]
     fn handover_empty() {
-        let now = Instant::now();
+        let now = START_TIME;
         let d = DataTracker::new(INITIAL_TSN, &Options::default());
         let mut d2 = handover_data_tracker(d);
 
@@ -1101,7 +1102,7 @@ mod tests {
 
     #[test]
     fn handover_while_sending_sack_every_second_packet_when_there_is_no_packet_loss() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         observe(&mut d, now, &[11]);
@@ -1129,7 +1130,7 @@ mod tests {
 
     #[test]
     fn handover_while_sending_sack_every_packet_on_packet_loss() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         observe(&mut d, now, &[11]);
@@ -1155,7 +1156,7 @@ mod tests {
 
     #[test]
     fn does_not_accept_data_before_forward_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 15, 17]);
         d.observe_packet_end(now);
@@ -1167,7 +1168,7 @@ mod tests {
 
     #[test]
     fn does_not_accept_data_at_forward_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[12, 13, 14, 15, 17]);
         d.observe_packet_end(now);
@@ -1179,7 +1180,7 @@ mod tests {
 
     #[test]
     fn does_not_accept_data_before_cum_ack_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         assert!(!d.observe(now, Tsn(10), false));
@@ -1187,7 +1188,7 @@ mod tests {
 
     #[test]
     fn does_not_accept_contiguous_duplicate_data() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         assert!(d.observe(now, Tsn(11), false));
         assert!(!d.observe(now, Tsn(11), false));
@@ -1199,7 +1200,7 @@ mod tests {
 
     #[test]
     fn does_not_accept_gaps_with_duplicate_data() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         assert!(d.observe(now, Tsn(11), false));
         assert!(!d.observe(now, Tsn(11), false));
@@ -1216,7 +1217,7 @@ mod tests {
 
     #[test]
     fn not_ready_for_handover_when_having_tsn_gaps() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         observe(&mut d, now, &[10, 12]);
@@ -1228,7 +1229,7 @@ mod tests {
 
     #[test]
     fn observe_out_of_order_and_fill_gap_moves_cumulative_tsn_ack() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         // Receive 12, 14, 15. Then 11 (which advances cum_ack), then 13 (which fills the gap).
@@ -1242,7 +1243,7 @@ mod tests {
 
     #[test]
     fn observe_out_of_order_and_fill_gap_moves_cumulative_tsn_ack_multiple_blocks() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         // Create two separate blocks: 12-13 and 15-16
@@ -1262,7 +1263,7 @@ mod tests {
 
     #[test]
     fn observe_fill_gap_of_three_blocks_advances_cumulative_tsn() {
-        let now = Instant::now();
+        let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
 
         // Create two separate blocks: 13 and 15.

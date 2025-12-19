@@ -1,0 +1,7 @@
+[[disallowed-types]]
+path = "std::time::Instant"
+reason = "This is a sans-io library. Use 'SocketTime' (derived from Duration) for deterministic, testable time."
+
+[[disallowed-types]]
+path = "std::time::SystemTime"
+reason = "Do not use wall-clock time. Use relative time via 'SocketTime'."

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::api::SocketTime;
 use std::cmp::min;
 use std::time::Duration;
-use std::time::Instant;
 
 /// An unreasonable long time, for SCTP purposes. Mainly used as upper bound.
 pub const MAX_DURATION: Duration = Duration::from_secs(24 * 3600);
@@ -45,7 +45,7 @@ pub struct Timer {
     backoff_algorithm: BackoffAlgorithm,
     max_restarts: u32,
     max_backoff_duration: Duration,
-    next_expiry: Option<Instant>,
+    next_expiry: Option<SocketTime>,
 }
 
 impl Timer {
@@ -78,7 +78,7 @@ impl Timer {
         min(duration, self.max_backoff_duration)
     }
 
-    fn compute_expiry(&self, from_time: Instant) -> Option<Instant> {
+    fn compute_expiry(&self, from_time: SocketTime) -> Option<SocketTime> {
         if self.base_duration == Duration::ZERO {
             None
         } else {
@@ -92,7 +92,7 @@ impl Timer {
     /// If expired, it will calculate the next expiration time and update the timer. If the timer
     /// has reached its max restart limit (if any), it will be stopped, otherwise, it will keep
     /// running.
-    pub fn expire(&mut self, now: Instant) -> bool {
+    pub fn expire(&mut self, now: SocketTime) -> bool {
         match self.next_expiry {
             // Not running.
             None => false,
@@ -113,7 +113,7 @@ impl Timer {
         }
     }
 
-    pub fn next_expiry(&self) -> Option<Instant> {
+    pub fn next_expiry(&self) -> Option<SocketTime> {
         self.next_expiry
     }
 
@@ -127,7 +127,7 @@ impl Timer {
 
     /// Starts a timer. If it's already started, it will be restarted to its original expiration
     /// delay and its expiration count will be reset.
-    pub fn start(&mut self, now: Instant) {
+    pub fn start(&mut self, now: SocketTime) {
         self.expiration_count = 0;
         self.next_expiry = self.compute_expiry(now);
     }
@@ -148,6 +148,8 @@ impl Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const START_TIME: SocketTime = SocketTime::zero();
 
     #[test]
     fn new_timer_is_not_running() {
@@ -171,7 +173,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
         assert_eq!(t.duration(), Duration::from_millis(1000));
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         t.stop();
         assert!(!t.expire(now + Duration::from_millis(1000)));
@@ -186,7 +188,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(!t.expire(now + Duration::from_millis(999)));
@@ -203,7 +205,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(t.expire(now + Duration::from_millis(1000)));
@@ -223,7 +225,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(t.expire(now + Duration::from_millis(1000)));
@@ -240,7 +242,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(t.expire(now + Duration::from_millis(1000)));
@@ -258,7 +260,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(t.expire(now + Duration::from_millis(1050)));
@@ -274,7 +276,7 @@ mod tests {
             /* max_backoff_algorithm */ None,
         );
 
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         assert!(t.expire(now + Duration::from_millis(1050)));
@@ -296,7 +298,7 @@ mod tests {
 
         // Exponential backoff would make the duration extremely long, with risk of overflow.
         // Validate that the test passes without issues.
-        let now = Instant::now();
+        let now = START_TIME;
         t.start(now);
         assert!(t.is_running());
         for _ in 0..1000 {

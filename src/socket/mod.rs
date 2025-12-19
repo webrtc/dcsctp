@@ -26,6 +26,7 @@ use crate::api::SendOptions;
 use crate::api::SendStatus;
 use crate::api::SocketEvent;
 use crate::api::SocketState;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
 use crate::events::Events;
@@ -107,7 +108,6 @@ use std::println as info;
 use std::println as warn;
 use std::rc::Rc;
 use std::time::Duration;
-use std::time::Instant;
 
 pub mod capabilities;
 pub mod state_cookie;
@@ -208,18 +208,16 @@ impl TxErrorCounter {
 struct LoggingEvents {
     parent: Rc<RefCell<dyn EventSink>>,
     name: String,
-    now: Rc<RefCell<Instant>>,
-    start_time: Instant,
+    now: Rc<RefCell<SocketTime>>,
 }
 
 impl LoggingEvents {
     pub fn new(
         parent: Rc<RefCell<dyn EventSink>>,
         name: String,
-        now: Rc<RefCell<Instant>>,
+        now: Rc<RefCell<SocketTime>>,
     ) -> LoggingEvents {
-        let start_time = *now.borrow();
-        Self { parent, name, now, start_time }
+        Self { parent, name, now }
     }
 }
 
@@ -228,7 +226,7 @@ impl EventSink for LoggingEvents {
         match event {
             SocketEvent::SendPacket(ref e) => {
                 let now = *self.now.borrow();
-                log_packet(&self.name, now - self.start_time, true, e);
+                log_packet(&self.name, now.into(), true, e);
             }
             SocketEvent::OnConnected() => info!("OnConnected"),
             SocketEvent::OnError(kind, ref e) => info!("OnError: {:?}, {}", kind, e),
@@ -295,19 +293,18 @@ macro_rules! transition_between {
 /// To create a socket, use the [`Socket::new`] method.
 pub struct Socket<'a> {
     name: String,
-    start_time: Instant,
-    now: Rc<RefCell<Instant>>,
+    now: Rc<RefCell<SocketTime>>,
     options: Options,
     state: State,
     events: Rc<RefCell<dyn EventSink>>,
     send_queue: SendQueue<'a>,
 
-    limit_forward_tsn_until: Instant,
+    limit_forward_tsn_until: SocketTime,
 
     heartbeat_interval: Timer,
     heartbeat_timeout: Timer,
     heartbeat_counter: u32,
-    heartbeat_sent_time: Instant,
+    heartbeat_sent_time: SocketTime,
 
     rx_packets_count: usize,
     tx_packets_count: usize,
@@ -317,7 +314,7 @@ pub struct Socket<'a> {
     tx_error_counter: TxErrorCounter,
 }
 
-fn closest_timeout(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+fn closest_timeout(a: Option<SocketTime>, b: Option<SocketTime>) -> Option<SocketTime> {
     match (a, b) {
         (None, None) => None,
         (None, Some(_)) => b,
@@ -423,21 +420,20 @@ impl Socket<'_> {
     ///
     /// The provided `name` is only used for logging to identify this socket, and `start_time`
     /// is the initial time, used as a basline for all time-based operations.
-    pub fn new(name: &str, start_time: Instant, options: &Options) -> Self {
-        let now = Rc::new(RefCell::new(start_time));
+    pub fn new(name: &str, options: &Options) -> Self {
+        let now = Rc::new(RefCell::new(SocketTime::zero()));
         let events: Rc<RefCell<Events>> = Rc::new(RefCell::new(Events::new()));
         let events: Rc<RefCell<dyn EventSink>> =
             Rc::new(RefCell::new(LoggingEvents::new(events, name.into(), Rc::clone(&now))));
         let sqe = Rc::clone(&events);
         Socket {
             name: name.into(),
-            start_time,
             now,
             options: options.clone(),
             state: State::Closed,
             events,
             send_queue: SendQueue::new(options.mtu, options, sqe),
-            limit_forward_tsn_until: start_time,
+            limit_forward_tsn_until: SocketTime::zero(),
             heartbeat_interval: Timer::new(
                 options.heartbeat_interval,
                 BackoffAlgorithm::Fixed,
@@ -451,7 +447,7 @@ impl Socket<'_> {
                 None,
             ),
             heartbeat_counter: 0,
-            heartbeat_sent_time: start_time,
+            heartbeat_sent_time: SocketTime::zero(),
             rx_packets_count: 0,
             tx_packets_count: 0,
             tx_messages_count: 0,
@@ -476,7 +472,7 @@ impl Socket<'_> {
         }
     }
 
-    fn send_buffered_packets(&mut self, now: Instant) {
+    fn send_buffered_packets(&mut self, now: SocketTime) {
         if let Some(tcb) = &self.state.tcb_mut() {
             let mut packet = tcb.new_packet();
             self.send_buffered_packets_with(now, &mut packet);
@@ -486,7 +482,7 @@ impl Socket<'_> {
     /// Given a builder that is either empty, or only contains control chunks, add more control
     /// chunks and data chunks to it, and send it and possibly more packets, as is allowed by the
     /// congestion window.
-    fn send_buffered_packets_with(&mut self, now: Instant, builder: &mut SctpPacketBuilder) {
+    fn send_buffered_packets_with(&mut self, now: SocketTime, builder: &mut SctpPacketBuilder) {
         for packet_idx in 0..self.options.max_burst {
             if let Some(tcb) = self.state.tcb_mut() {
                 if packet_idx == 0 {
@@ -660,7 +656,7 @@ impl Socket<'_> {
         self.tx_packets_count += 1;
     }
 
-    fn handle_init_ack(&mut self, now: Instant, chunk: InitAckChunk) {
+    fn handle_init_ack(&mut self, now: SocketTime, chunk: InitAckChunk) {
         let State::CookieWait(s) = &mut self.state else {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.3>:
             //
@@ -738,7 +734,7 @@ impl Socket<'_> {
         self.send_cookie_echo(now);
     }
 
-    fn send_cookie_echo(&mut self, now: Instant) {
+    fn send_cookie_echo(&mut self, now: SocketTime) {
         let State::CookieEchoed(ref s) = self.state else {
             unreachable!();
         };
@@ -758,7 +754,7 @@ impl Socket<'_> {
         self.send_buffered_packets_with(now, &mut builder);
     }
 
-    fn maybe_send_shutdown(&mut self, now: Instant) {
+    fn maybe_send_shutdown(&mut self, now: SocketTime) {
         let State::ShutdownPending(tcb) = &self.state else { unreachable!() };
         if tcb.retransmission_queue.unacked_bytes() != 0 {
             // Not ready to shutdown yet.
@@ -829,7 +825,7 @@ impl Socket<'_> {
         self.tx_packets_count += 1;
     }
 
-    fn maybe_send_fast_retransmit(&mut self, now: Instant) {
+    fn maybe_send_fast_retransmit(&mut self, now: SocketTime) {
         let tcb = self.state.tcb_mut().unwrap();
         if !tcb.retransmission_queue.has_data_to_be_fast_retransmitted() {
             return;
@@ -848,7 +844,7 @@ impl Socket<'_> {
         self.tx_packets_count += 1;
     }
 
-    fn handle_sack(&mut self, now: Instant, sack: SackChunk) {
+    fn handle_sack(&mut self, now: SocketTime, sack: SackChunk) {
         let Some(tcb) = self.state.tcb_mut() else {
             self.events
                 .borrow_mut()
@@ -918,7 +914,12 @@ impl Socket<'_> {
         self.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
     }
 
-    fn handle_cookie_echo(&mut self, now: Instant, header: &CommonHeader, chunk: CookieEchoChunk) {
+    fn handle_cookie_echo(
+        &mut self,
+        now: SocketTime,
+        header: &CommonHeader,
+        chunk: CookieEchoChunk,
+    ) {
         match StateCookie::from_bytes(&chunk.cookie) {
             Err(s) => {
                 self.events
@@ -1047,7 +1048,7 @@ impl Socket<'_> {
         }
     }
 
-    fn handle_cookie_ack(&mut self, now: Instant) {
+    fn handle_cookie_ack(&mut self, now: SocketTime) {
         if !matches!(self.state, State::CookieEchoed(_)) {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.5>:
             //
@@ -1066,7 +1067,7 @@ impl Socket<'_> {
         self.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
-    fn handle_data(&mut self, now: Instant, tsn: Tsn, data: Data) {
+    fn handle_data(&mut self, now: SocketTime, tsn: Tsn, data: Data) {
         if data.payload.is_empty() {
             self.events.borrow_mut().add(SocketEvent::OnError(
                 ErrorKind::ProtocolViolation,
@@ -1128,7 +1129,7 @@ impl Socket<'_> {
         }
     }
 
-    fn handle_heartbeat_ack(&mut self, now: Instant, chunk: HeartbeatAckChunk) {
+    fn handle_heartbeat_ack(&mut self, now: SocketTime, chunk: HeartbeatAckChunk) {
         self.heartbeat_timeout.stop();
         match chunk.parameters.iter().find_map(|p| match p {
             Parameter::HeartbeatInfo(HeartbeatInfoParameter { info }) => Some(info),
@@ -1154,7 +1155,7 @@ impl Socket<'_> {
         }
     }
 
-    fn maybe_send_sack(&mut self, now: Instant) {
+    fn maybe_send_sack(&mut self, now: SocketTime) {
         if let Some(tcb) = self.state.tcb_mut() {
             tcb.data_tracker.observe_packet_end(now);
             if tcb.data_tracker.should_send_ack(now, false) {
@@ -1192,7 +1193,7 @@ impl Socket<'_> {
         self.tx_packets_count += 1;
     }
 
-    fn handle_heartbeat_timeouts(&mut self, now: Instant) {
+    fn handle_heartbeat_timeouts(&mut self, now: SocketTime) {
         if self.heartbeat_interval.expire(now) {
             if let Some(tcb) = self.state.tcb() {
                 self.heartbeat_timeout.set_duration(self.options.rto_initial);
@@ -1225,7 +1226,7 @@ impl Socket<'_> {
         self.state.tcb().map_or(0, |tcb| tcb.my_verification_tag)
     }
 
-    fn handle_reconfig_timeout(&mut self, now: Instant) {
+    fn handle_reconfig_timeout(&mut self, now: SocketTime) {
         let tcb = self.state.tcb_mut().unwrap();
         if tcb.reconfig_timer.expire(now) {
             match tcb.current_reset_request {
@@ -1252,7 +1253,7 @@ impl Socket<'_> {
         }
     }
 
-    fn handle_t2_shutdown_timeout(&mut self, now: Instant) {
+    fn handle_t2_shutdown_timeout(&mut self, now: SocketTime) {
         let State::ShutdownSent(s) = &mut self.state else {
             return;
         };
@@ -1314,7 +1315,7 @@ impl Socket<'_> {
 
     fn handle_forward_tsn(
         &mut self,
-        now: Instant,
+        now: SocketTime,
         new_cumulative_tsn: Tsn,
         skipped_streams: Vec<SkippedStream>,
     ) {
@@ -1325,7 +1326,7 @@ impl Socket<'_> {
         }
     }
 
-    fn handle_iforward_tsn(&mut self, _now: Instant, _chunk: IForwardTsnChunk) {}
+    fn handle_iforward_tsn(&mut self, _now: SocketTime, _chunk: IForwardTsnChunk) {}
 
     fn handle_unrecognized_chunk(&mut self, chunk: UnknownChunk) -> bool {
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-3.2-3.2.5>:
@@ -1361,7 +1362,7 @@ impl Socket<'_> {
         continue_processing
     }
 
-    fn handle_reconfig(&mut self, now: Instant, chunk: ReConfigChunk) {
+    fn handle_reconfig(&mut self, now: SocketTime, chunk: ReConfigChunk) {
         let Some(tcb) = self.state.tcb_mut() else {
             return;
         };
@@ -1510,7 +1511,7 @@ impl Socket<'_> {
         self.send_buffered_packets(now);
     }
 
-    fn handle_t1init_timeout(&mut self, now: Instant) {
+    fn handle_t1init_timeout(&mut self, now: SocketTime) {
         let State::CookieWait(s) = &mut self.state else { unreachable!() };
         if s.t1_init.expire(now) {
             if s.t1_init.is_running() {
@@ -1521,7 +1522,7 @@ impl Socket<'_> {
         }
     }
 
-    fn handle_t1cookie_timeout(&mut self, now: Instant) {
+    fn handle_t1cookie_timeout(&mut self, now: SocketTime) {
         let State::CookieEchoed(s) = &mut self.state else { unreachable!() };
         if s.t1_cookie.expire(now) {
             if !s.t1_cookie.is_running() {
@@ -1641,7 +1642,7 @@ impl Socket<'_> {
         }
     }
 
-    fn maybe_send_shutdown_on_packet_received(&mut self, now: Instant, chunks: &[Chunk]) {
+    fn maybe_send_shutdown_on_packet_received(&mut self, now: SocketTime, chunks: &[Chunk]) {
         if let State::ShutdownSent(s) = &mut self.state {
             if chunks.iter().any(|c| matches!(c, Chunk::Data(_))) {
                 // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-10>:
@@ -1688,7 +1689,7 @@ impl DcSctpSocket for Socket<'_> {
     fn handle_input(&mut self, packet: &[u8]) {
         self.rx_packets_count += 1;
         let now = *self.now.borrow();
-        log_packet(&self.name, now - self.start_time, false, packet);
+        log_packet(&self.name, now.into(), false, packet);
 
         match SctpPacket::from_bytes(packet, &self.options) {
             Err(_e) => {
@@ -1738,7 +1739,11 @@ impl DcSctpSocket for Socket<'_> {
         }
     }
 
-    fn advance_time(&mut self, now: Instant) {
+    fn advance_time(&mut self, now: SocketTime) {
+        if now < *self.now.borrow() {
+            // Time is not allowed to go backwards.
+            return;
+        }
         self.now.replace(now);
         match &mut self.state {
             State::Closed => {}
@@ -1794,8 +1799,8 @@ impl DcSctpSocket for Socket<'_> {
         }
     }
 
-    fn poll_timeout(&self) -> Option<Instant> {
-        match self.state {
+    fn poll_timeout(&self) -> SocketTime {
+        let timeout = match self.state {
             State::Closed => None,
             State::CookieWait(ref s) => {
                 debug_assert!(s.t1_init.is_running());
@@ -1820,7 +1825,11 @@ impl DcSctpSocket for Socket<'_> {
                 };
                 timeout
             }
-        }
+        };
+
+        // Ensure that already expired timers don't return a socket time in the past.
+        let now = *self.now.borrow();
+        timeout.map(|t| t.max(now)).unwrap_or(SocketTime::infinite_future())
     }
 
     fn shutdown(&mut self) {
