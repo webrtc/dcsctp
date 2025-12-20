@@ -16,6 +16,7 @@ use dcsctp::api::DcSctpSocket as DcSctpSocketTrait;
 use dcsctp::api::Options;
 use dcsctp::api::SocketEvent as DcSctpSocketEvent;
 use dcsctp::api::SocketState as DcSctpSocketState;
+use std::time::Duration;
 
 #[cxx::bridge(namespace = "dcsctp_cxx")]
 mod ffi {
@@ -50,6 +51,8 @@ mod ffi {
         fn connect(socket: &mut DcSctpSocket);
         fn handle_input(socket: &mut DcSctpSocket, data: &[u8]);
         fn poll_event(socket: &mut DcSctpSocket) -> Event;
+        fn advance_time(socket: &mut DcSctpSocket, ns: u64);
+        fn poll_timeout(socket: &DcSctpSocket) -> u64;
     }
 }
 
@@ -102,4 +105,12 @@ fn poll_event(socket: &mut DcSctpSocket) -> ffi::Event {
         Some(_) => ffi::Event { event_type: ffi::EventType::Other, packet: Vec::new() },
         None => ffi::Event { event_type: ffi::EventType::Nothing, packet: Vec::new() },
     }
+}
+
+fn advance_time(socket: &mut DcSctpSocket, ns: u64) {
+    socket.0.advance_time(Duration::from_nanos(ns).into())
+}
+
+fn poll_timeout(socket: &DcSctpSocket) -> u64 {
+    Duration::from(socket.0.poll_timeout()).as_nanos().try_into().unwrap_or(u64::MAX)
 }
