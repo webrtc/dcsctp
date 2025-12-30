@@ -15,7 +15,7 @@
 #![allow(unsafe_code)]
 
 use crate::api::DcSctpSocket as DcSctpSocketTrait;
-use crate::api::Options;
+use crate::api::Options as DcSctpOptions;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
 use std::time::Duration;
@@ -43,18 +43,198 @@ mod bridge {
         packet: Vec<u8>,
     }
 
+    // Mirrors the Rust Options struct, where all optional primitive values (u32, u64) encoded as
+    // their maximum value.
+    struct Options {
+        local_port: u16,
+        remote_port: u16,
+        announced_maximum_incoming_streams: u16,
+        announced_maximum_outgoing_streams: u16,
+        mtu: usize,
+        max_message_size: usize,
+        default_stream_priority: u16,
+        max_receiver_window_buffer_size: usize,
+        max_send_buffer_size: usize,
+        per_stream_send_queue_limit: usize,
+        total_buffered_amount_low_threshold: usize,
+        default_stream_buffered_amount_low_threshold: usize,
+        rtt_max: u64,
+        rto_initial: u64,
+        rto_max: u64,
+        rto_min: u64,
+        t1_init_timeout: u64,
+        t1_cookie_timeout: u64,
+        t2_shutdown_timeout: u64,
+        max_timer_backoff_duration: u64,
+        heartbeat_interval: u64,
+        delayed_ack_max_timeout: u64,
+        min_rtt_variance: u64,
+        cwnd_mtus_initial: usize,
+        cwnd_mtus_min: usize,
+        avoid_fragmentation_cwnd_mtus: usize,
+        max_burst: i32,
+        max_retransmissions: u32,
+        max_init_retransmits: u32,
+        enable_partial_reliability: bool,
+        enable_message_interleaving: bool,
+        heartbeat_interval_include_rtt: bool,
+        zero_checksum_alternate_error_detection_method: u32,
+        disable_checksum_verification: bool,
+    }
+
     extern "Rust" {
         type DcSctpSocket;
 
         fn version() -> String;
-        fn new_socket() -> *mut DcSctpSocket;
+        fn default_options() -> Options;
+        fn new_socket(name: &str, options: &Options) -> *mut DcSctpSocket;
         unsafe fn delete_socket(socket: *mut DcSctpSocket);
         fn state(socket: &DcSctpSocket) -> SocketState;
         fn connect(socket: &mut DcSctpSocket);
+        fn options(socket: &DcSctpSocket) -> Options;
         fn handle_input(socket: &mut DcSctpSocket, data: &[u8]);
         fn poll_event(socket: &mut DcSctpSocket) -> Event;
         fn advance_time(socket: &mut DcSctpSocket, ns: u64);
         fn poll_timeout(socket: &DcSctpSocket) -> u64;
+    }
+}
+
+pub const fn to_saturating_u64(d: Duration) -> u64 {
+    let nanos = d.as_nanos();
+    if nanos > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        nanos as u64
+    }
+}
+
+impl From<DcSctpOptions> for bridge::Options {
+    fn from(value: DcSctpOptions) -> Self {
+        // Destructure value to catch when fields are added to it.
+        let DcSctpOptions {
+            local_port,
+            remote_port,
+            announced_maximum_incoming_streams,
+            announced_maximum_outgoing_streams,
+            mtu,
+            max_message_size,
+            default_stream_priority,
+            max_receiver_window_buffer_size,
+            max_send_buffer_size,
+            per_stream_send_queue_limit,
+            total_buffered_amount_low_threshold,
+            default_stream_buffered_amount_low_threshold,
+            rtt_max,
+            rto_initial,
+            rto_max,
+            rto_min,
+            t1_init_timeout,
+            t1_cookie_timeout,
+            t2_shutdown_timeout,
+            max_timer_backoff_duration,
+            heartbeat_interval,
+            delayed_ack_max_timeout,
+            min_rtt_variance,
+            cwnd_mtus_initial,
+            cwnd_mtus_min,
+            avoid_fragmentation_cwnd_mtus,
+            max_burst,
+            max_retransmissions,
+            max_init_retransmits,
+            enable_partial_reliability,
+            enable_message_interleaving,
+            heartbeat_interval_include_rtt,
+            zero_checksum_alternate_error_detection_method,
+            disable_checksum_verification,
+        } = value;
+
+        Self {
+            local_port,
+            remote_port,
+            announced_maximum_incoming_streams,
+            announced_maximum_outgoing_streams,
+            mtu,
+            max_message_size,
+            default_stream_priority,
+            max_receiver_window_buffer_size,
+            max_send_buffer_size,
+            per_stream_send_queue_limit,
+            total_buffered_amount_low_threshold,
+            default_stream_buffered_amount_low_threshold,
+            rtt_max: to_saturating_u64(rtt_max),
+            rto_initial: to_saturating_u64(rto_initial),
+            rto_max: to_saturating_u64(rto_max),
+            rto_min: to_saturating_u64(rto_min),
+            t1_init_timeout: to_saturating_u64(t1_init_timeout),
+            t1_cookie_timeout: to_saturating_u64(t1_cookie_timeout),
+            t2_shutdown_timeout: to_saturating_u64(t2_shutdown_timeout),
+            max_timer_backoff_duration: max_timer_backoff_duration
+                .map(to_saturating_u64)
+                .unwrap_or(u64::MAX),
+            heartbeat_interval: to_saturating_u64(heartbeat_interval),
+            delayed_ack_max_timeout: to_saturating_u64(delayed_ack_max_timeout),
+            min_rtt_variance: to_saturating_u64(min_rtt_variance),
+            cwnd_mtus_initial,
+            cwnd_mtus_min,
+            avoid_fragmentation_cwnd_mtus,
+            max_burst,
+            max_retransmissions: max_retransmissions.unwrap_or(u32::MAX),
+            max_init_retransmits: max_init_retransmits.unwrap_or(u32::MAX),
+            enable_partial_reliability,
+            enable_message_interleaving,
+            heartbeat_interval_include_rtt,
+            zero_checksum_alternate_error_detection_method:
+                zero_checksum_alternate_error_detection_method.0,
+            disable_checksum_verification,
+        }
+    }
+}
+
+impl From<&bridge::Options> for DcSctpOptions {
+    fn from(val: &bridge::Options) -> Self {
+        DcSctpOptions {
+            local_port: val.local_port,
+            remote_port: val.remote_port,
+            announced_maximum_incoming_streams: val.announced_maximum_incoming_streams,
+            announced_maximum_outgoing_streams: val.announced_maximum_outgoing_streams,
+            mtu: val.mtu,
+            max_message_size: val.max_message_size,
+            default_stream_priority: val.default_stream_priority,
+            max_receiver_window_buffer_size: val.max_receiver_window_buffer_size,
+            max_send_buffer_size: val.max_send_buffer_size,
+            per_stream_send_queue_limit: val.per_stream_send_queue_limit,
+            total_buffered_amount_low_threshold: val.total_buffered_amount_low_threshold,
+            default_stream_buffered_amount_low_threshold: val
+                .default_stream_buffered_amount_low_threshold,
+            rtt_max: Duration::from_nanos(val.rtt_max),
+            rto_initial: Duration::from_nanos(val.rto_initial),
+            rto_max: Duration::from_nanos(val.rto_max),
+            rto_min: Duration::from_nanos(val.rto_min),
+            t1_init_timeout: Duration::from_nanos(val.t1_init_timeout),
+            t1_cookie_timeout: Duration::from_nanos(val.t1_cookie_timeout),
+            t2_shutdown_timeout: Duration::from_nanos(val.t2_shutdown_timeout),
+            max_timer_backoff_duration: (val.max_timer_backoff_duration != u64::MAX)
+                .then_some(Duration::from_nanos(val.max_timer_backoff_duration)),
+            heartbeat_interval: Duration::from_nanos(val.heartbeat_interval),
+            delayed_ack_max_timeout: Duration::from_nanos(val.delayed_ack_max_timeout),
+            min_rtt_variance: Duration::from_nanos(val.min_rtt_variance),
+            cwnd_mtus_initial: val.cwnd_mtus_initial,
+            cwnd_mtus_min: val.cwnd_mtus_min,
+            avoid_fragmentation_cwnd_mtus: val.avoid_fragmentation_cwnd_mtus,
+            max_burst: val.max_burst,
+            max_retransmissions: (val.max_retransmissions != u32::MAX)
+                .then_some(val.max_retransmissions),
+            max_init_retransmits: (val.max_init_retransmits != u32::MAX)
+                .then_some(val.max_init_retransmits),
+            enable_partial_reliability: val.enable_partial_reliability,
+            enable_message_interleaving: val.enable_message_interleaving,
+            heartbeat_interval_include_rtt: val.heartbeat_interval_include_rtt,
+            zero_checksum_alternate_error_detection_method:
+                crate::api::ZeroChecksumAlternateErrorDetectionMethod(
+                    val.zero_checksum_alternate_error_detection_method,
+                ),
+            disable_checksum_verification: val.disable_checksum_verification,
+        }
     }
 }
 
@@ -64,9 +244,12 @@ fn version() -> String {
     crate::version().to_string()
 }
 
-fn new_socket() -> *mut DcSctpSocket {
-    let options = Options::default();
-    let socket = crate::new_socket("cxx-socket", &options);
+fn default_options() -> bridge::Options {
+    DcSctpOptions::default().into()
+}
+
+fn new_socket(name: &str, options: &bridge::Options) -> *mut DcSctpSocket {
+    let socket = crate::new_socket(name, &options.into());
     let boxed_socket = Box::new(DcSctpSocket(socket));
     Box::into_raw(boxed_socket)
 }
@@ -90,6 +273,10 @@ fn state(socket: &DcSctpSocket) -> bridge::SocketState {
 
 fn connect(socket: &mut DcSctpSocket) {
     socket.0.connect();
+}
+
+fn options(socket: &DcSctpSocket) -> bridge::Options {
+    socket.0.options().into()
 }
 
 fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
