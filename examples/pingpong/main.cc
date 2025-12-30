@@ -72,8 +72,11 @@ exchange_packets(dcsctp_cxx::DcSctpSocket& socket_a,
 int main() {
   std::cout << "dcsctp version: " << dcsctp_cxx::version().c_str() << std::endl;
 
-  dcsctp_cxx::DcSctpSocket* socket_a = dcsctp_cxx::new_socket();
-  dcsctp_cxx::DcSctpSocket* socket_z = dcsctp_cxx::new_socket();
+  dcsctp_cxx::Options options = dcsctp_cxx::default_options();
+  options.heartbeat_interval = 0;
+
+  dcsctp_cxx::DcSctpSocket* socket_a = dcsctp_cxx::new_socket("a", options);
+  dcsctp_cxx::DcSctpSocket* socket_z = dcsctp_cxx::new_socket("z", options);
   std::cout << "Created two sockets: A and Z" << std::endl;
 
   try {
