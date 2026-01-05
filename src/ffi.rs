@@ -15,6 +15,7 @@
 #![allow(unsafe_code)]
 
 use crate::api::DcSctpSocket as DcSctpSocketTrait;
+use crate::api::ErrorKind as DcSctpErrorKind;
 use crate::api::Options as DcSctpOptions;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
@@ -31,16 +32,59 @@ mod bridge {
     }
 
     #[derive(Debug)]
+    pub enum ErrorKind {
+        NoError,
+        TooManyRetries,
+        NotConnected,
+        ParseFailed,
+        WrongSequence,
+        PeerReported,
+        ProtocolViolation,
+        ResourceExhaustion,
+        UnsupportedOperation,
+    }
+
+    #[derive(Debug)]
     enum EventType {
         Nothing,
-        OnConnected,
+        // Valid fields in Event: packet.
         SendPacket,
-        Other,
+        OnConnected,
+        OnClosed,
+        OnConnectionRestarted,
+        // Valid fields in Event: error_kind, error_reason.
+        OnAborted,
+        // Valid fields in Event: error_kind, error_reason.
+        OnError,
+        // Valid fields in Event: stream_id.
+        OnBufferedAmountLow,
+        OnTotalBufferedAmountLow,
+        // Valid fields in Event: stream_ids.
+        OnStreamsResetFailed,
+        // Valid fields in Event: stream_ids.
+        OnStreamsResetPerformed,
+        // Valid fields in Event: stream_ids.
+        OnIncomingStreamReset,
+        // Valid fields in Event: lifecycle_id.
+        OnLifecycleMessageFullySent,
+        // Valid fields in Event: lifecycle_id.
+        OnLifecycleMessageMaybeExpired,
+        // Valid fields in Event: lifecycle_id.
+        OnLifecycleMessageExpired,
+        // Valid fields in Event: lifecycle_id.
+        OnLifecycleMessageDelivered,
+        // Valid fields in Event: lifecycle_id.
+        OnLifecycleEnd,
     }
 
     struct Event {
         event_type: EventType,
+        error_kind: ErrorKind,
+        stream_id: u16,
+        lifecycle_id: u64,
+        error_reason: String,
         packet: Vec<u8>,
+        stream_ids: Vec<u16>,
     }
 
     // Mirrors the Rust Options struct, where all optional primitive values (u32, u64) encoded as
@@ -105,6 +149,119 @@ pub const fn to_saturating_u64(d: Duration) -> u64 {
         u64::MAX
     } else {
         nanos as u64
+    }
+}
+
+impl Default for bridge::Event {
+    fn default() -> Self {
+        Self {
+            event_type: bridge::EventType::Nothing,
+            error_kind: bridge::ErrorKind::NoError,
+            stream_id: 0,
+            lifecycle_id: 0,
+            error_reason: "".to_string(),
+            packet: vec![],
+            stream_ids: vec![],
+        }
+    }
+}
+
+impl From<DcSctpErrorKind> for bridge::ErrorKind {
+    fn from(value: DcSctpErrorKind) -> Self {
+        match value {
+            DcSctpErrorKind::NoError => bridge::ErrorKind::NoError,
+            DcSctpErrorKind::TooManyRetries => bridge::ErrorKind::TooManyRetries,
+            DcSctpErrorKind::NotConnected => bridge::ErrorKind::NotConnected,
+            DcSctpErrorKind::ParseFailed => bridge::ErrorKind::ParseFailed,
+            DcSctpErrorKind::WrongSequence => bridge::ErrorKind::WrongSequence,
+            DcSctpErrorKind::PeerReported => bridge::ErrorKind::PeerReported,
+            DcSctpErrorKind::ProtocolViolation => bridge::ErrorKind::ProtocolViolation,
+            DcSctpErrorKind::ResourceExhaustion => bridge::ErrorKind::ResourceExhaustion,
+            DcSctpErrorKind::UnsupportedOperation => bridge::ErrorKind::UnsupportedOperation,
+        }
+    }
+}
+
+impl From<DcSctpSocketEvent> for bridge::Event {
+    fn from(event: DcSctpSocketEvent) -> Self {
+        match event {
+            DcSctpSocketEvent::SendPacket(p) => bridge::Event {
+                event_type: bridge::EventType::SendPacket,
+                packet: p,
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnConnected() => {
+                bridge::Event { event_type: bridge::EventType::OnConnected, ..Default::default() }
+            }
+            DcSctpSocketEvent::OnClosed() => {
+                bridge::Event { event_type: bridge::EventType::OnClosed, ..Default::default() }
+            }
+            DcSctpSocketEvent::OnConnectionRestarted() => bridge::Event {
+                event_type: bridge::EventType::OnConnectionRestarted,
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnAborted(kind, error_reason) => bridge::Event {
+                event_type: bridge::EventType::OnAborted,
+                error_kind: kind.into(),
+                error_reason: error_reason.to_string(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnError(kind, error_reason) => bridge::Event {
+                event_type: bridge::EventType::OnError,
+                error_kind: kind.into(),
+                error_reason: error_reason.to_string(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnBufferedAmountLow(stream_id) => bridge::Event {
+                event_type: bridge::EventType::OnBufferedAmountLow,
+                stream_id: stream_id.0,
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnTotalBufferedAmountLow() => bridge::Event {
+                event_type: bridge::EventType::OnTotalBufferedAmountLow,
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnStreamsResetFailed(streams) => bridge::Event {
+                event_type: bridge::EventType::OnStreamsResetFailed,
+                stream_ids: streams.iter().map(|s| s.0).collect(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnStreamsResetPerformed(streams) => bridge::Event {
+                event_type: bridge::EventType::OnStreamsResetPerformed,
+                stream_ids: streams.iter().map(|s| s.0).collect(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnIncomingStreamReset(streams) => bridge::Event {
+                event_type: bridge::EventType::OnIncomingStreamReset,
+                stream_ids: streams.iter().map(|s| s.0).collect(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnLifecycleMessageFullySent(lifecyle_id) => bridge::Event {
+                event_type: bridge::EventType::OnLifecycleMessageFullySent,
+                lifecycle_id: lifecyle_id.value(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnLifecycleMessageMaybeExpired(lifecyle_id) => bridge::Event {
+                event_type: bridge::EventType::OnLifecycleMessageMaybeExpired,
+                lifecycle_id: lifecyle_id.value(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnLifecycleMessageExpired(lifecyle_id) => bridge::Event {
+                event_type: bridge::EventType::OnLifecycleMessageExpired,
+                lifecycle_id: lifecyle_id.value(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnLifecycleMessageDelivered(lifecyle_id) => bridge::Event {
+                event_type: bridge::EventType::OnLifecycleMessageDelivered,
+                lifecycle_id: lifecyle_id.value(),
+                ..Default::default()
+            },
+            DcSctpSocketEvent::OnLifecycleEnd(lifecyle_id) => bridge::Event {
+                event_type: bridge::EventType::OnLifecycleEnd,
+                lifecycle_id: lifecyle_id.value(),
+                ..Default::default()
+            },
+        }
     }
 }
 
@@ -284,16 +441,7 @@ fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
 }
 
 fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
-    match socket.0.poll_event() {
-        Some(DcSctpSocketEvent::SendPacket(p)) => {
-            bridge::Event { event_type: bridge::EventType::SendPacket, packet: p }
-        }
-        Some(DcSctpSocketEvent::OnConnected()) => {
-            bridge::Event { event_type: bridge::EventType::OnConnected, packet: Vec::new() }
-        }
-        Some(_) => bridge::Event { event_type: bridge::EventType::Other, packet: Vec::new() },
-        None => bridge::Event { event_type: bridge::EventType::Nothing, packet: Vec::new() },
-    }
+    socket.0.poll_event().map(Into::into).unwrap_or_default()
 }
 
 fn advance_time(socket: &mut DcSctpSocket, ns: u64) {
