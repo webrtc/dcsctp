@@ -4,6 +4,8 @@ on:
   push:
   pull_request:
 
+permissions: read-all
+
 env:
   CARGO_TERM_COLOR: always
   STABLE_TOOLCHAIN: 1.92.0
