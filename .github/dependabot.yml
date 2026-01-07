@@ -17,3 +17,11 @@ updates:
       github-all:
         patterns:
           - "*"
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-all:
+        patterns:
+          - "*"
