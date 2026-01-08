@@ -18,23 +18,23 @@ CC = $(CXX)
 CXX = c++
 CXXFLAGS = -std=c++14
 
-GEN_DIR := ../../../target
-GEN_HEADER := $(GEN_DIR)/cxxbridge/dcsctp-cxx/src/lib.rs.h
-GEN_LIB := $(GEN_DIR)/debug/libdcsctp_cxx.a
+GEN_DIR := ../../target
+GEN_HEADER := $(GEN_DIR)/cxxbridge/dcsctp/src/ffi.rs.h
+GEN_LIB := $(GEN_DIR)/debug/libdcsctp.a
 GEN_FILES := \
-	$(GEN_DIR)/cxxbridge/dcsctp-cxx/src/lib.rs.cc \
+	$(GEN_DIR)/cxxbridge/dcsctp/src/ffi.rs.cc \
 	$(GEN_HEADER) \
 	$(GEN_LIB)
 
 all: main
 
-$(GEN_FILES): ../../src/lib.rs ../../Cargo.toml
-	cargo build --package dcsctp-cxx
+$(GEN_FILES): ../../src/ffi.rs ../../Cargo.toml
+	cargo build --features cxx
 
 main.o: main.cc $(GEN_HEADER)
 
 main: main.o $(GEN_LIB)
 
 clean:
-	cargo clean --package dcsctp-cxx
+	cargo clean
 	rm -f *.o main

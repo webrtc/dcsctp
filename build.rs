@@ -13,7 +13,9 @@
 // limitations under the License.
 
 fn main() {
-    cxx_build::bridge("src/lib.rs").std("c++14").compile("dcsctp_cxx");
-
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    #[cfg(feature = "cxx")]
+    {
+        cxx_build::bridge("src/ffi.rs").std("c++14").compile("dcsctp_cxx");
+        println!("cargo:rerun-if-changed=src/ffi.rs");
+    }
 }

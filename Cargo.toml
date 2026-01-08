@@ -1,7 +1,6 @@
 [workspace]
 members = [
     ".",
-    "cxx",
     "fuzz",
 ]
 
@@ -21,12 +20,20 @@ crc-any = "2.5.0"
 log = "0.4.29"
 rand = "0.9.2"
 thiserror = "2.0.17"
+cxx = { version = "1.0", optional = true }
+
+[build-dependencies]
+cxx-build = { version = "1.0", optional = true }
+
+[lib]
+crate-type = ["lib", "staticlib"]
 
 [dev-dependencies]
 itertools = "0.14.0"
 
 [features]
 fuzz-internals = []
+cxx = ["dep:cxx", "dep:cxx-build"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(feature, values("fuzz-internals"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(feature, values("cxx", "fuzz-internals"))'] }

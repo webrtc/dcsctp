@@ -18,12 +18,13 @@
 #![deny(clippy::cargo)]
 #![deny(rust_2018_idioms)]
 #![deny(warnings)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use crate::api::DcSctpSocket;
 use crate::api::Options;
 
 pub mod api;
+
 pub(crate) mod events;
 pub(crate) mod packet;
 pub(crate) mod rx;
@@ -56,6 +57,9 @@ pub fn new_socket(name: &str, options: &Options) -> Box<dyn DcSctpSocket> {
 // they will fuzz. Expose these only for the fuzzing configuration.
 #[cfg(feature = "fuzz-internals")]
 pub mod fuzzer;
+
+#[cfg(feature = "cxx")]
+pub mod ffi;
 
 pub(crate) mod logging {
     #[cfg(not(test))]

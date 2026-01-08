@@ -83,6 +83,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
       - name: Build and sanity test
         run: |
-          cd cxx/examples/pingpong/
+          cd examples/pingpong/
           make clean all
           ./main
