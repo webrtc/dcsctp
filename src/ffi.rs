@@ -12,14 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use dcsctp::api::DcSctpSocket as DcSctpSocketTrait;
-use dcsctp::api::Options;
-use dcsctp::api::SocketEvent as DcSctpSocketEvent;
-use dcsctp::api::SocketState as DcSctpSocketState;
+#![allow(unsafe_code)]
+
+use crate::api::DcSctpSocket as DcSctpSocketTrait;
+use crate::api::Options;
+use crate::api::SocketEvent as DcSctpSocketEvent;
+use crate::api::SocketState as DcSctpSocketState;
 use std::time::Duration;
 
 #[cxx::bridge(namespace = "dcsctp_cxx")]
-mod ffi {
+mod bridge {
     #[derive(Debug)]
     enum SocketState {
         Closed,
@@ -59,12 +61,12 @@ mod ffi {
 pub struct DcSctpSocket(Box<dyn DcSctpSocketTrait>);
 
 fn version() -> String {
-    dcsctp::version().to_string()
+    crate::version().to_string()
 }
 
 fn new_socket() -> *mut DcSctpSocket {
     let options = Options::default();
-    let socket = dcsctp::new_socket("cxx-socket", &options);
+    let socket = crate::new_socket("cxx-socket", &options);
     let boxed_socket = Box::new(DcSctpSocket(socket));
     Box::into_raw(boxed_socket)
 }
@@ -77,12 +79,12 @@ unsafe fn delete_socket(socket: *mut DcSctpSocket) {
     }
 }
 
-fn state(socket: &DcSctpSocket) -> ffi::SocketState {
+fn state(socket: &DcSctpSocket) -> bridge::SocketState {
     match socket.0.state() {
-        DcSctpSocketState::Closed => ffi::SocketState::Closed,
-        DcSctpSocketState::Connecting => ffi::SocketState::Connecting,
-        DcSctpSocketState::Connected => ffi::SocketState::Connected,
-        DcSctpSocketState::ShuttingDown => ffi::SocketState::ShuttingDown,
+        DcSctpSocketState::Closed => bridge::SocketState::Closed,
+        DcSctpSocketState::Connecting => bridge::SocketState::Connecting,
+        DcSctpSocketState::Connected => bridge::SocketState::Connected,
+        DcSctpSocketState::ShuttingDown => bridge::SocketState::ShuttingDown,
     }
 }
 
@@ -94,16 +96,16 @@ fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
     socket.0.handle_input(data)
 }
 
-fn poll_event(socket: &mut DcSctpSocket) -> ffi::Event {
+fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
     match socket.0.poll_event() {
         Some(DcSctpSocketEvent::SendPacket(p)) => {
-            ffi::Event { event_type: ffi::EventType::SendPacket, packet: p }
+            bridge::Event { event_type: bridge::EventType::SendPacket, packet: p }
         }
         Some(DcSctpSocketEvent::OnConnected()) => {
-            ffi::Event { event_type: ffi::EventType::OnConnected, packet: Vec::new() }
+            bridge::Event { event_type: bridge::EventType::OnConnected, packet: Vec::new() }
         }
-        Some(_) => ffi::Event { event_type: ffi::EventType::Other, packet: Vec::new() },
-        None => ffi::Event { event_type: ffi::EventType::Nothing, packet: Vec::new() },
+        Some(_) => bridge::Event { event_type: bridge::EventType::Other, packet: Vec::new() },
+        None => bridge::Event { event_type: bridge::EventType::Nothing, packet: Vec::new() },
     }
 }
 

@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-#include "../../../target/cxxbridge/dcsctp-cxx/src/lib.rs.h"
+#include "../../target/cxxbridge/dcsctp/src/ffi.rs.h"
 
 // Exchanges all packets between two sockets until there are no more packets to
 // exchange. All other events are collected and returned.

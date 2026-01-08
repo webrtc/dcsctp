@@ -1,4 +1,4 @@
-/cxx/examples/pingpong/main
+/examples/pingpong/main
 /fuzz/artifacts/
 /fuzz/corpus/
 /fuzz/coverage/

@@ -152,19 +152,12 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "crc-any",
+ "cxx",
+ "cxx-build",
  "itertools",
  "log",
  "rand",
  "thiserror",
-]
-
-[[package]]
-name = "dcsctp-cxx"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
- "dcsctp",
 ]
 
 [[package]]
