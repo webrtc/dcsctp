@@ -9,7 +9,7 @@ on:
     branches:
       - main
   schedule:
-    - cron: '40 15 * * 3'
+    - cron: '0 6 * * MON'
 
 permissions: read-all
 
