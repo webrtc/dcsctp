@@ -758,7 +758,7 @@ impl OutstandingData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::data_generator::DataGenerator;
+    use crate::testing::data_sequencer::DataSequencer;
     use itertools::Itertools;
     use std::collections::HashMap;
 
@@ -783,12 +783,12 @@ mod tests {
 
     struct ChunkGenerator {
         current_message_id: OutgoingMessageId,
-        data_generators: HashMap<StreamId, DataGenerator>,
+        data_sequencers: HashMap<StreamId, DataSequencer>,
     }
 
     impl ChunkGenerator {
         pub fn new() -> Self {
-            Self { current_message_id: OutgoingMessageId(17), data_generators: HashMap::new() }
+            Self { current_message_id: OutgoingMessageId(17), data_sequencers: HashMap::new() }
         }
         pub fn add(
             &mut self,
@@ -807,8 +807,8 @@ mod tests {
             flags: &str,
             max_retransmissions: u16,
         ) -> Tsn {
-            let gen = self.data_generators.entry(sid).or_insert_with(|| DataGenerator::new(sid));
-            let data = gen.ordered(payload, flags);
+            let seq = self.data_sequencers.entry(sid).or_insert_with(|| DataSequencer::new(sid));
+            let data = seq.ordered(payload, flags);
             let tsn = buf.insert(
                 self.current_message_id,
                 &data,
@@ -843,8 +843,8 @@ mod tests {
     #[test]
     fn insert_chunk() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        let tsn = insert(&mut buf, gen.ordered("a", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
         assert_eq!(buf.unacked_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(buf.unacked_items(), 1);
@@ -861,8 +861,8 @@ mod tests {
     #[test]
     fn acks_single_chunk() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        let tsn = insert(&mut buf, gen.ordered("a", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
         let ack = buf.handle_sack(Tsn(10), &[], false);
 
@@ -882,8 +882,8 @@ mod tests {
     #[test]
     fn acks_previous_chunk_doesnt_update() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        let tsn = insert(&mut buf, gen.ordered("a", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
         let ack = buf.handle_sack(Tsn(9), &[], false);
 
@@ -906,9 +906,9 @@ mod tests {
     #[test]
     fn acks_and_nacks_with_gap_ack_blocks() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert(&mut buf, gen.ordered("a", "B"));
-        insert(&mut buf, gen.ordered("b", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", "E"));
 
         let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
 
@@ -935,9 +935,9 @@ mod tests {
     #[test]
     fn nacks_three_times_with_same_tsn_doesnt_retransmit() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert(&mut buf, gen.ordered("a", "B"));
-        insert(&mut buf, gen.ordered("b", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", "E"));
 
         assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
@@ -956,11 +956,11 @@ mod tests {
     #[test]
     fn nacks_three_times_results_in_retransmission() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert(&mut buf, gen.ordered("a", "B"));
-        insert(&mut buf, gen.ordered("b", ""));
-        insert(&mut buf, gen.ordered("c", ""));
-        insert(&mut buf, gen.ordered("d", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", ""));
+        insert(&mut buf, seq.ordered("c", ""));
+        insert(&mut buf, seq.ordered("d", "E"));
 
         assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
@@ -988,11 +988,11 @@ mod tests {
     #[test]
     fn nacks_three_times_results_in_abandoning() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert_limited_rtx(&mut buf, gen.ordered("a", "B"), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("b", ""), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("c", ""), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("d", "E"), 0);
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("b", ""), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("c", ""), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("d", "E"), 0);
 
         assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
@@ -1021,12 +1021,12 @@ mod tests {
     fn nacks_extremely_many_times_doesnt_overflow() {
         // This test verifies that the nack counter doesn't overflow. Found by fuzzing.
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert_limited_rtx(&mut buf, gen.ordered("a", "B"), 0);
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
 
         const FRAGMENT_COUNT: u16 = 1000;
         for _ in 0..FRAGMENT_COUNT {
-            insert_limited_rtx(&mut buf, gen.ordered("b", ""), 0);
+            insert_limited_rtx(&mut buf, seq.ordered("b", ""), 0);
         }
 
         for i in 0..FRAGMENT_COUNT {
@@ -1037,11 +1037,11 @@ mod tests {
     #[test]
     fn nacks_three_times_results_in_abandoning_with_placeholder() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert_limited_rtx(&mut buf, gen.ordered("a", "B"), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("b", ""), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("c", ""), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("d", ""), 0);
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("b", ""), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("c", ""), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("d", ""), 0);
 
         assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
@@ -1072,13 +1072,13 @@ mod tests {
     fn expires_chunk_before_it_is_inserted() {
         let now = now();
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         let expires_at = now + Duration::from_millis(1);
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("a", "B"),
+                &seq.ordered("a", "B"),
                 now + Duration::from_millis(0),
                 u16::MAX,
                 expires_at,
@@ -1088,7 +1088,7 @@ mod tests {
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("b", ""),
+                &seq.ordered("b", ""),
                 now + Duration::from_millis(0),
                 u16::MAX,
                 expires_at,
@@ -1100,7 +1100,7 @@ mod tests {
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("c", "E"),
+                &seq.ordered("c", "E"),
                 now + Duration::from_millis(1),
                 u16::MAX,
                 expires_at,
@@ -1127,13 +1127,13 @@ mod tests {
     fn expires_chunk_before_it_is_inserted_adds_placeholder() {
         let now = now();
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         let expires_at = now + Duration::from_millis(1);
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("a", "B"),
+                &seq.ordered("a", "B"),
                 now + Duration::from_millis(0),
                 u16::MAX,
                 expires_at,
@@ -1143,7 +1143,7 @@ mod tests {
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("b", ""),
+                &seq.ordered("b", ""),
                 now + Duration::from_millis(0),
                 u16::MAX,
                 expires_at,
@@ -1156,7 +1156,7 @@ mod tests {
         assert!(buf
             .insert(
                 MESSAGE_ID,
-                &gen.ordered("c", ""),
+                &seq.ordered("c", ""),
                 now + Duration::from_millis(1),
                 u16::MAX,
                 expires_at,
@@ -1183,10 +1183,10 @@ mod tests {
     #[test]
     fn can_generate_forward_tsn() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert_limited_rtx(&mut buf, gen.ordered("a", "B"), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("b", ""), 0);
-        insert_limited_rtx(&mut buf, gen.ordered("c", "E"), 0);
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("b", ""), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("c", "E"), 0);
 
         buf.nack_all();
 
@@ -1208,15 +1208,15 @@ mod tests {
     #[test]
     fn ack_with_gap_blocks_from_rfc4960_section334() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
-        insert(&mut buf, gen.ordered("a", "B"));
-        insert(&mut buf, gen.ordered("b", ""));
-        insert(&mut buf, gen.ordered("c", ""));
-        insert(&mut buf, gen.ordered("d", ""));
-        insert(&mut buf, gen.ordered("e", ""));
-        insert(&mut buf, gen.ordered("f", ""));
-        insert(&mut buf, gen.ordered("g", ""));
-        insert(&mut buf, gen.ordered("h", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", ""));
+        insert(&mut buf, seq.ordered("c", ""));
+        insert(&mut buf, seq.ordered("d", ""));
+        insert(&mut buf, seq.ordered("e", ""));
+        insert(&mut buf, seq.ordered("f", ""));
+        insert(&mut buf, seq.ordered("g", ""));
+        insert(&mut buf, seq.ordered("h", "E"));
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1251,14 +1251,14 @@ mod tests {
     #[test]
     fn measure_rtt() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let now = now();
 
-        buf.insert(OutgoingMessageId(1), &gen.ordered("a", "BE"), now, u16::MAX, no_expiry(), None);
+        buf.insert(OutgoingMessageId(1), &seq.ordered("a", "BE"), now, u16::MAX, no_expiry(), None);
         let tsn = buf
             .insert(
                 OutgoingMessageId(2),
-                &gen.ordered("b", "BE"),
+                &seq.ordered("b", "BE"),
                 now + Duration::from_millis(1),
                 u16::MAX,
                 no_expiry(),
@@ -1267,7 +1267,7 @@ mod tests {
             .unwrap();
         buf.insert(
             OutgoingMessageId(3),
-            &gen.ordered("c", "BE"),
+            &seq.ordered("c", "BE"),
             now + Duration::from_millis(2),
             u16::MAX,
             no_expiry(),
@@ -1281,14 +1281,14 @@ mod tests {
     #[test]
     fn must_retransmit_before_getting_nacked_again() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         for i in 10..=20 {
             let flags = match i {
                 10 => "B",
                 20 => "E",
                 _ => "",
             };
-            insert_limited_rtx(&mut buf, gen.ordered("a", flags), /* max_retransmissions */ 1);
+            insert_limited_rtx(&mut buf, seq.ordered("a", flags), /* max_retransmissions */ 1);
         }
 
         buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
@@ -1331,11 +1331,11 @@ mod tests {
     #[test]
     fn lifecyle_returns_acked_items_in_ack_info() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("a", "BE"),
+            &seq.ordered("a", "BE"),
             now(),
             u16::MAX,
             no_expiry(),
@@ -1343,7 +1343,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(2),
-            &gen.ordered("b", "BE"),
+            &seq.ordered("b", "BE"),
             now(),
             u16::MAX,
             no_expiry(),
@@ -1351,7 +1351,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(3),
-            &gen.ordered("c", "BE"),
+            &seq.ordered("c", "BE"),
             now(),
             u16::MAX,
             no_expiry(),
@@ -1368,11 +1368,11 @@ mod tests {
     #[test]
     fn lifecycle_returns_abandoned_nacked_three_times() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("a", "B"),
+            &seq.ordered("a", "B"),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1380,7 +1380,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("b", ""),
+            &seq.ordered("b", ""),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1388,7 +1388,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("c", ""),
+            &seq.ordered("c", ""),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1396,7 +1396,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("d", "E"),
+            &seq.ordered("d", "E"),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1425,11 +1425,11 @@ mod tests {
     #[test]
     fn lifecycle_returns_abandoned_after_t3rtx_expired() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("a", "B"),
+            &seq.ordered("a", "B"),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1437,7 +1437,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("b", ""),
+            &seq.ordered("b", ""),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1445,7 +1445,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("c", ""),
+            &seq.ordered("c", ""),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1453,7 +1453,7 @@ mod tests {
         );
         buf.insert(
             OutgoingMessageId(1),
-            &gen.ordered("d", "E"),
+            &seq.ordered("d", "E"),
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
@@ -1525,22 +1525,22 @@ mod tests {
         // confuse the receiver at TSN=17, receiving SID=1, SSN=0 (it's reset!), expecting SSN to be
         // 45.
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
-        let mut gen = ChunkGenerator::new();
+        let mut seq = ChunkGenerator::new();
 
         // TSN 10-12
-        gen.add_limited_rtx(&mut buf, StreamId(1), "a", "BE", 0);
-        gen.add_limited_rtx(&mut buf, StreamId(1), "b", "BE", 0);
-        gen.add_limited_rtx(&mut buf, StreamId(1), "c", "BE", 0);
+        seq.add_limited_rtx(&mut buf, StreamId(1), "a", "BE", 0);
+        seq.add_limited_rtx(&mut buf, StreamId(1), "b", "BE", 0);
+        seq.add_limited_rtx(&mut buf, StreamId(1), "c", "BE", 0);
         buf.begin_reset_streams();
 
         // TSN 13, 14
-        gen.add_limited_rtx(&mut buf, StreamId(2), "d", "BE", 0);
-        gen.add_limited_rtx(&mut buf, StreamId(2), "e", "BE", 0);
+        seq.add_limited_rtx(&mut buf, StreamId(2), "d", "BE", 0);
+        seq.add_limited_rtx(&mut buf, StreamId(2), "e", "BE", 0);
         buf.begin_reset_streams();
 
         // TSN 15, 16
-        gen.add_limited_rtx(&mut buf, StreamId(3), "f", "BE", 0);
-        assert_eq!(gen.add(&mut buf, StreamId(3), "g", "BE"), Tsn(16));
+        seq.add_limited_rtx(&mut buf, StreamId(3), "f", "BE", 0);
+        assert_eq!(seq.add(&mut buf, StreamId(3), "g", "BE"), Tsn(16));
 
         assert!(!buf.should_send_forward_tsn());
         buf.handle_sack(Tsn(11), &[], false);

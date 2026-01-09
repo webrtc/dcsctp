@@ -183,7 +183,7 @@ impl ReassemblyQueue {
 mod tests {
     use super::*;
     use crate::api::PpId;
-    use crate::testing::data_generator::DataGenerator;
+    use crate::testing::data_sequencer::DataSequencer;
     use crate::types::Fsn;
     use crate::types::Mid;
     use crate::types::Ssn;
@@ -218,8 +218,8 @@ mod tests {
     #[test]
     fn single_unordered_chunk_message() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.unordered("abcde", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.unordered("abcde", "BE"));
         let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.ppid, PpId(53));
@@ -266,8 +266,8 @@ mod tests {
     #[test]
     fn single_ordered_chunk_message() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.ordered("abcde", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.ordered("abcde", "BE"));
         let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.ppid, PpId(53));
@@ -308,24 +308,24 @@ mod tests {
     #[test]
     fn retransmission_in_large_ordered() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.ordered("a", "B"));
-        q.add(Tsn(12), gen.ordered("c", ""));
-        q.add(Tsn(13), gen.ordered("d", ""));
-        q.add(Tsn(14), gen.ordered("e", ""));
-        q.add(Tsn(15), gen.ordered("f", ""));
-        q.add(Tsn(16), gen.ordered("g", ""));
-        q.add(Tsn(17), gen.ordered("h", ""));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.ordered("a", "B"));
+        q.add(Tsn(12), seq.ordered("c", ""));
+        q.add(Tsn(13), seq.ordered("d", ""));
+        q.add(Tsn(14), seq.ordered("e", ""));
+        q.add(Tsn(15), seq.ordered("f", ""));
+        q.add(Tsn(16), seq.ordered("g", ""));
+        q.add(Tsn(17), seq.ordered("h", ""));
         assert_eq!(q.queued_bytes(), 7);
 
         // lost and retransmitted
-        q.add(Tsn(11), gen.ordered("b", ""));
-        q.add(Tsn(18), gen.ordered("i", ""));
-        q.add(Tsn(19), gen.ordered("j", ""));
+        q.add(Tsn(11), seq.ordered("b", ""));
+        q.add(Tsn(18), seq.ordered("i", ""));
+        q.add(Tsn(19), seq.ordered("j", ""));
         assert_eq!(q.queued_bytes(), 10);
         assert_eq!(q.messages_ready_count(), 0);
 
-        q.add(Tsn(20), gen.ordered("klmnop", "E"));
+        q.add(Tsn(20), seq.ordered("klmnop", "E"));
         assert_eq!(q.queued_bytes(), 16);
         assert_eq!(q.messages_ready_count(), 1);
         assert_no_partial_message_in_queue(&mut q);
@@ -334,21 +334,21 @@ mod tests {
     #[test]
     fn forward_tsn_remove_unordered() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.unordered("a", "B"));
-        q.add(Tsn(12), gen.unordered("c", ""));
-        q.add(Tsn(13), gen.unordered("d", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.unordered("a", "B"));
+        q.add(Tsn(12), seq.unordered("c", ""));
+        q.add(Tsn(13), seq.unordered("d", "E"));
 
-        q.add(Tsn(14), gen.unordered("e", "B"));
-        q.add(Tsn(15), gen.unordered("f", ""));
-        q.add(Tsn(17), gen.unordered("h", "E"));
+        q.add(Tsn(14), seq.unordered("e", "B"));
+        q.add(Tsn(15), seq.unordered("f", ""));
+        q.add(Tsn(17), seq.unordered("h", "E"));
         assert_eq!(q.queued_bytes(), 6);
         assert_eq!(q.messages_ready_count(), 0);
 
         q.handle_forward_tsn(Tsn(13), vec![]);
         assert_eq!(q.queued_bytes(), 3);
 
-        q.add(Tsn(16), gen.unordered("g", ""));
+        q.add(Tsn(16), seq.unordered("g", ""));
         assert_eq!(q.queued_bytes(), 4);
         assert_eq!(q.messages_ready_count(), 1);
         assert_no_partial_message_in_queue(&mut q);
@@ -357,15 +357,15 @@ mod tests {
     #[test]
     fn forward_tsn_remove_ordered() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.ordered("a", "B"));
-        q.add(Tsn(12), gen.ordered("c", ""));
-        q.add(Tsn(13), gen.ordered("d", "E"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.ordered("a", "B"));
+        q.add(Tsn(12), seq.ordered("c", ""));
+        q.add(Tsn(13), seq.ordered("d", "E"));
 
-        q.add(Tsn(14), gen.ordered("e", "B"));
-        q.add(Tsn(15), gen.ordered("f", ""));
-        q.add(Tsn(16), gen.ordered("g", ""));
-        q.add(Tsn(17), gen.ordered("h", "E"));
+        q.add(Tsn(14), seq.ordered("e", "B"));
+        q.add(Tsn(15), seq.ordered("f", ""));
+        q.add(Tsn(16), seq.ordered("g", ""));
+        q.add(Tsn(17), seq.ordered("h", "E"));
         assert_eq!(q.queued_bytes(), 7);
         assert_eq!(q.messages_ready_count(), 0);
 
@@ -378,16 +378,16 @@ mod tests {
     #[test]
     fn not_ready_for_handover_when_reset_stream_is_deferred() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.ordered("abcd", "BE"));
-        q.add(Tsn(11), gen.ordered("efgh", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.ordered("abcd", "BE"));
+        q.add(Tsn(11), seq.ordered("efgh", "BE"));
 
         assert!(q.get_handover_readiness().is_ready());
 
         q.enter_deferred_reset(Tsn(12), &[StreamId(1)]);
         assert_eq!(q.get_handover_readiness(), HandoverReadiness::STREAM_RESET_DEFERRED);
 
-        q.add(Tsn(12), gen.ordered("ijkl", "BE"));
+        q.add(Tsn(12), seq.ordered("ijkl", "BE"));
 
         q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
         assert!(q.get_handover_readiness().is_ready());
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn handover_in_initial_state() {
         let q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
         let mut state = SocketHandoverState::default();
         q.add_to_handover_state(&mut state);
@@ -404,16 +404,16 @@ mod tests {
         let mut q = make_traditional_queue();
         q.restore_from_state(&state);
 
-        q.add(Tsn(10), gen.ordered("abcd", "BE"));
+        q.add(Tsn(10), seq.ordered("abcd", "BE"));
         assert_eq!(q.messages_ready_count(), 1);
     }
 
     #[test]
     fn handover_after_having_assembed_one_message() {
         let mut q = make_traditional_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
-        q.add(Tsn(10), gen.ordered("abcd", "BE"));
+        q.add(Tsn(10), seq.ordered("abcd", "BE"));
         assert_eq!(q.messages_ready_count(), 1);
 
         let mut state = SocketHandoverState::default();
@@ -422,15 +422,15 @@ mod tests {
         let mut q = make_traditional_queue();
         q.restore_from_state(&state);
 
-        q.add(Tsn(11), gen.ordered("efgh", "BE"));
+        q.add(Tsn(11), seq.ordered("efgh", "BE"));
         assert_eq!(q.messages_ready_count(), 1);
     }
 
     #[test]
     fn single_unordered_chunk_message_in_rfc8260() {
         let mut q = make_interleaved_queue();
-        let mut gen = DataGenerator::new(StreamId(1));
-        q.add(Tsn(10), gen.ordered("abcd", "BE"));
+        let mut seq = DataSequencer::new(StreamId(1));
+        q.add(Tsn(10), seq.ordered("abcd", "BE"));
         let message = q.get_next_message().unwrap();
         assert_eq!(message.stream_id, StreamId(1));
         assert_eq!(message.payload, "abcd".as_bytes().to_vec());
@@ -441,8 +441,8 @@ mod tests {
     #[test]
     fn two_interleaved_chunks() {
         let mut q = make_interleaved_queue();
-        let mut s1 = DataGenerator::new(StreamId(1));
-        let mut s2 = DataGenerator::new(StreamId(2));
+        let mut s1 = DataSequencer::new(StreamId(1));
+        let mut s2 = DataSequencer::new(StreamId(2));
         q.add(Tsn(10), s1.ordered("abcd", "B"));
         q.add(Tsn(11), s2.ordered("ijkl", "B"));
         assert_eq!(q.queued_bytes(), 8);
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn i_forward_tsn_remove_a_lot_ordered() {
         let mut q = make_interleaved_queue();
-        let mut s1 = DataGenerator::new(StreamId(1));
+        let mut s1 = DataSequencer::new(StreamId(1));
 
         q.add(Tsn(10), s1.ordered("a", "B"));
         let lost = s1.ordered("b", ""); // Lost;

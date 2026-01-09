@@ -20,15 +20,15 @@ use crate::types::Mid;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 
-pub struct DataGenerator {
+pub struct DataSequencer {
     stream_id: StreamId,
     message_id: Mid,
     fsn: Fsn,
 }
 
-impl DataGenerator {
+impl DataSequencer {
     pub fn new(stream_id: StreamId) -> Self {
-        DataGenerator { stream_id, message_id: Mid(0), fsn: Fsn(0) }
+        DataSequencer { stream_id, message_id: Mid(0), fsn: Fsn(0) }
     }
     pub fn ordered(&mut self, payload: &str, flags: &str) -> Data {
         let is_beginning = flags.contains("B");
