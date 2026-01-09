@@ -162,30 +162,30 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::data_generator::DataGenerator;
+    use crate::testing::data_sequencer::DataSequencer;
 
     #[test]
     fn add_unordered_message_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
 
-        assert_eq!(s.add(Tsn(1), gen.unordered("a", "B"), &mut |_| {}), 1);
-        assert_eq!(s.add(Tsn(2), gen.unordered("bcd", ""), &mut |_| {}), 3);
-        assert_eq!(s.add(Tsn(3), gen.unordered("ef", ""), &mut |_| {}), 2);
+        assert_eq!(s.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {}), 1);
+        assert_eq!(s.add(Tsn(2), seq.unordered("bcd", ""), &mut |_| {}), 3);
+        assert_eq!(s.add(Tsn(3), seq.unordered("ef", ""), &mut |_| {}), 2);
         // Adding the end fragment should make it empty again.
-        assert_eq!(s.add(Tsn(4), gen.unordered("g", "E"), &mut |_| {}), -6);
+        assert_eq!(s.add(Tsn(4), seq.unordered("g", "E"), &mut |_| {}), -6);
     }
 
     #[test]
     fn add_unordered_message_out_of_order_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.unordered("a", "B");
-        let c2 = gen.unordered("bcd", "");
-        let c3 = gen.unordered("ef", "");
-        let c4 = gen.unordered("g", "E");
+        let c1 = seq.unordered("a", "B");
+        let c2 = seq.unordered("bcd", "");
+        let c3 = seq.unordered("ef", "");
+        let c4 = seq.unordered("g", "E");
 
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
@@ -198,13 +198,13 @@ mod tests {
     #[test]
     fn add_simple_ordered_message_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.ordered("a", "B");
-        let c2 = gen.ordered("bcd", "");
-        let c3 = gen.ordered("ef", "");
-        let c4 = gen.ordered("g", "E");
+        let c1 = seq.ordered("a", "B");
+        let c2 = seq.ordered("bcd", "");
+        let c3 = seq.ordered("ef", "");
+        let c4 = seq.ordered("g", "E");
 
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
@@ -216,16 +216,16 @@ mod tests {
     #[test]
     fn add_more_complex_ordered_message_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c11 = gen.ordered("a", "B");
-        let c12 = gen.ordered("bcd", "");
-        let c13 = gen.ordered("ef", "");
-        let c14 = gen.ordered("g", "E");
-        let c21 = gen.ordered("h", "BE");
-        let c31 = gen.ordered("ij", "B");
-        let c32 = gen.ordered("k", "E");
+        let c11 = seq.ordered("a", "B");
+        let c12 = seq.ordered("bcd", "");
+        let c13 = seq.ordered("ef", "");
+        let c14 = seq.ordered("g", "E");
+        let c21 = seq.ordered("h", "BE");
+        let c31 = seq.ordered("ij", "B");
+        let c32 = seq.ordered("k", "E");
 
         assert_eq!(s.add(Tsn(1), c11, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(3), c13, &mut |m| messages.push(m)), 2);
@@ -242,12 +242,12 @@ mod tests {
     #[test]
     fn delete_unordered_message_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.unordered("a", "B");
-        let c2 = gen.unordered("bcd", "");
-        let c3 = gen.unordered("ef", "");
+        let c1 = seq.unordered("a", "B");
+        let c2 = seq.unordered("bcd", "");
+        let c3 = seq.unordered("ef", "");
 
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
@@ -266,12 +266,12 @@ mod tests {
     #[test]
     fn delete_simple_ordered_message_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.ordered("a", "B");
-        let c2 = gen.ordered("bcd", "");
-        let c3 = gen.ordered("ef", "");
+        let c1 = seq.ordered("a", "B");
+        let c2 = seq.ordered("bcd", "");
+        let c3 = seq.ordered("ef", "");
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
         assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
@@ -289,16 +289,16 @@ mod tests {
     #[test]
     fn delete_many_ordered_messages_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.ordered("a", "B");
-        gen.ordered("bcd", ""); // TSN=2 Not received.
-        let c3 = gen.ordered("ef", "");
-        let c4 = gen.ordered("g", "E");
-        let c5 = gen.ordered("h", "BE");
-        let c6 = gen.ordered("ij", "B");
-        let c7 = gen.ordered("k", "E");
+        let c1 = seq.ordered("a", "B");
+        seq.ordered("bcd", ""); // TSN=2 Not received.
+        let c3 = seq.ordered("ef", "");
+        let c4 = seq.ordered("g", "E");
+        let c5 = seq.ordered("h", "BE");
+        let c6 = seq.ordered("ij", "B");
+        let c7 = seq.ordered("k", "E");
 
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
         assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
@@ -320,16 +320,16 @@ mod tests {
     #[test]
     fn delete_ordered_message_delives_two_returns_correct_size() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let c1 = gen.ordered("a", "B");
-        gen.ordered("bcd", ""); // TSN=2 Not received.
-        let c3 = gen.ordered("ef", "");
-        let c4 = gen.ordered("g", "E");
-        let c5 = gen.ordered("h", "BE");
-        let c6 = gen.ordered("ij", "B");
-        let c7 = gen.ordered("k", "E");
+        let c1 = seq.ordered("a", "B");
+        seq.ordered("bcd", ""); // TSN=2 Not received.
+        let c3 = seq.ordered("ef", "");
+        let c4 = seq.ordered("g", "E");
+        let c5 = seq.ordered("h", "BE");
+        let c6 = seq.ordered("ij", "B");
+        let c7 = seq.ordered("k", "E");
 
         assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
 
@@ -354,11 +354,11 @@ mod tests {
     #[test]
     fn can_delete_first_ordered_message() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        gen.ordered("abc", "BE"); // TSN=1 Not received.
-        let c2 = gen.ordered("def", "BE");
+        seq.ordered("abc", "BE"); // TSN=1 Not received.
+        let c2 = seq.ordered("def", "BE");
         assert_eq!(
             s.handle_forward_tsn(
                 Tsn(1),
@@ -375,13 +375,13 @@ mod tests {
     #[test]
     fn can_reassemble_fast_path_unordered() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let data1 = gen.unordered("a", "BE");
-        let data2 = gen.unordered("b", "BE");
-        let data3 = gen.unordered("c", "BE");
-        let data4 = gen.unordered("d", "BE");
+        let data1 = seq.unordered("a", "BE");
+        let data2 = seq.unordered("b", "BE");
+        let data3 = seq.unordered("c", "BE");
+        let data4 = seq.unordered("d", "BE");
 
         assert_eq!(s.add(Tsn(1), data1, &mut |m| messages.push(m)), 0);
         assert_eq!(messages.len(), 1);
@@ -399,13 +399,13 @@ mod tests {
     #[test]
     fn can_reassemble_fast_path_ordered() {
         let mut s = InterleavedReassemblyStreams::new();
-        let mut gen = DataGenerator::new(StreamId(1));
+        let mut seq = DataSequencer::new(StreamId(1));
         let mut messages = Vec::new();
 
-        let data1 = gen.ordered("a", "BE");
-        let data2 = gen.ordered("b", "BE");
-        let data3 = gen.ordered("c", "BE");
-        let data4 = gen.ordered("d", "BE");
+        let data1 = seq.ordered("a", "BE");
+        let data2 = seq.ordered("b", "BE");
+        let data3 = seq.ordered("c", "BE");
+        let data4 = seq.ordered("d", "BE");
 
         assert_eq!(s.add(Tsn(1), data1, &mut |m| messages.push(m)), 0);
         assert_eq!(messages.len(), 1);
