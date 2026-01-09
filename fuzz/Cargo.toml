@@ -2,17 +2,12 @@
 name = "dcsctp-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
-
-[package.metadata]
-cargo-fuzz = true
+edition = { workspace = true }
+metadata = { cargo-fuzz = true }
 
 [dependencies]
-libfuzzer-sys = "0.4"
-
-[dependencies.dcsctp]
-path = ".."
-features = ["fuzz-internals"]
+dcsctp = { workspace = true, features = ["fuzz-internals"] }
+libfuzzer-sys = { workspace = true }
 
 [[bin]]
 name = "parse_parameters"
