@@ -166,7 +166,19 @@ mod bridge {
         unsafe fn delete_socket(socket: *mut DcSctpSocket);
         fn state(socket: &DcSctpSocket) -> SocketState;
         fn connect(socket: &mut DcSctpSocket);
+        fn shutdown(socket: &mut DcSctpSocket);
+        fn close(socket: &mut DcSctpSocket);
         fn options(socket: &DcSctpSocket) -> Options;
+        fn set_max_message_size(socket: &mut DcSctpSocket, max_message_size: usize);
+        fn set_stream_priority(socket: &mut DcSctpSocket, stream_id: u16, priority: u16);
+        fn get_stream_priority(socket: &mut DcSctpSocket, stream_id: u16) -> u16;
+        fn buffered_amount(socket: &DcSctpSocket, stream_id: u16) -> usize;
+        fn buffered_amount_low_threshold(socket: &DcSctpSocket, stream_id: u16) -> usize;
+        fn set_buffered_amount_low_threshold(
+            socket: &mut DcSctpSocket,
+            stream_id: u16,
+            bytes: usize,
+        );
         fn handle_input(socket: &mut DcSctpSocket, data: &[u8]);
         fn poll_event(socket: &mut DcSctpSocket) -> Event;
         fn advance_time(socket: &mut DcSctpSocket, ns: u64);
@@ -473,8 +485,40 @@ fn connect(socket: &mut DcSctpSocket) {
     socket.0.connect();
 }
 
+fn shutdown(socket: &mut DcSctpSocket) {
+    socket.0.shutdown();
+}
+
+fn close(socket: &mut DcSctpSocket) {
+    socket.0.close();
+}
+
 fn options(socket: &DcSctpSocket) -> bridge::Options {
     socket.0.options().into()
+}
+
+fn set_max_message_size(socket: &mut DcSctpSocket, max_message_size: usize) {
+    socket.0.set_max_message_size(max_message_size);
+}
+
+fn set_stream_priority(socket: &mut DcSctpSocket, stream_id: u16, priority: u16) {
+    socket.0.set_stream_priority(StreamId(stream_id), priority);
+}
+
+fn get_stream_priority(socket: &mut DcSctpSocket, stream_id: u16) -> u16 {
+    socket.0.get_stream_priority(StreamId(stream_id))
+}
+
+fn buffered_amount(socket: &DcSctpSocket, stream_id: u16) -> usize {
+    socket.0.buffered_amount(StreamId(stream_id))
+}
+
+fn buffered_amount_low_threshold(socket: &DcSctpSocket, stream_id: u16) -> usize {
+    socket.0.buffered_amount_low_threshold(StreamId(stream_id))
+}
+
+fn set_buffered_amount_low_threshold(socket: &mut DcSctpSocket, stream_id: u16, bytes: usize) {
+    socket.0.set_buffered_amount_low_threshold(StreamId(stream_id), bytes);
 }
 
 fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
