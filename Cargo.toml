@@ -19,6 +19,17 @@ log = "0.4.29"
 rand = "0.9.2"
 thiserror = "2.0.17"
 
+[workspace.lints.rust]
+dead-code = "allow"
+unused-macros = "allow"
+rust-2018-idioms = "deny"
+unsafe-code = "deny"
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+cargo = "deny"
+
 [package]
 name = "dcsctp"
 description = "An SCTP implementation for WebRTC Data Channels"
@@ -42,6 +53,9 @@ cxx-build = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
+
+[lints]
+workspace = true
 
 [features]
 cxx = ["dep:cxx", "dep:cxx-build"]

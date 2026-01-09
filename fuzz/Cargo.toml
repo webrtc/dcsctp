@@ -9,6 +9,9 @@ metadata = { cargo-fuzz = true }
 dcsctp = { workspace = true, features = ["fuzz-internals"] }
 libfuzzer-sys = { workspace = true }
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "parse_parameters"
 path = "fuzz_targets/parse_parameters.rs"

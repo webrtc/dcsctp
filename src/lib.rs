@@ -12,14 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code)]
-#![allow(unused_macros)]
-#![deny(clippy::all)]
-#![deny(clippy::cargo)]
-#![deny(rust_2018_idioms)]
-#![deny(warnings)]
-#![deny(unsafe_code)]
-
 use crate::api::DcSctpSocket;
 use crate::api::Options;
 
