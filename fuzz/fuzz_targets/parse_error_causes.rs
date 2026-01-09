@@ -15,8 +15,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-extern crate dcsctp;
 
 fuzz_target!(|data: &[u8]| {
+    #[allow(clippy::let_unit_value)]
     let _ = dcsctp::fuzzer::parse_error_causes(data);
 });
