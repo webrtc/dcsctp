@@ -72,8 +72,11 @@ exchange_packets(dcsctp_cxx::DcSctpSocket& socket_a,
 int main() {
   std::cout << "dcsctp version: " << dcsctp_cxx::version().c_str() << std::endl;
 
-  dcsctp_cxx::DcSctpSocket* socket_a = dcsctp_cxx::new_socket();
-  dcsctp_cxx::DcSctpSocket* socket_z = dcsctp_cxx::new_socket();
+  dcsctp_cxx::Options options = dcsctp_cxx::default_options();
+  options.heartbeat_interval = 0;
+
+  dcsctp_cxx::DcSctpSocket* socket_a = dcsctp_cxx::new_socket("a", options);
+  dcsctp_cxx::DcSctpSocket* socket_z = dcsctp_cxx::new_socket("z", options);
   std::cout << "Created two sockets: A and Z" << std::endl;
 
   try {
@@ -88,6 +91,78 @@ int main() {
       std::cout << "Connection failed: sockets are not in Connected state."
                 << std::endl;
       return 1;
+    }
+
+    // A -> "Hello Z" -> Z
+    std::cout << "A: sending 'Hello Z'" << std::endl;
+    std::string msg_a_to_z_str = "Hello Z";
+    rust::Slice<const uint8_t> msg_a_to_z(
+        reinterpret_cast<const uint8_t*>(msg_a_to_z_str.c_str()),
+        msg_a_to_z_str.length());
+
+    dcsctp_cxx::SendOptions send_options_a_to_z =
+        dcsctp_cxx::new_send_options();
+
+    dcsctp_cxx::SendStatus send_status =
+        dcsctp_cxx::send(*socket_a, /*stream_id=*/0, /*ppid=*/53, msg_a_to_z,
+                         send_options_a_to_z);
+    if (send_status != dcsctp_cxx::SendStatus::Success) {
+      throw std::runtime_error("Failed to send message from A to Z");
+    }
+
+    exchange_packets(*socket_a, *socket_z);
+
+    if (dcsctp_cxx::message_ready_count(*socket_z) != 1) {
+      throw std::runtime_error("Z did not receive the message from A");
+    }
+
+    dcsctp_cxx::Message received_msg_z =
+        dcsctp_cxx::get_next_message(*socket_z);
+    std::string received_payload_z(
+        reinterpret_cast<const char*>(received_msg_z.payload.data()),
+        received_msg_z.payload.size());
+
+    std::cout << "Z: received message '" << received_payload_z << "' on stream "
+              << received_msg_z.stream_id << " with ppid "
+              << received_msg_z.ppid << std::endl;
+
+    if (received_payload_z != msg_a_to_z_str) {
+      throw std::runtime_error("Z received wrong message from A");
+    }
+
+    // Z -> "Hello A" -> A
+    std::cout << "Z: sending 'Hello A'" << std::endl;
+    std::string msg_z_to_a_str = "Hello A";
+    rust::Slice<const uint8_t> msg_z_to_a(
+        reinterpret_cast<const uint8_t*>(msg_z_to_a_str.c_str()),
+        msg_z_to_a_str.length());
+
+    auto send_options_z_to_a = dcsctp_cxx::new_send_options();
+
+    send_status = dcsctp_cxx::send(*socket_z, /*stream_id=*/1, /*ppid=*/53,
+                                   msg_z_to_a, send_options_z_to_a);
+    if (send_status != dcsctp_cxx::SendStatus::Success) {
+      throw std::runtime_error("Failed to send message from Z to A");
+    }
+
+    exchange_packets(*socket_a, *socket_z);
+
+    if (dcsctp_cxx::message_ready_count(*socket_a) != 1) {
+      throw std::runtime_error("A did not receive the message from Z");
+    }
+
+    dcsctp_cxx::Message received_msg_a =
+        dcsctp_cxx::get_next_message(*socket_a);
+    std::string received_payload_a(
+        reinterpret_cast<const char*>(received_msg_a.payload.data()),
+        received_msg_a.payload.size());
+
+    std::cout << "A: received message '" << received_payload_a << "' on stream "
+              << received_msg_a.stream_id << " with ppid "
+              << received_msg_a.ppid << std::endl;
+
+    if (received_payload_a != msg_z_to_a_str) {
+      throw std::runtime_error("A received wrong message from Z");
     }
 
   } catch (const std::runtime_error& e) {

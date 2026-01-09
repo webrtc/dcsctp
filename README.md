@@ -2,6 +2,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/dcsctp)](https://crates.io/crates/dcsctp)
 [![docs.rs](https://img.shields.io/docsrs/dcsctp)](https://docs.rs/dcsctp)
+[![scorecard.dev](https://api.scorecard.dev/projects/github.com/webrtc/dcsctp/badge)](https://scorecard.dev/viewer/?uri=github.com/webrtc/dcsctp)
+
 
 An [SCTP](https://datatracker.ietf.org/doc/html/rfc9260) implementation for
 [WebRTC Data Channels](https://datatracker.ietf.org/doc/html/rfc8831).
