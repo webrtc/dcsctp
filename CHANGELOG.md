@@ -8,6 +8,14 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.3 - 2026-01-09
+
+### Changed
+
+- The cxx child crate is now part of the parent crate, as an optional feature.
+- Time handling is revised, to use a custom SocketTime instead of Instant.
+- Added CXX FFI for time handling.
+
 ## 0.1.2 - 2025-12-15
 
 ### Added
