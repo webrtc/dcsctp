@@ -8,6 +8,12 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.4 - 2026-01-12
+
+### Added
+
+- Most of the API methods are exposed in CXX.
+
 ## 0.1.3 - 2026-01-09
 
 ### Changed

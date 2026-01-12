@@ -12,5 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod data_generator;
+pub mod data_sequencer;
 pub mod event_helpers;
