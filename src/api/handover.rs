@@ -48,7 +48,7 @@ pub struct HandoverTransmission {
 
 pub struct HandoverOrderedStream {
     pub id: u16,
-    pub next_ssn: u16,
+    pub next_ssn: u32,
 }
 
 pub struct HandoverUnorderedStream {

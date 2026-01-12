@@ -14,7 +14,9 @@
 
 use crate::api::Message;
 use crate::api::StreamId;
+use crate::api::handover::HandoverOrderedStream;
 use crate::api::handover::HandoverReadiness;
+use crate::api::handover::HandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState;
 use crate::packet::SkippedStream;
 use crate::packet::data::Data;
@@ -29,6 +31,9 @@ use std::collections::HashMap;
 pub struct Stream {
     stream_key: StreamKey,
     chunks_by_mid: BTreeMap<Mid, BTreeMap<Fsn, Data>>,
+    // Note: This is actually only used for ordered streams (which need to be assmbled in order)
+    // but still present on unordered streams to make most of the logic identical. It's however not
+    // persisted in handover state for unordered streams.
     next_mid: Mid,
 }
 
@@ -150,12 +155,34 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
         HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS & has_unassembled_chunks
     }
 
-    fn add_to_handover_state(&self, _state: &mut SocketHandoverState) {
-        todo!()
+    fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
+        for (stream_key, stream) in self.streams.iter() {
+            match stream_key {
+                StreamKey::Ordered(id) => {
+                    state
+                        .rx
+                        .ordered_streams
+                        .push(HandoverOrderedStream { id: id.0, next_ssn: stream.next_mid.0 });
+                }
+                StreamKey::Unordered(id) => {
+                    state.rx.unordered_streams.push(HandoverUnorderedStream { id: id.0 });
+                }
+            }
+        }
     }
 
-    fn restore_from_state(&mut self, _state: &SocketHandoverState) {
-        todo!()
+    fn restore_from_state(&mut self, state: &SocketHandoverState) {
+        for stream in &state.rx.ordered_streams {
+            let stream_key = StreamKey::Ordered(StreamId(stream.id));
+            self.streams.insert(
+                stream_key,
+                Stream { next_mid: Mid(stream.next_ssn), ..Stream::new(stream_key) },
+            );
+        }
+        for stream in &state.rx.unordered_streams {
+            let stream_key = StreamKey::Unordered(StreamId(stream.id));
+            self.streams.insert(stream_key, Stream { next_mid: Mid(0), ..Stream::new(stream_key) });
+        }
     }
 }
 
@@ -418,5 +445,67 @@ mod tests {
 
         assert_eq!(s.add(Tsn(4), data4, &mut |m| messages.push(m)), 0);
         assert_eq!(messages.len(), 4);
+    }
+
+    #[test]
+    fn can_handover_ordered_streams() {
+        let mut streams1 = InterleavedReassemblyStreams::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Check readiness: Should only be ready when there are no unassembled chunks.
+        assert_eq!(streams1.add(Tsn(1), seq.ordered("a", "B"), &mut |_| {}), 1);
+        assert!(
+            streams1
+                .get_handover_readiness()
+                .contains(HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS)
+        );
+        assert_eq!(streams1.add(Tsn(2), seq.ordered("bcd", "E"), &mut |_| {}), -1);
+        assert!(streams1.get_handover_readiness().is_ready());
+
+        // Save and restore state
+        let mut state = SocketHandoverState::default();
+        streams1.add_to_handover_state(&mut state);
+
+        let mut streams2 = InterleavedReassemblyStreams::new();
+        let mut messages = Vec::new();
+        streams2.restore_from_state(&state);
+
+        // Verify restored state handles new message correctly (preserves next expected MID)
+        let data = seq.ordered("efgh", "BE");
+        assert_eq!(data.mid, Mid(1));
+
+        assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"efgh");
+    }
+
+    #[test]
+    fn can_handover_unordered_streams() {
+        let mut streams1 = InterleavedReassemblyStreams::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Check readiness: Should only be ready when there are no unassembled chunks.
+        assert_eq!(streams1.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {}), 1);
+        assert!(
+            streams1
+                .get_handover_readiness()
+                .contains(HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS)
+        );
+        assert_eq!(streams1.add(Tsn(2), seq.unordered("bcd", "E"), &mut |_| {}), -1);
+        assert!(streams1.get_handover_readiness().is_ready());
+
+        // Save and restore state
+        let mut state = SocketHandoverState::default();
+        streams1.add_to_handover_state(&mut state);
+
+        let mut streams2 = InterleavedReassemblyStreams::new();
+        let mut messages = Vec::new();
+        streams2.restore_from_state(&state);
+
+        // Verify restored state
+        let data = seq.unordered("efgh", "BE");
+        assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload, b"efgh");
     }
 }
