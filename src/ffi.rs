@@ -464,7 +464,9 @@ unsafe fn delete_socket(socket: *mut DcSctpSocket) {
     if !socket.is_null() {
         // SAFETY: The `socket` pointer must have been obtained from `new_socket` and must not be
         // used after this call.
-        drop(Box::from_raw(socket));
+        unsafe {
+            drop(Box::from_raw(socket));
+        }
     }
 }
 

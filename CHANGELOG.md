@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Changed
+
+- The code is now compatible with Rust 2024 edition.
+
 ## 0.1.4 - 2026-01-12
 
 ### Added
@@ -26,7 +30,7 @@ and this project adheres to
 
 ### Added
 
-- Added cxx child crate for C++ interoperability. 
+- Added cxx child crate for C++ interoperability.
 
 ## 0.1.1 - 2025-08-21
 
