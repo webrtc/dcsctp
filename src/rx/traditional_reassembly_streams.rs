@@ -241,7 +241,7 @@ impl OrderedStream {
     }
 
     fn from_state(s: &HandoverOrderedStream) -> Self {
-        Self { next_ssn: Ssn(s.next_ssn), ..OrderedStream::new() }
+        Self { next_ssn: Ssn(s.next_ssn as u16), ..OrderedStream::new() }
     }
 
     fn try_to_assemble_messages(&mut self, on_reassembled: &mut dyn FnMut(Message)) -> usize {
@@ -333,7 +333,7 @@ impl ReassemblyStream for OrderedStream {
         state
             .rx
             .ordered_streams
-            .push(HandoverOrderedStream { id: stream_id.id().0, next_ssn: self.next_ssn.0 });
+            .push(HandoverOrderedStream { id: stream_id.id().0, next_ssn: self.next_ssn.0 as u32 });
     }
 }
 
