@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::api::StreamId;
-use std::cmp::min;
 use std::cmp::Ordering;
+use std::cmp::min;
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
@@ -196,7 +196,7 @@ mod tests {
         }
         for _ in 0..packet_count {
             let c = produce(q, MTU).unwrap();
-            let idx = c.0 .0 as usize;
+            let idx = c.0.0 as usize;
             packet_counts[idx] += 1;
             let config = &stream_configs[idx];
             q.set_bytes_remaining(c.0, config.packet_size, config.priority);

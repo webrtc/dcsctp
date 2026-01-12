@@ -29,11 +29,7 @@ pub enum StreamKey {
 
 impl StreamKey {
     pub fn from(is_unordered: bool, id: StreamId) -> Self {
-        if is_unordered {
-            Self::Unordered(id)
-        } else {
-            Self::Ordered(id)
-        }
+        if is_unordered { Self::Unordered(id) } else { Self::Ordered(id) }
     }
 
     pub fn id(&self) -> StreamId {
@@ -219,11 +215,7 @@ impl std::ops::AddAssign<u32> for Fsn {
 
 impl Fsn {
     pub fn distance_to(self, other: Fsn) -> u32 {
-        if self > other {
-            self.0.wrapping_sub(other.0)
-        } else {
-            other.0.wrapping_sub(self.0)
-        }
+        if self > other { self.0.wrapping_sub(other.0) } else { other.0.wrapping_sub(self.0) }
     }
 }
 
@@ -295,11 +287,7 @@ impl Tsn {
     }
 
     pub fn distance_to(self, other: Tsn) -> u32 {
-        if self > other {
-            self.0.wrapping_sub(other.0)
-        } else {
-            other.0.wrapping_sub(self.0)
-        }
+        if self > other { self.0.wrapping_sub(other.0) } else { other.0.wrapping_sub(self.0) }
     }
 }
 

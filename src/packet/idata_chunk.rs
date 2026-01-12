@@ -14,21 +14,21 @@
 
 use crate::api::PpId;
 use crate::api::StreamId;
-use crate::packet::chunk::write_chunk_header;
+use crate::packet::ChunkParseError;
+use crate::packet::SerializableTlv;
 use crate::packet::chunk::RawChunk;
+use crate::packet::chunk::write_chunk_header;
 use crate::packet::data::Data;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
-use crate::packet::ChunkParseError;
-use crate::packet::SerializableTlv;
 use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use anyhow::ensure;
 use anyhow::Error;
+use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 64;

@@ -197,10 +197,6 @@ impl std::ops::BitAnd<bool> for HandoverReadiness {
     type Output = Self;
 
     fn bitand(self, rhs: bool) -> Self::Output {
-        if rhs {
-            self
-        } else {
-            HandoverReadiness::READY
-        }
+        if rhs { self } else { HandoverReadiness::READY }
     }
 }

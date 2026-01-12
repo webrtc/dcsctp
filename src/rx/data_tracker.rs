@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handover::HandoverReadiness;
-use crate::api::handover::SocketHandoverState;
 use crate::api::Options;
 use crate::api::SocketTime;
+use crate::api::handover::HandoverReadiness;
+use crate::api::handover::SocketHandoverState;
 use crate::packet::sack_chunk::GapAckBlock;
 use crate::packet::sack_chunk::SackChunk;
 use crate::timer::Timer;

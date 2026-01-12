@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handover::HandoverOutgoingStream;
-use crate::api::handover::HandoverReadiness;
-use crate::api::handover::SocketHandoverState;
+use crate::EventSink;
 use crate::api::LifecycleId;
 use crate::api::Message;
 use crate::api::Options;
@@ -22,6 +20,9 @@ use crate::api::SendOptions;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
 use crate::api::StreamId;
+use crate::api::handover::HandoverOutgoingStream;
+use crate::api::handover::HandoverReadiness;
+use crate::api::handover::SocketHandoverState;
 use crate::packet::data::Data;
 use crate::tx::stream_scheduler::StreamScheduler;
 use crate::types::Fsn;
@@ -29,7 +30,6 @@ use crate::types::Mid;
 use crate::types::OutgoingMessageId;
 use crate::types::Ssn;
 use crate::types::StreamKey;
-use crate::EventSink;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;

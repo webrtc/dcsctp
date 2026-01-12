@@ -16,11 +16,11 @@ use crate::api::LifecycleId;
 use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::math::round_up_to_4;
+use crate::packet::SkippedStream;
 use crate::packet::data::Data;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
 use crate::packet::sack_chunk::GapAckBlock;
-use crate::packet::SkippedStream;
 use crate::types::Mid;
 use crate::types::OutgoingMessageId;
 use crate::types::Ssn;
@@ -1075,8 +1075,8 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         let expires_at = now + Duration::from_millis(1);
-        assert!(buf
-            .insert(
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("a", "B"),
                 now + Duration::from_millis(0),
@@ -1084,9 +1084,10 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_some());
-        assert!(buf
-            .insert(
+            .is_some()
+        );
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("b", ""),
                 now + Duration::from_millis(0),
@@ -1094,11 +1095,12 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_some());
+            .is_some()
+        );
 
         // Time reaches "expires_at"
-        assert!(buf
-            .insert(
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("c", "E"),
                 now + Duration::from_millis(1),
@@ -1106,7 +1108,8 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_none());
+            .is_none()
+        );
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
         assert_eq!(buf.highest_outstanding_tsn(), Tsn(12));
@@ -1130,8 +1133,8 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         let expires_at = now + Duration::from_millis(1);
-        assert!(buf
-            .insert(
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("a", "B"),
                 now + Duration::from_millis(0),
@@ -1139,9 +1142,10 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_some());
-        assert!(buf
-            .insert(
+            .is_some()
+        );
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("b", ""),
                 now + Duration::from_millis(0),
@@ -1149,12 +1153,13 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_some());
+            .is_some()
+        );
         assert!(!buf.has_unsent_messages_to_discard());
 
         // Time reaches "expires_at", but not an "end" chunk.
-        assert!(buf
-            .insert(
+        assert!(
+            buf.insert(
                 MESSAGE_ID,
                 &seq.ordered("c", ""),
                 now + Duration::from_millis(1),
@@ -1162,7 +1167,8 @@ mod tests {
                 expires_at,
                 None,
             )
-            .is_none());
+            .is_none()
+        );
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
         assert_eq!(buf.highest_outstanding_tsn(), Tsn(13));

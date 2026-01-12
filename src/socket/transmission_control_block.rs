@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handover::HandoverCapabilities;
-use crate::api::handover::HandoverReadiness;
-use crate::api::handover::SocketHandoverState;
+use crate::EventSink;
 use crate::api::Options;
 use crate::api::SocketTime;
 use crate::api::StreamId;
+use crate::api::handover::HandoverCapabilities;
+use crate::api::handover::HandoverReadiness;
+use crate::api::handover::SocketHandoverState;
 use crate::math::round_down_to_4;
 use crate::packet::chunk::Chunk;
 use crate::packet::data::Data;
@@ -36,7 +37,6 @@ use crate::timer::Timer;
 use crate::tx::retransmission_queue::RetransmissionQueue;
 use crate::tx::retransmission_timeout::RetransmissionTimeout;
 use crate::types::Tsn;
-use crate::EventSink;
 use std::cell::RefCell;
 use std::rc::Rc;
 

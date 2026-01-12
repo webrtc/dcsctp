@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::api::Message;
+use crate::api::StreamId;
 use crate::api::handover::HandoverOrderedStream;
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::HandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState;
-use crate::api::Message;
-use crate::api::StreamId;
-use crate::packet::data::Data;
 use crate::packet::SkippedStream;
+use crate::packet::data::Data;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::types::Ssn;
 use crate::types::StreamKey;
