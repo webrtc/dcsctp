@@ -115,15 +115,12 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
         }
 
         for skipped_stream in skipped_streams.iter() {
-            match skipped_stream {
-                SkippedStream::ForwardTsn(stream_id, _) => {
-                    ret += self.get_or_create(StreamKey::Ordered(*stream_id)).erase_to(
-                        new_cumulative_ack,
-                        Some(skipped_stream),
-                        on_reassembled,
-                    );
-                }
-                SkippedStream::IForwardTsn(_, _) => todo!(),
+            if let SkippedStream::ForwardTsn(stream_id, _) = skipped_stream {
+                ret += self.get_or_create(StreamKey::Ordered(*stream_id)).erase_to(
+                    new_cumulative_ack,
+                    Some(skipped_stream),
+                    on_reassembled,
+                );
             }
         }
         ret
