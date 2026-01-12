@@ -1652,6 +1652,49 @@ impl Socket<'_> {
             }
         }
     }
+
+    fn validate_send(&self, message: &Message, send_options: &SendOptions) -> SendStatus {
+        let lifecycle_id = &send_options.lifecycle_id;
+        let add_error_events = |kind, msg: &str| {
+            if let Some(id) = lifecycle_id {
+                self.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id.clone()));
+            }
+            self.events.borrow_mut().add(SocketEvent::OnError(kind, msg.to_string()));
+        };
+
+        if message.payload.is_empty() {
+            add_error_events(ErrorKind::ProtocolViolation, "Unable to send empty message");
+            return SendStatus::ErrorMessageEmpty;
+        }
+        if message.payload.len() > self.options.max_message_size {
+            add_error_events(ErrorKind::ProtocolViolation, "Unable to send too large message");
+            return SendStatus::ErrorMessageTooLarge;
+        }
+        if matches!(
+            self.state,
+            State::ShutdownPending(_)
+                | State::ShutdownSent(_)
+                | State::ShutdownReceived(_)
+                | State::ShutdownAckSent(_)
+        ) {
+            add_error_events(
+                ErrorKind::WrongSequence,
+                "Unable to send message as the socket is shutting down",
+            );
+            return SendStatus::ErrorShuttingDown;
+        }
+        if self.send_queue.total_buffered_amount() >= self.options.max_send_buffer_size
+            || self.send_queue.buffered_amount(message.stream_id)
+                >= self.options.per_stream_send_queue_limit
+        {
+            add_error_events(
+                ErrorKind::ResourceExhaustion,
+                "Unable to send message as the send queue is full",
+            );
+            return SendStatus::ErrorResourceExhaustion;
+        }
+        SendStatus::Success
+    }
 }
 
 impl DcSctpSocket for Socket<'_> {
@@ -1917,31 +1960,9 @@ impl DcSctpSocket for Socket<'_> {
     }
 
     fn send(&mut self, message: Message, send_options: &SendOptions) -> SendStatus {
-        let add_error_events = |kind, msg| {
-            if let Some(ref lifecycle_id) = send_options.lifecycle_id {
-                self.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(lifecycle_id.clone()));
-            }
-            self.events.borrow_mut().add(SocketEvent::OnError(kind, String::from(msg)));
-        };
-
-        if message.payload.is_empty() {
-            add_error_events(ErrorKind::ProtocolViolation, "Unable to send empty message");
-            return SendStatus::ErrorMessageEmpty;
-        }
-        if message.payload.len() > self.options.max_message_size {
-            add_error_events(ErrorKind::ProtocolViolation, "Unable to send too large message");
-            return SendStatus::ErrorMessageTooLarge;
-        }
-
-        if self.send_queue.total_buffered_amount() >= self.options.max_send_buffer_size
-            || self.send_queue.buffered_amount(message.stream_id)
-                >= self.options.per_stream_send_queue_limit
-        {
-            add_error_events(
-                ErrorKind::ResourceExhaustion,
-                "Unable to send message as the send queue is full",
-            );
-            return SendStatus::ErrorResourceExhaustion;
+        let status = self.validate_send(&message, send_options);
+        if status != SendStatus::Success {
+            return status;
         }
 
         let now = *self.now.borrow();
@@ -1951,12 +1972,22 @@ impl DcSctpSocket for Socket<'_> {
         SendStatus::Success
     }
 
-    fn send_many(
-        &mut self,
-        _messages: &mut [crate::api::Message],
-        _send_options: &crate::api::SendOptions,
-    ) -> Vec<SendStatus> {
-        todo!()
+    fn send_many(&mut self, messages: Vec<Message>, send_options: &SendOptions) -> Vec<SendStatus> {
+        let now = *self.now.borrow();
+        let statuses = messages
+            .into_iter()
+            .map(|message| {
+                let status = self.validate_send(&message, send_options);
+                if status == SendStatus::Success {
+                    self.tx_messages_count += 1;
+                    self.send_queue.add(now, message, send_options);
+                }
+                status
+            })
+            .collect();
+
+        self.send_buffered_packets(now);
+        statuses
     }
 
     fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> ResetStreamsStatus {

@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Added
+
+- `DcSctpSocket::send_many()` is now implemented.
+
 ### Changed
 
 - The code is now compatible with Rust 2024 edition.

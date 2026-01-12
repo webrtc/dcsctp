@@ -199,6 +199,32 @@ mod tests {
     }
 
     #[test]
+    fn send_many_api_method() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let messages = vec![
+            Message::new(StreamId(1), PpId(1), b"hello".to_vec()),
+            Message::new(StreamId(2), PpId(2), b"world".to_vec()),
+        ];
+        let statuses = socket_a.send_many(messages, &SendOptions::default());
+        assert_eq!(statuses, vec![SendStatus::Success, SendStatus::Success]);
+
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        let msg1 = socket_z.get_next_message().unwrap();
+        assert_eq!(msg1.payload, b"hello");
+        assert_eq!(msg1.stream_id, StreamId(1));
+
+        let msg2 = socket_z.get_next_message().unwrap();
+        assert_eq!(msg2.payload, b"world");
+        assert_eq!(msg2.stream_id, StreamId(2));
+    }
+
+    #[test]
     fn establish_connection_with_setup_collision() {
         let options = default_options();
         let mut socket_a = Socket::new("A", &options);
