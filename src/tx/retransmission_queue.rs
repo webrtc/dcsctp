@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handover::HandoverReadiness;
-use crate::api::handover::SocketHandoverState;
+use crate::EventSink;
 use crate::api::Options;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
 use crate::api::StreamId;
+use crate::api::handover::HandoverReadiness;
+use crate::api::handover::SocketHandoverState;
 use crate::math::is_divisible_by_4;
 use crate::math::round_down_to_4;
 use crate::math::round_up_to_4;
@@ -33,7 +34,6 @@ use crate::tx::outstanding_data::OutstandingData;
 use crate::tx::send_queue::DataToSend;
 use crate::types::OutgoingMessageId;
 use crate::types::Tsn;
-use crate::EventSink;
 use std::cell::RefCell;
 use std::cmp::max;
 use std::cmp::min;
@@ -601,19 +601,11 @@ impl RetransmissionQueue {
     }
 
     fn chunk_max_retransmissions(&self, chunk: &DataToSend) -> u16 {
-        if self.partial_reliability {
-            chunk.max_retransmissions
-        } else {
-            u16::MAX
-        }
+        if self.partial_reliability { chunk.max_retransmissions } else { u16::MAX }
     }
 
     fn chunk_expires_at(&self, now: SocketTime, chunk: &DataToSend) -> SocketTime {
-        if self.partial_reliability {
-            chunk.expires_at
-        } else {
-            now + MAX_EXPIRY
-        }
+        if self.partial_reliability { chunk.expires_at } else { now + MAX_EXPIRY }
     }
 
     /// Returns the internal state of all queued chunks. This is only used in unit-tests.
@@ -735,8 +727,8 @@ mod tests {
     use crate::api::PpId;
     use crate::api::SendOptions;
     use crate::events::Events;
-    use crate::packet::sack_chunk::GapAckBlock;
     use crate::packet::SkippedStream;
+    use crate::packet::sack_chunk::GapAckBlock;
     use crate::tx::send_queue::SendQueue;
     use crate::types::Mid;
     use crate::types::Ssn;
@@ -2373,9 +2365,10 @@ mod tests {
             get_tsns(&rtx.get_chunks_to_send(now, 1500, |bytes, _| sq.produce(now, bytes))),
             [Tsn(10)]
         );
-        assert!(rtx
-            .get_handover_readiness()
-            .contains(HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA));
+        assert!(
+            rtx.get_handover_readiness()
+                .contains(HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA)
+        );
 
         handle_sack(&mut rtx, now, Tsn(10));
         assert!(rtx.get_handover_readiness().is_ready());

@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use crate::api::ZeroChecksumAlternateErrorDetectionMethod;
-use crate::packet::parameter::write_parameter_header;
-use crate::packet::parameter::RawParameter;
-use crate::packet::read_u32_be;
-use crate::packet::write_u32_be;
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
-use anyhow::ensure;
+use crate::packet::parameter::RawParameter;
+use crate::packet::parameter::write_parameter_header;
+use crate::packet::read_u32_be;
+use crate::packet::write_u32_be;
 use anyhow::Error;
+use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const PARAMETER_TYPE: u16 = 0x8001;

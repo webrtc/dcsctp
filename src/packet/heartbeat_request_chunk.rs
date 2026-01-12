@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::packet::chunk::write_chunk_header;
+use crate::packet::ChunkParseError;
+use crate::packet::SerializableTlv;
 use crate::packet::chunk::RawChunk;
+use crate::packet::chunk::write_chunk_header;
+use crate::packet::parameter::Parameter;
 use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::parameter::parameters_serialize_to;
 use crate::packet::parameter::parameters_serialized_size;
-use crate::packet::parameter::Parameter;
-use crate::packet::ChunkParseError;
-use crate::packet::SerializableTlv;
-use anyhow::ensure;
 use anyhow::Error;
+use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 4;

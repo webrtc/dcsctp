@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::packet::parameter::write_parameter_header;
-use crate::packet::parameter::RawParameter;
 use crate::packet::SerializableTlv;
+use crate::packet::parameter::RawParameter;
+use crate::packet::parameter::write_parameter_header;
 use anyhow::Error;
 use core::fmt;
 

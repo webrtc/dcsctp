@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::SocketEvent;
 use crate::EventSink;
+use crate::api::SocketEvent;
 use std::collections::VecDeque;
 
 pub struct Events {

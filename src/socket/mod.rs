@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handover::HandoverReadiness;
-use crate::api::handover::HandoverSocketState;
-use crate::api::handover::SocketHandoverState;
+use crate::EventSink;
 use crate::api::DcSctpSocket;
 use crate::api::ErrorKind;
 use crate::api::Message;
@@ -29,9 +27,14 @@ use crate::api::SocketState;
 use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
+use crate::api::handover::HandoverReadiness;
+use crate::api::handover::HandoverSocketState;
+use crate::api::handover::SocketHandoverState;
 use crate::events::Events;
 use crate::logging::log_packet;
 use crate::math::round_down_to_4;
+use crate::packet::SerializableTlv;
+use crate::packet::SkippedStream;
 use crate::packet::abort_chunk::AbortChunk;
 use crate::packet::chunk::Chunk;
 use crate::packet::chunk_validators::clean_sack;
@@ -80,8 +83,6 @@ use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
 use crate::packet::write_u32_be;
 use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
-use crate::packet::SerializableTlv;
-use crate::packet::SkippedStream;
 use crate::socket::capabilities::Capabilities;
 use crate::socket::state_cookie::StateCookie;
 use crate::socket::transmission_control_block::CurrentResetRequest;
@@ -92,7 +93,6 @@ use crate::timer::Timer;
 use crate::tx::retransmission_queue::HandleSackResult;
 use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
-use crate::EventSink;
 #[cfg(not(test))]
 use log::info;
 #[cfg(not(test))]
@@ -197,11 +197,7 @@ impl TxErrorCounter {
     }
 
     fn is_exhausted(&self) -> bool {
-        if let Some(limit) = self.limit {
-            self.error_counter > limit
-        } else {
-            false
-        }
+        if let Some(limit) = self.limit { self.error_counter > limit } else { false }
     }
 }
 

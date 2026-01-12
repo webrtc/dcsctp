@@ -198,11 +198,7 @@ mod bridge {
 
 pub const fn to_saturating_u64(d: Duration) -> u64 {
     let nanos = d.as_nanos();
-    if nanos > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        nanos as u64
-    }
+    if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
 }
 
 impl Default for bridge::Event {
