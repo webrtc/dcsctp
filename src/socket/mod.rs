@@ -1743,7 +1743,7 @@ impl DcSctpSocket for Socket<'_> {
         self.now.replace(now);
         match &mut self.state {
             State::Closed => {}
-            State::CookieWait(ref s) => {
+            &mut State::CookieWait(ref s) => {
                 debug_assert!(s.t1_init.is_running());
                 self.handle_t1init_timeout(now);
             }
