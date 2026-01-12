@@ -627,7 +627,7 @@ pub enum SocketState {
 }
 
 /// The result of a `send` operation.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SendStatus {
     /// The message was enqueued successfully. As sending the message is done asynchronously, this
     /// is no guarantee that the message has been actually sent.
@@ -829,11 +829,7 @@ pub trait DcSctpSocket {
     ///
     /// This has identical semantics to [`DcSctpSocket::send`], except that it may coalesce many
     /// messages into a single SCTP packet if they would fit.
-    fn send_many(
-        &mut self,
-        messages: &mut [Message],
-        send_options: &SendOptions,
-    ) -> Vec<SendStatus>;
+    fn send_many(&mut self, messages: Vec<Message>, send_options: &SendOptions) -> Vec<SendStatus>;
 
     /// Resets outgoing streams.
     ///
