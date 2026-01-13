@@ -10,11 +10,13 @@ and this project adheres to
 
 ### Added
 
-- `DcSctpSocket::send_many()` is now implemented.
+- `DcSctpSocket::send_many()` is now implemented and accessible with CXX.
 
 ### Changed
 
 - The code is now compatible with Rust 2024 edition.
+- Updated CXX interface for `dcsctp_cxx::send()` to avoid copying the message
+  payload.
 
 ## 0.1.4 - 2026-01-12
 
