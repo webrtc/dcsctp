@@ -16,6 +16,7 @@
 
 use crate::api::DcSctpSocket as DcSctpSocketTrait;
 use crate::api::ErrorKind as DcSctpErrorKind;
+use crate::api::LifecycleId;
 use crate::api::Message as DcSctpMessage;
 use crate::api::Options as DcSctpOptions;
 use crate::api::PpId;
@@ -162,6 +163,7 @@ mod bridge {
 
         fn version() -> String;
         fn default_options() -> Options;
+        fn create_message(stream_id: u16, ppid: u32, payload_size: usize) -> Message;
         fn new_socket(name: &str, options: &Options) -> *mut DcSctpSocket;
         unsafe fn delete_socket(socket: *mut DcSctpSocket);
         fn state(socket: &DcSctpSocket) -> SocketState;
@@ -186,13 +188,12 @@ mod bridge {
         fn message_ready_count(socket: &DcSctpSocket) -> usize;
         fn get_next_message(socket: &mut DcSctpSocket) -> Message;
         fn new_send_options() -> SendOptions;
-        fn send(
+        fn send(socket: &mut DcSctpSocket, message: Message, options: &SendOptions) -> SendStatus;
+        fn send_many(
             socket: &mut DcSctpSocket,
-            stream_id: u16,
-            ppid: u32,
-            payload: &[u8],
+            messages: Vec<Message>,
             options: &SendOptions,
-        ) -> SendStatus;
+        ) -> Vec<SendStatus>;
     }
 }
 
@@ -444,6 +445,33 @@ impl From<&bridge::Options> for DcSctpOptions {
     }
 }
 
+impl From<DcSctpSendStatus> for bridge::SendStatus {
+    fn from(status: DcSctpSendStatus) -> Self {
+        match status {
+            DcSctpSendStatus::Success => bridge::SendStatus::Success,
+            DcSctpSendStatus::ErrorMessageEmpty => bridge::SendStatus::ErrorMessageEmpty,
+            DcSctpSendStatus::ErrorMessageTooLarge => bridge::SendStatus::ErrorMessageTooLarge,
+            DcSctpSendStatus::ErrorResourceExhaustion => {
+                bridge::SendStatus::ErrorResourceExhaustion
+            }
+            DcSctpSendStatus::ErrorShuttingDown => bridge::SendStatus::ErrorShuttingDown,
+        }
+    }
+}
+
+impl From<&bridge::SendOptions> for DcSctpSendOptions {
+    fn from(options: &bridge::SendOptions) -> Self {
+        DcSctpSendOptions {
+            unordered: options.unordered,
+            lifetime: (options.lifetime_ms < MAX_LIFETIME_MS)
+                .then_some(Duration::from_millis(options.lifetime_ms)),
+            max_retransmissions: (options.max_retransmissions != u16::MAX)
+                .then_some(options.max_retransmissions),
+            lifecycle_id: LifecycleId::new(options.lifecycle_id),
+        }
+    }
+}
+
 pub struct DcSctpSocket(Box<dyn DcSctpSocketTrait>);
 
 fn version() -> String {
@@ -452,6 +480,10 @@ fn version() -> String {
 
 fn default_options() -> bridge::Options {
     DcSctpOptions::default().into()
+}
+
+fn create_message(stream_id: u16, ppid: u32, payload_size: usize) -> bridge::Message {
+    bridge::Message { stream_id, ppid, payload: vec![0; payload_size] }
 }
 
 fn new_socket(name: &str, options: &bridge::Options) -> *mut DcSctpSocket {
@@ -559,25 +591,21 @@ fn new_send_options() -> bridge::SendOptions {
 
 fn send(
     socket: &mut DcSctpSocket,
-    stream_id: u16,
-    ppid: u32,
-    payload: &[u8],
+    message: bridge::Message,
     options: &bridge::SendOptions,
 ) -> bridge::SendStatus {
-    let msg = DcSctpMessage::new(StreamId(stream_id), PpId(ppid), payload.to_vec());
-    let rust_options = DcSctpSendOptions {
-        unordered: options.unordered,
-        lifetime: (options.lifetime_ms < MAX_LIFETIME_MS)
-            .then_some(Duration::from_millis(options.lifetime_ms)),
-        max_retransmissions: (options.max_retransmissions != u16::MAX)
-            .then_some(options.max_retransmissions),
-        lifecycle_id: crate::api::LifecycleId::new(options.lifecycle_id),
-    };
-    match socket.0.send(msg, &rust_options) {
-        DcSctpSendStatus::Success => bridge::SendStatus::Success,
-        DcSctpSendStatus::ErrorMessageEmpty => bridge::SendStatus::ErrorMessageEmpty,
-        DcSctpSendStatus::ErrorMessageTooLarge => bridge::SendStatus::ErrorMessageTooLarge,
-        DcSctpSendStatus::ErrorResourceExhaustion => bridge::SendStatus::ErrorResourceExhaustion,
-        DcSctpSendStatus::ErrorShuttingDown => bridge::SendStatus::ErrorShuttingDown,
-    }
+    let msg = DcSctpMessage::new(StreamId(message.stream_id), PpId(message.ppid), message.payload);
+    socket.0.send(msg, &options.into()).into()
+}
+
+fn send_many(
+    socket: &mut DcSctpSocket,
+    messages: Vec<bridge::Message>,
+    options: &bridge::SendOptions,
+) -> Vec<bridge::SendStatus> {
+    let messages = messages
+        .into_iter()
+        .map(|msg| DcSctpMessage::new(StreamId(msg.stream_id), PpId(msg.ppid), msg.payload))
+        .collect();
+    socket.0.send_many(messages, &options.into()).into_iter().map(Into::into).collect()
 }

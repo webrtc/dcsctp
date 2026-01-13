@@ -96,16 +96,16 @@ int main() {
     // A -> "Hello Z" -> Z
     std::cout << "A: sending 'Hello Z'" << std::endl;
     std::string msg_a_to_z_str = "Hello Z";
-    rust::Slice<const uint8_t> msg_a_to_z(
-        reinterpret_cast<const uint8_t*>(msg_a_to_z_str.c_str()),
-        msg_a_to_z_str.length());
+    dcsctp_cxx::Message msg_a_to_z = dcsctp_cxx::create_message(
+        /*stream_id=*/0, /*ppid=*/53, msg_a_to_z_str.length());
+    std::copy(msg_a_to_z_str.begin(), msg_a_to_z_str.end(),
+              msg_a_to_z.payload.begin());
 
     dcsctp_cxx::SendOptions send_options_a_to_z =
         dcsctp_cxx::new_send_options();
 
     dcsctp_cxx::SendStatus send_status =
-        dcsctp_cxx::send(*socket_a, /*stream_id=*/0, /*ppid=*/53, msg_a_to_z,
-                         send_options_a_to_z);
+        dcsctp_cxx::send(*socket_a, std::move(msg_a_to_z), send_options_a_to_z);
     if (send_status != dcsctp_cxx::SendStatus::Success) {
       throw std::runtime_error("Failed to send message from A to Z");
     }
@@ -133,14 +133,15 @@ int main() {
     // Z -> "Hello A" -> A
     std::cout << "Z: sending 'Hello A'" << std::endl;
     std::string msg_z_to_a_str = "Hello A";
-    rust::Slice<const uint8_t> msg_z_to_a(
-        reinterpret_cast<const uint8_t*>(msg_z_to_a_str.c_str()),
-        msg_z_to_a_str.length());
+    auto msg_z_to_a =
+        dcsctp_cxx::create_message(1, 53, msg_z_to_a_str.length());
+    std::copy(msg_z_to_a_str.begin(), msg_z_to_a_str.end(),
+              msg_z_to_a.payload.begin());
 
     auto send_options_z_to_a = dcsctp_cxx::new_send_options();
 
-    send_status = dcsctp_cxx::send(*socket_z, /*stream_id=*/1, /*ppid=*/53,
-                                   msg_z_to_a, send_options_z_to_a);
+    send_status =
+        dcsctp_cxx::send(*socket_z, std::move(msg_z_to_a), send_options_z_to_a);
     if (send_status != dcsctp_cxx::SendStatus::Success) {
       throw std::runtime_error("Failed to send message from Z to A");
     }
