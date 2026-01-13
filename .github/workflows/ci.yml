@@ -48,6 +48,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  check-clang-format:
+    name: Check (clang-format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - run: |
+          git ls-files -z '*.cc' '*.h' | xargs -0 clang-format --dry-run --Werror
+
   check-clippy:
     name: Check (clippy)
     runs-on: ubuntu-latest
