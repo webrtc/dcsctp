@@ -3255,4 +3255,66 @@ mod tests {
         assert_eq!(message.payload, payload);
         assert!(socket_z.get_next_message().is_none());
     }
+
+    #[test]
+    fn handover_preserves_stream_reset_state() {
+        let options = default_options();
+        let mut socket_a1 = Socket::new("A1", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a1, &mut socket_z);
+
+        // 1. Z resets stream 1. A1 processes it.
+        socket_z.reset_streams(&[StreamId(1)]);
+        // Z -> RECONFIG -> A1
+        socket_a1.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        let streams = expect_on_incoming_stream_reset!(socket_a1.poll_event());
+        assert_eq!(streams, &[StreamId(1)]);
+        // Z <- RECONFIG (Response) <- A1
+        socket_z.handle_input(&expect_sent_packet!(socket_a1.poll_event()));
+        let streams = expect_on_streams_reset_performed!(socket_z.poll_event());
+        assert_eq!(streams, &[StreamId(1)]);
+
+        // 2. A1 resets stream 1. Z processes it.
+        socket_a1.reset_streams(&[StreamId(1)]);
+        // A1 -> RECONFIG -> Z
+        socket_z.handle_input(&expect_sent_packet!(socket_a1.poll_event()));
+        let streams = expect_on_incoming_stream_reset!(socket_z.poll_event());
+        assert_eq!(streams, &[StreamId(1)]);
+        // A1 <- RECONFIG (Response) <- Z
+        socket_a1.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        let streams = expect_on_streams_reset_performed!(socket_a1.poll_event());
+        assert_eq!(streams, &[StreamId(1)]);
+
+        // Handover A1 -> A2
+        let mut socket_a2 = Socket::new("A2", &options);
+        handover_socket(&mut socket_a1, &mut socket_a2);
+
+        // 3. Verify A2 has correct next outgoing sequence number.
+        // A2 resets stream 2.
+        // If A2 lost state, it would reuse the old sequence number, which Z would treat as a
+        // retransmission (and thus NOT trigger on_incoming_stream_reset).
+        socket_a2.reset_streams(&[StreamId(2)]);
+        // A2 -> RECONFIG -> Z
+        socket_z.handle_input(&expect_sent_packet!(socket_a2.poll_event()));
+        let streams = expect_on_incoming_stream_reset!(socket_z.poll_event());
+        assert_eq!(streams, &[StreamId(2)]);
+        // A2 <- RECONFIG (Response) <- Z
+        socket_a2.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        let streams = expect_on_streams_reset_performed!(socket_a2.poll_event());
+        assert_eq!(streams, &[StreamId(2)]);
+
+        // 4. Verify A2 has correct last processed sequence number.
+        // Z resets stream 2.
+        // If A2 lost state, it would see a gap in sequence numbers (expecting initial, getting
+        // initial+1), and would return an error.
+        socket_z.reset_streams(&[StreamId(2)]);
+        // Z -> RECONFIG -> A2
+        socket_a2.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        let streams = expect_on_incoming_stream_reset!(socket_a2.poll_event());
+        assert_eq!(streams, &[StreamId(2)]);
+        // Z <- RECONFIG (Response) <- A2
+        socket_z.handle_input(&expect_sent_packet!(socket_a2.poll_event()));
+        let streams = expect_on_streams_reset_performed!(socket_z.poll_event());
+        assert_eq!(streams, &[StreamId(2)]);
+    }
 }
