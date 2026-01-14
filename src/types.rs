@@ -28,7 +28,7 @@ pub enum StreamKey {
 }
 
 impl StreamKey {
-    pub fn from(is_unordered: bool, id: StreamId) -> Self {
+    pub fn new(is_unordered: bool, id: StreamId) -> Self {
         if is_unordered { Self::Unordered(id) } else { Self::Ordered(id) }
     }
 

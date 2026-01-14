@@ -73,7 +73,7 @@ impl TryFrom<RawChunk<'_>> for DataChunk {
 
         let tsn = Tsn(read_u32_be!(&raw.value[0..4]));
         let is_unordered = raw.flags & (1 << FLAGS_BIT_UNORDERED) != 0;
-        let stream_key = StreamKey::from(is_unordered, StreamId(read_u16_be!(&raw.value[4..6])));
+        let stream_key = StreamKey::new(is_unordered, StreamId(read_u16_be!(&raw.value[4..6])));
         let data = Data {
             stream_key,
             ssn: Ssn(read_u16_be!(&raw.value[6..8])),
