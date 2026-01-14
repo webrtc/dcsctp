@@ -246,12 +246,18 @@ impl TransmissionControlBlock {
         state.peer_initial_tsn = self.peer_initial_tsn.0;
         state.tie_tag = self.tie_tag;
 
+        state.rx.last_completed_reset_req_sn = self.last_processed_req_seq_nbr;
+        state.tx.next_reset_req_sn = self.next_outgoing_reset_req_seq_nbr;
+
         self.data_tracker.add_to_handover_state(state);
         self.reassembly_queue.add_to_handover_state(state);
         self.retransmission_queue.add_to_handover_state(state);
     }
 
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
+        self.last_processed_req_seq_nbr = state.rx.last_completed_reset_req_sn;
+        self.next_outgoing_reset_req_seq_nbr = state.tx.next_reset_req_sn;
+
         self.data_tracker.restore_from_state(state);
         self.reassembly_queue.restore_from_state(state);
         self.retransmission_queue.restore_from_state(state);
