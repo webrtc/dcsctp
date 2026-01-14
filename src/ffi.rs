@@ -25,6 +25,14 @@ use crate::api::SendStatus as DcSctpSendStatus;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
 use crate::api::StreamId;
+use crate::api::handover::HandoverCapabilities as DcSctpHandoverCapabilities;
+use crate::api::handover::HandoverOrderedStream as DcSctpHandoverOrderedStream;
+use crate::api::handover::HandoverOutgoingStream as DcSctpHandoverOutgoingStream;
+use crate::api::handover::HandoverReceive as DcSctpHandoverReceive;
+use crate::api::handover::HandoverSocketState as DcSctpHandoverSocketState;
+use crate::api::handover::HandoverTransmission as DcSctpHandoverTransmission;
+use crate::api::handover::HandoverUnorderedStream as DcSctpHandoverUnorderedStream;
+use crate::api::handover::SocketHandoverState as DcSctpSocketHandoverState;
 use std::time::Duration;
 
 const MAX_LIFETIME_MS: u64 = 3600 * 1000;
@@ -119,6 +127,78 @@ mod bridge {
         stream_ids: Vec<u16>,
     }
 
+    #[derive(Debug)]
+    enum HandoverSocketState {
+        Closed,
+        Connected,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverCapabilities {
+        partial_reliability: bool,
+        message_interleaving: bool,
+        reconfig: bool,
+        zero_checksum: bool,
+        negotiated_maximum_incoming_streams: u16,
+        negotiated_maximum_outgoing_streams: u16,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverOutgoingStream {
+        id: u16,
+        next_ssn: u16,
+        next_unordered_mid: u32,
+        next_ordered_mid: u32,
+        priority: u16,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverTransmission {
+        next_tsn: u32,
+        next_reset_req_sn: u32,
+        cwnd: u32,
+        rwnd: u32,
+        ssthresh: u32,
+        partial_bytes_acked: u32,
+        streams: Vec<HandoverOutgoingStream>,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverOrderedStream {
+        id: u16,
+        next_ssn: u32,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverUnorderedStream {
+        id: u16,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverReceive {
+        seen_packet: bool,
+        last_cumulative_acked_tsn: u32,
+        last_assembled_tsn: u32,
+        last_completed_deferred_reset_req_sn: u32,
+        last_completed_reset_req_sn: u32,
+        ordered_streams: Vec<HandoverOrderedStream>,
+        unordered_streams: Vec<HandoverUnorderedStream>,
+    }
+
+    #[derive(Debug, Default)]
+    struct SocketHandoverState {
+        has_value: bool,
+        socket_state: HandoverSocketState,
+        my_verification_tag: u32,
+        my_initial_tsn: u32,
+        peer_verification_tag: u32,
+        peer_initial_tsn: u32,
+        tie_tag: u64,
+        capabilities: HandoverCapabilities,
+        tx: HandoverTransmission,
+        rx: HandoverReceive,
+    }
+
     // Mirrors the Rust Options struct, where all optional primitive values (u32, u64) encoded as
     // their maximum value.
     struct Options {
@@ -168,6 +248,7 @@ mod bridge {
         unsafe fn delete_socket(socket: *mut DcSctpSocket);
         fn state(socket: &DcSctpSocket) -> SocketState;
         fn connect(socket: &mut DcSctpSocket);
+        fn restore_from_state(socket: &mut DcSctpSocket, state: &SocketHandoverState);
         fn shutdown(socket: &mut DcSctpSocket);
         fn close(socket: &mut DcSctpSocket);
         fn options(socket: &DcSctpSocket) -> Options;
@@ -187,6 +268,9 @@ mod bridge {
         fn poll_timeout(socket: &DcSctpSocket) -> u64;
         fn message_ready_count(socket: &DcSctpSocket) -> usize;
         fn get_next_message(socket: &mut DcSctpSocket) -> Message;
+        fn get_handover_readiness(socket: &DcSctpSocket) -> u32;
+        fn get_handover_readiness_string(socket: &DcSctpSocket) -> String;
+        fn get_handover_state_and_close(socket: &mut DcSctpSocket) -> SocketHandoverState;
         fn new_send_options() -> SendOptions;
         fn send(socket: &mut DcSctpSocket, message: Message, options: &SendOptions) -> SendStatus;
         fn send_many(
@@ -212,6 +296,194 @@ impl Default for bridge::Event {
             error_reason: "".to_string(),
             packet: vec![],
             stream_ids: vec![],
+        }
+    }
+}
+
+impl Default for bridge::HandoverSocketState {
+    fn default() -> Self {
+        bridge::HandoverSocketState::Closed
+    }
+}
+
+impl From<DcSctpHandoverSocketState> for bridge::HandoverSocketState {
+    fn from(value: DcSctpHandoverSocketState) -> Self {
+        match value {
+            DcSctpHandoverSocketState::Closed => bridge::HandoverSocketState::Closed,
+            DcSctpHandoverSocketState::Connected => bridge::HandoverSocketState::Connected,
+        }
+    }
+}
+
+impl From<&bridge::HandoverSocketState> for DcSctpHandoverSocketState {
+    fn from(value: &bridge::HandoverSocketState) -> Self {
+        match *value {
+            bridge::HandoverSocketState::Closed => DcSctpHandoverSocketState::Closed,
+            bridge::HandoverSocketState::Connected => DcSctpHandoverSocketState::Connected,
+            _ => DcSctpHandoverSocketState::Closed,
+        }
+    }
+}
+
+impl From<DcSctpHandoverCapabilities> for bridge::HandoverCapabilities {
+    fn from(value: DcSctpHandoverCapabilities) -> Self {
+        Self {
+            partial_reliability: value.partial_reliability,
+            message_interleaving: value.message_interleaving,
+            reconfig: value.reconfig,
+            zero_checksum: value.zero_checksum,
+            negotiated_maximum_incoming_streams: value.negotiated_maximum_incoming_streams,
+            negotiated_maximum_outgoing_streams: value.negotiated_maximum_outgoing_streams,
+        }
+    }
+}
+
+impl From<&bridge::HandoverCapabilities> for DcSctpHandoverCapabilities {
+    fn from(value: &bridge::HandoverCapabilities) -> Self {
+        Self {
+            partial_reliability: value.partial_reliability,
+            message_interleaving: value.message_interleaving,
+            reconfig: value.reconfig,
+            zero_checksum: value.zero_checksum,
+            negotiated_maximum_incoming_streams: value.negotiated_maximum_incoming_streams,
+            negotiated_maximum_outgoing_streams: value.negotiated_maximum_outgoing_streams,
+        }
+    }
+}
+
+impl From<DcSctpHandoverOutgoingStream> for bridge::HandoverOutgoingStream {
+    fn from(value: DcSctpHandoverOutgoingStream) -> Self {
+        Self {
+            id: value.id,
+            next_ssn: value.next_ssn,
+            next_unordered_mid: value.next_unordered_mid,
+            next_ordered_mid: value.next_ordered_mid,
+            priority: value.priority,
+        }
+    }
+}
+
+impl From<&bridge::HandoverOutgoingStream> for DcSctpHandoverOutgoingStream {
+    fn from(value: &bridge::HandoverOutgoingStream) -> Self {
+        Self {
+            id: value.id,
+            next_ssn: value.next_ssn,
+            next_unordered_mid: value.next_unordered_mid,
+            next_ordered_mid: value.next_ordered_mid,
+            priority: value.priority,
+        }
+    }
+}
+
+impl From<DcSctpHandoverTransmission> for bridge::HandoverTransmission {
+    fn from(value: DcSctpHandoverTransmission) -> Self {
+        Self {
+            next_tsn: value.next_tsn,
+            next_reset_req_sn: value.next_reset_req_sn,
+            cwnd: value.cwnd,
+            rwnd: value.rwnd,
+            ssthresh: value.ssthresh,
+            partial_bytes_acked: value.partial_bytes_acked,
+            streams: value.streams.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&bridge::HandoverTransmission> for DcSctpHandoverTransmission {
+    fn from(value: &bridge::HandoverTransmission) -> Self {
+        Self {
+            next_tsn: value.next_tsn,
+            next_reset_req_sn: value.next_reset_req_sn,
+            cwnd: value.cwnd,
+            rwnd: value.rwnd,
+            ssthresh: value.ssthresh,
+            partial_bytes_acked: value.partial_bytes_acked,
+            streams: value.streams.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<DcSctpHandoverOrderedStream> for bridge::HandoverOrderedStream {
+    fn from(value: DcSctpHandoverOrderedStream) -> Self {
+        Self { id: value.id, next_ssn: value.next_ssn }
+    }
+}
+
+impl From<&bridge::HandoverOrderedStream> for DcSctpHandoverOrderedStream {
+    fn from(value: &bridge::HandoverOrderedStream) -> Self {
+        Self { id: value.id, next_ssn: value.next_ssn }
+    }
+}
+
+impl From<DcSctpHandoverUnorderedStream> for bridge::HandoverUnorderedStream {
+    fn from(value: DcSctpHandoverUnorderedStream) -> Self {
+        Self { id: value.id }
+    }
+}
+
+impl From<&bridge::HandoverUnorderedStream> for DcSctpHandoverUnorderedStream {
+    fn from(value: &bridge::HandoverUnorderedStream) -> Self {
+        Self { id: value.id }
+    }
+}
+
+impl From<DcSctpHandoverReceive> for bridge::HandoverReceive {
+    fn from(value: DcSctpHandoverReceive) -> Self {
+        Self {
+            seen_packet: value.seen_packet,
+            last_cumulative_acked_tsn: value.last_cumulative_acked_tsn,
+            last_assembled_tsn: value.last_assembled_tsn,
+            last_completed_deferred_reset_req_sn: value.last_completed_deferred_reset_req_sn,
+            last_completed_reset_req_sn: value.last_completed_reset_req_sn,
+            ordered_streams: value.ordered_streams.into_iter().map(Into::into).collect(),
+            unordered_streams: value.unordered_streams.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&bridge::HandoverReceive> for DcSctpHandoverReceive {
+    fn from(value: &bridge::HandoverReceive) -> Self {
+        Self {
+            seen_packet: value.seen_packet,
+            last_cumulative_acked_tsn: value.last_cumulative_acked_tsn,
+            last_assembled_tsn: value.last_assembled_tsn,
+            last_completed_deferred_reset_req_sn: value.last_completed_deferred_reset_req_sn,
+            last_completed_reset_req_sn: value.last_completed_reset_req_sn,
+            ordered_streams: value.ordered_streams.iter().map(Into::into).collect(),
+            unordered_streams: value.unordered_streams.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<DcSctpSocketHandoverState> for bridge::SocketHandoverState {
+    fn from(value: DcSctpSocketHandoverState) -> Self {
+        Self {
+            has_value: true,
+            socket_state: value.socket_state.into(),
+            my_verification_tag: value.my_verification_tag,
+            my_initial_tsn: value.my_initial_tsn,
+            peer_verification_tag: value.peer_verification_tag,
+            peer_initial_tsn: value.peer_initial_tsn,
+            tie_tag: value.tie_tag,
+            capabilities: value.capabilities.into(),
+            tx: value.tx.into(),
+            rx: value.rx.into(),
+        }
+    }
+}
+
+impl From<&bridge::SocketHandoverState> for DcSctpSocketHandoverState {
+    fn from(value: &bridge::SocketHandoverState) -> Self {
+        Self {
+            socket_state: (&value.socket_state).into(),
+            my_verification_tag: value.my_verification_tag,
+            my_initial_tsn: value.my_initial_tsn,
+            peer_verification_tag: value.peer_verification_tag,
+            peer_initial_tsn: value.peer_initial_tsn,
+            tie_tag: value.tie_tag,
+            capabilities: (&value.capabilities).into(),
+            tx: (&value.tx).into(),
+            rx: (&value.rx).into(),
         }
     }
 }
@@ -608,4 +880,20 @@ fn send_many(
         .map(|msg| DcSctpMessage::new(StreamId(msg.stream_id), PpId(msg.ppid), msg.payload))
         .collect();
     socket.0.send_many(messages, &options.into()).into_iter().map(Into::into).collect()
+}
+
+fn restore_from_state(socket: &mut DcSctpSocket, state: &bridge::SocketHandoverState) {
+    socket.0.restore_from_state(&state.into());
+}
+
+fn get_handover_readiness(socket: &DcSctpSocket) -> u32 {
+    socket.0.get_handover_readiness().0
+}
+
+fn get_handover_readiness_string(socket: &DcSctpSocket) -> String {
+    socket.0.get_handover_readiness().to_string()
+}
+
+fn get_handover_state_and_close(socket: &mut DcSctpSocket) -> bridge::SocketHandoverState {
+    socket.0.get_handover_state_and_close().map(Into::into).unwrap_or_default()
 }

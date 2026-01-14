@@ -75,6 +75,8 @@ int main() {
   dcsctp_cxx::Options options = dcsctp_cxx::default_options();
   options.heartbeat_interval = 0;
 
+  dcsctp_cxx::SendOptions default_send_options = dcsctp_cxx::new_send_options();
+
   dcsctp_cxx::DcSctpSocket* socket_a = dcsctp_cxx::new_socket("a", options);
   dcsctp_cxx::DcSctpSocket* socket_z = dcsctp_cxx::new_socket("z", options);
   std::cout << "Created two sockets: A and Z" << std::endl;
@@ -101,11 +103,8 @@ int main() {
     std::copy(msg_a_to_z_str.begin(), msg_a_to_z_str.end(),
               msg_a_to_z.payload.begin());
 
-    dcsctp_cxx::SendOptions send_options_a_to_z =
-        dcsctp_cxx::new_send_options();
-
-    dcsctp_cxx::SendStatus send_status =
-        dcsctp_cxx::send(*socket_a, std::move(msg_a_to_z), send_options_a_to_z);
+    dcsctp_cxx::SendStatus send_status = dcsctp_cxx::send(
+        *socket_a, std::move(msg_a_to_z), default_send_options);
     if (send_status != dcsctp_cxx::SendStatus::Success) {
       throw std::runtime_error("Failed to send message from A to Z");
     }
@@ -138,10 +137,8 @@ int main() {
     std::copy(msg_z_to_a_str.begin(), msg_z_to_a_str.end(),
               msg_z_to_a.payload.begin());
 
-    auto send_options_z_to_a = dcsctp_cxx::new_send_options();
-
-    send_status =
-        dcsctp_cxx::send(*socket_z, std::move(msg_z_to_a), send_options_z_to_a);
+    send_status = dcsctp_cxx::send(*socket_z, std::move(msg_z_to_a),
+                                   default_send_options);
     if (send_status != dcsctp_cxx::SendStatus::Success) {
       throw std::runtime_error("Failed to send message from Z to A");
     }
@@ -165,6 +162,66 @@ int main() {
     if (received_payload_a != msg_z_to_a_str) {
       throw std::runtime_error("A received wrong message from Z");
     }
+
+    // Handover Z -> Z2
+    std::cout << "Performing handover of Z to Z2..." << std::endl;
+    dcsctp_cxx::DcSctpSocket* socket_z2 = dcsctp_cxx::new_socket("z2", options);
+
+    uint32_t readiness = dcsctp_cxx::get_handover_readiness(*socket_z);
+    if (readiness != 0) {
+      throw std::runtime_error("Socket Z is not ready for handover");
+    }
+
+    dcsctp_cxx::SocketHandoverState state =
+        dcsctp_cxx::get_handover_state_and_close(*socket_z);
+    if (!state.has_value) {
+      throw std::runtime_error("Failed to get handover state from Z");
+    }
+
+    dcsctp_cxx::restore_from_state(*socket_z2, state);
+
+    if (dcsctp_cxx::state(*socket_z2) == dcsctp_cxx::SocketState::Connected) {
+      std::cout << "Socket Z2 restored and connected!" << std::endl;
+    } else {
+      throw std::runtime_error(
+          "Socket Z2 failed to restore to Connected state");
+    }
+
+    // A -> "Hello Z2" -> Z2
+    std::cout << "A: sending 'Hello Z2'" << std::endl;
+    std::string msg_a_to_z2_str = "Hello Z2";
+    auto msg_a_to_z2 =
+        dcsctp_cxx::create_message(1, 53, msg_a_to_z2_str.length());
+    std::copy(msg_a_to_z2_str.begin(), msg_a_to_z2_str.end(),
+              msg_a_to_z2.payload.begin());
+
+    send_status = dcsctp_cxx::send(*socket_a, std::move(msg_a_to_z2),
+                                   default_send_options);
+    if (send_status != dcsctp_cxx::SendStatus::Success) {
+      throw std::runtime_error("Failed to send message from A to Z2");
+    }
+
+    exchange_packets(*socket_a, *socket_z2);
+
+    if (dcsctp_cxx::message_ready_count(*socket_z2) != 1) {
+      throw std::runtime_error("Z2 did not receive the message from A");
+    }
+
+    dcsctp_cxx::Message received_msg_z2 =
+        dcsctp_cxx::get_next_message(*socket_z2);
+    std::string received_payload_z2(
+        reinterpret_cast<const char*>(received_msg_z2.payload.data()),
+        received_msg_z2.payload.size());
+
+    std::cout << "Z2: received message '" << received_payload_z2
+              << "' on stream " << received_msg_z2.stream_id << " with ppid "
+              << received_msg_z2.ppid << std::endl;
+
+    if (received_payload_z2 != msg_a_to_z2_str) {
+      throw std::runtime_error("Z2 received wrong message from A");
+    }
+
+    dcsctp_cxx::delete_socket(socket_z2);
 
   } catch (const std::runtime_error& e) {
     std::cerr << "Caught an exception: " << e.what() << std::endl;
