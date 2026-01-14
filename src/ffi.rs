@@ -18,8 +18,11 @@ use crate::api::DcSctpSocket as DcSctpSocketTrait;
 use crate::api::ErrorKind as DcSctpErrorKind;
 use crate::api::LifecycleId;
 use crate::api::Message as DcSctpMessage;
+use crate::api::Metrics as DcSctpMetrics;
 use crate::api::Options as DcSctpOptions;
 use crate::api::PpId;
+use crate::api::ResetStreamsStatus as DcSctpResetStreamsStatus;
+use crate::api::SctpImplementation as DcSctpSctpImplementation;
 use crate::api::SendOptions as DcSctpSendOptions;
 use crate::api::SendStatus as DcSctpSendStatus;
 use crate::api::SocketEvent as DcSctpSocketEvent;
@@ -115,6 +118,42 @@ mod bridge {
         ErrorMessageTooLarge,
         ErrorResourceExhaustion,
         ErrorShuttingDown,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum ResetStreamsStatus {
+        NotConnected,
+        Performed,
+        NotSupported,
+    }
+
+    #[derive(Debug)]
+    enum SctpImplementation {
+        Unknown,
+        DcsctpRs,
+        DcsctpCc,
+        UsrSctp,
+        Other,
+    }
+
+    #[derive(Debug)]
+    struct Metrics {
+        has_value: bool,
+        tx_packets_count: usize,
+        tx_messages_count: usize,
+        rtx_packets_count: usize,
+        rtx_bytes_count: u64,
+        cwnd_bytes: usize,
+        srtt_ms: u64,
+        unack_data_count: usize,
+        rx_packets_count: usize,
+        rx_messages_count: usize,
+        peer_rwnd_bytes: u32,
+        peer_implementation: SctpImplementation,
+        uses_message_interleaving: bool,
+        uses_zero_checksum: bool,
+        negotiated_maximum_incoming_streams: u16,
+        negotiated_maximum_outgoing_streams: u16,
     }
 
     struct Event {
@@ -278,6 +317,8 @@ mod bridge {
             messages: Vec<Message>,
             options: &SendOptions,
         ) -> Vec<SendStatus>;
+        fn reset_streams(socket: &mut DcSctpSocket, stream_ids: Vec<u16>) -> ResetStreamsStatus;
+        fn get_metrics(socket: &DcSctpSocket) -> Metrics;
     }
 }
 
@@ -744,6 +785,74 @@ impl From<&bridge::SendOptions> for DcSctpSendOptions {
     }
 }
 
+impl From<DcSctpResetStreamsStatus> for bridge::ResetStreamsStatus {
+    fn from(status: DcSctpResetStreamsStatus) -> Self {
+        match status {
+            DcSctpResetStreamsStatus::NotConnected => bridge::ResetStreamsStatus::NotConnected,
+            DcSctpResetStreamsStatus::Performed => bridge::ResetStreamsStatus::Performed,
+            DcSctpResetStreamsStatus::NotSupported => bridge::ResetStreamsStatus::NotSupported,
+        }
+    }
+}
+
+impl From<DcSctpSctpImplementation> for bridge::SctpImplementation {
+    fn from(impl_: DcSctpSctpImplementation) -> Self {
+        match impl_ {
+            DcSctpSctpImplementation::Unknown => bridge::SctpImplementation::Unknown,
+            DcSctpSctpImplementation::DcsctpRs => bridge::SctpImplementation::DcsctpRs,
+            DcSctpSctpImplementation::DcsctpCc => bridge::SctpImplementation::DcsctpCc,
+            DcSctpSctpImplementation::UsrSctp => bridge::SctpImplementation::UsrSctp,
+            DcSctpSctpImplementation::Other => bridge::SctpImplementation::Other,
+        }
+    }
+}
+
+impl Default for bridge::Metrics {
+    fn default() -> Self {
+        Self {
+            has_value: false,
+            tx_packets_count: 0,
+            tx_messages_count: 0,
+            rtx_packets_count: 0,
+            rtx_bytes_count: 0,
+            cwnd_bytes: 0,
+            srtt_ms: 0,
+            unack_data_count: 0,
+            rx_packets_count: 0,
+            rx_messages_count: 0,
+            peer_rwnd_bytes: 0,
+            peer_implementation: bridge::SctpImplementation::Unknown,
+            uses_message_interleaving: false,
+            uses_zero_checksum: false,
+            negotiated_maximum_incoming_streams: 0,
+            negotiated_maximum_outgoing_streams: 0,
+        }
+    }
+}
+
+impl From<DcSctpMetrics> for bridge::Metrics {
+    fn from(metrics: DcSctpMetrics) -> Self {
+        Self {
+            has_value: true,
+            tx_packets_count: metrics.tx_packets_count,
+            tx_messages_count: metrics.tx_messages_count,
+            rtx_packets_count: metrics.rtx_packets_count,
+            rtx_bytes_count: metrics.rtx_bytes_count,
+            cwnd_bytes: metrics.cwnd_bytes,
+            srtt_ms: metrics.srtt.as_millis().try_into().unwrap_or(u64::MAX),
+            unack_data_count: metrics.unack_data_count,
+            rx_packets_count: metrics.rx_packets_count,
+            rx_messages_count: metrics.rx_messages_count,
+            peer_rwnd_bytes: metrics.peer_rwnd_bytes,
+            peer_implementation: metrics.peer_implementation.into(),
+            uses_message_interleaving: metrics.uses_message_interleaving,
+            uses_zero_checksum: metrics.uses_zero_checksum,
+            negotiated_maximum_incoming_streams: metrics.negotiated_maximum_incoming_streams,
+            negotiated_maximum_outgoing_streams: metrics.negotiated_maximum_outgoing_streams,
+        }
+    }
+}
+
 pub struct DcSctpSocket(Box<dyn DcSctpSocketTrait>);
 
 fn version() -> String {
@@ -896,4 +1005,13 @@ fn get_handover_readiness_string(socket: &DcSctpSocket) -> String {
 
 fn get_handover_state_and_close(socket: &mut DcSctpSocket) -> bridge::SocketHandoverState {
     socket.0.get_handover_state_and_close().map(Into::into).unwrap_or_default()
+}
+
+fn reset_streams(socket: &mut DcSctpSocket, stream_ids: Vec<u16>) -> bridge::ResetStreamsStatus {
+    let stream_ids: Vec<StreamId> = stream_ids.into_iter().map(StreamId).collect();
+    socket.0.reset_streams(&stream_ids).into()
+}
+
+fn get_metrics(socket: &DcSctpSocket) -> bridge::Metrics {
+    socket.0.get_metrics().map(Into::into).unwrap_or_default()
 }
