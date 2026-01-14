@@ -77,7 +77,7 @@ impl TryFrom<RawChunk<'_>> for IForwardTsnChunk {
                 let stream_id = StreamId(read_u16_be!(&c[0..2]));
                 let is_unordered = (c[3] & 1) != 0;
                 let mid = Mid(read_u32_be!(&c[4..8]));
-                SkippedStream::IForwardTsn(StreamKey::from(is_unordered, stream_id), mid)
+                SkippedStream::IForwardTsn(StreamKey::new(is_unordered, stream_id), mid)
             })
             .collect();
 

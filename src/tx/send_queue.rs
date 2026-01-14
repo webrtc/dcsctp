@@ -336,7 +336,7 @@ impl<'a> SendQueue<'a> {
         stream.buffered_amount -= payload.len();
 
         let data = Data {
-            stream_key: StreamKey::from(item.attributes.unordered, stream_id),
+            stream_key: StreamKey::new(item.attributes.unordered, stream_id),
             ssn: item.ssn.unwrap_or(Ssn(0)),
             mid: item.mid.unwrap(),
             fsn,
