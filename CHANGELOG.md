@@ -11,12 +11,14 @@ and this project adheres to
 ### Added
 
 - `DcSctpSocket::send_many()` is now implemented and accessible with CXX.
+- Exposed handover methods and structs in the CXX interface.
 
 ### Changed
 
 - The code is now compatible with Rust 2024 edition.
 - Updated CXX interface for `dcsctp_cxx::send()` to avoid copying the message
   payload.
+- Handover is now code complete, compatible with the C++ implementation.
 
 ## 0.1.4 - 2026-01-12
 
