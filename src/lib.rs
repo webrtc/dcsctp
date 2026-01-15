@@ -67,10 +67,7 @@ pub(crate) mod logging {
             let _ = write!(output, " {c:02x}");
             output
         });
-        let prefix = match sent {
-            true => "O",
-            false => "I",
-        };
+        let prefix = if sent { "O" } else { "I" };
         let mut remaining = (ts.as_millis() % (24 * 60 * 60 * 1000)) as u64;
         let hours = remaining / (60 * 60 * 1000);
         remaining %= 60 * 60 * 1000;
