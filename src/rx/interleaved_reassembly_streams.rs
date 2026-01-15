@@ -122,7 +122,7 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
         on_reassembled: &mut dyn FnMut(Message),
     ) -> usize {
         let mut released_bytes = 0;
-        for skipped_stream in skipped_streams.iter() {
+        for skipped_stream in skipped_streams {
             if let SkippedStream::IForwardTsn(stream_key, mid) = skipped_stream {
                 let stream = self.get_or_create(*stream_key);
 
@@ -156,7 +156,7 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
     }
 
     fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
-        for (stream_key, stream) in self.streams.iter() {
+        for (stream_key, stream) in &self.streams {
             match stream_key {
                 StreamKey::Ordered(id) => {
                     state

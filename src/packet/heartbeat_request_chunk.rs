@@ -127,6 +127,6 @@ mod tests {
         match deserialized.parameters[0] {
             Parameter::HeartbeatInfo(ref i) if i.info == info => {}
             _ => panic!(),
-        };
+        }
     }
 }

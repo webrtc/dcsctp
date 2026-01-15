@@ -52,7 +52,7 @@ impl TryFrom<RawParameter<'_>> for UnrecognizedChunkErrorCause {
 impl SerializableTlv for UnrecognizedChunkErrorCause {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_parameter_header(CAUSE_CODE, self.value_size(), output);
-        value.copy_from_slice(&self.chunk)
+        value.copy_from_slice(&self.chunk);
     }
 
     fn value_size(&self) -> usize {

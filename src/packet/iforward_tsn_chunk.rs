@@ -99,7 +99,10 @@ impl SerializableTlv for IForwardTsnChunk {
                     chunk[3] = if stream_key.is_unordered() { 1 } else { 0 };
                     write_u32_be!(&mut chunk[4..8], mid.0);
                 }
-                _ => panic!("Unsupported skipped stream"),
+                SkippedStream::ForwardTsn(..) => {
+                    // This would be a bug in the implementation.
+                    unreachable!();
+                }
             }
         }
     }

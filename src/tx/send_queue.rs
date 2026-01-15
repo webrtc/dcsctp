@@ -212,7 +212,7 @@ impl<'a> SendQueue<'a> {
                 move || {
                     buffered_amount_low_events
                         .borrow_mut()
-                        .add(SocketEvent::OnTotalBufferedAmountLow())
+                        .add(SocketEvent::OnTotalBufferedAmountLow());
                 },
             ),
             current_message_id: OutgoingMessageId(0),
@@ -271,7 +271,7 @@ impl<'a> SendQueue<'a> {
         events: Rc<RefCell<dyn EventSink>>,
     ) -> OutgoingStream<'a> {
         OutgoingStream::new(priority, low_threshold, move || {
-            events.borrow_mut().add(SocketEvent::OnBufferedAmountLow(stream_id))
+            events.borrow_mut().add(SocketEvent::OnBufferedAmountLow(stream_id));
         })
     }
 
@@ -363,8 +363,7 @@ impl<'a> SendQueue<'a> {
             }
 
             let bytes_next = match (&stream.pause_state, stream.items.front()) {
-                (PauseState::Paused, _) => 0,
-                (_, None) => 0,
+                (PauseState::Paused, _) | (_, None) => 0,
                 (_, Some(item)) => item.remaining_size,
             };
             self.scheduler.set_bytes_remaining(
@@ -397,7 +396,7 @@ impl<'a> SendQueue<'a> {
         let priority = self.enable_message_interleaving.then_some(stream.priority);
         if stream.pause_state == PauseState::Pending {
             stream.pause_state = PauseState::Paused;
-            self.scheduler.set_bytes_remaining(stream_id, 0, priority)
+            self.scheduler.set_bytes_remaining(stream_id, 0, priority);
         } else {
             self.scheduler.set_bytes_remaining(
                 stream_id,
@@ -481,7 +480,7 @@ impl<'a> SendQueue<'a> {
                 stream.next_ssn = Ssn(0);
                 if let Some(item) = stream.items.front() {
                     let priority = self.enable_message_interleaving.then_some(stream.priority);
-                    self.scheduler.set_bytes_remaining(*stream_id, item.remaining_size, priority)
+                    self.scheduler.set_bytes_remaining(*stream_id, item.remaining_size, priority);
                 }
             }
         });
@@ -512,7 +511,7 @@ impl<'a> SendQueue<'a> {
                 item.remaining_offset = 0;
                 item.remaining_size = item_size;
                 let priority = self.enable_message_interleaving.then_some(stream.priority);
-                self.scheduler.set_bytes_remaining(*stream_id, item_size, priority)
+                self.scheduler.set_bytes_remaining(*stream_id, item_size, priority);
             }
         });
     }
@@ -585,7 +584,7 @@ impl<'a> SendQueue<'a> {
                 next_ordered_mid: s.next_ordered_mid.0,
                 priority: s.priority,
             })
-            .collect()
+            .collect();
     }
 
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {

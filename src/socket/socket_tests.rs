@@ -1734,7 +1734,7 @@ mod tests {
             }
             if let Some(e) = socket_z.poll_event() {
                 if let SocketEvent::SendPacket(send) = e {
-                    socket_a.handle_input(&send)
+                    socket_a.handle_input(&send);
                 }
                 again = true;
             }

@@ -35,7 +35,7 @@ impl TryFrom<RawParameter<'_>> for UnknownParameter {
 impl SerializableTlv for UnknownParameter {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_parameter_header(self.typ, self.value_size(), output);
-        value.copy_from_slice(&self.value)
+        value.copy_from_slice(&self.value);
     }
 
     fn value_size(&self) -> usize {
