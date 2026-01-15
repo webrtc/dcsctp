@@ -312,9 +312,10 @@ impl DataTracker {
             .additional_tsn_blocks
             .iter()
             .take(MAX_GAP_ACK_BLOCKS_REPORTED)
-            .map(|b| GapAckBlock {
-                start: b.start.distance_to(cumulative_tsn_ack) as u16,
-                end: (b.end.distance_to(cumulative_tsn_ack) - 1) as u16,
+            .filter_map(|b| {
+                let start = u16::try_from(b.start.distance_to(cumulative_tsn_ack)).ok()?;
+                let end = u16::try_from(b.end.distance_to(cumulative_tsn_ack) - 1).ok()?;
+                Some(GapAckBlock { start, end })
             })
             .collect();
 

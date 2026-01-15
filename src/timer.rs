@@ -72,7 +72,7 @@ impl Timer {
             BackoffAlgorithm::Fixed => self.base_duration,
             BackoffAlgorithm::Exponential => {
                 let backoff_count = self.expiration_count.saturating_sub(1).min(MAX_BACKOFF_COUNT);
-                self.base_duration * (1 << backoff_count)
+                self.base_duration.saturating_mul(1 << backoff_count)
             }
         };
         min(duration, self.max_backoff_duration)
@@ -93,24 +93,21 @@ impl Timer {
     /// has reached its max restart limit (if any), it will be stopped, otherwise, it will keep
     /// running.
     pub fn expire(&mut self, now: SocketTime) -> bool {
-        match self.next_expiry {
-            // Not running.
-            None => false,
+        let Some(current_expiry) = self.next_expiry else {
+            return false;
+        };
 
-            // Not expired.
-            Some(t) if t > now => false,
-
-            // Expired.
-            Some(current_expiry) => {
-                self.expiration_count += 1;
-                self.next_expiry = if self.expiration_count > self.max_restarts {
-                    None
-                } else {
-                    self.compute_expiry(current_expiry)
-                };
-                true
-            }
+        if current_expiry > now {
+            return false;
         }
+
+        let restarts_remaining = self.expiration_count < self.max_restarts;
+        self.expiration_count = self.expiration_count.saturating_add(1);
+
+        self.next_expiry =
+            restarts_remaining.then(|| self.compute_expiry(current_expiry)).flatten();
+
+        true
     }
 
     pub fn next_expiry(&self) -> Option<SocketTime> {

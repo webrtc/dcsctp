@@ -149,6 +149,8 @@ impl AddAssign<usize> for ThresholdWatcher<'_> {
 
 impl SubAssign<usize> for ThresholdWatcher<'_> {
     fn sub_assign(&mut self, rhs: usize) {
+        debug_assert!(self.value >= rhs);
+
         let old_value = self.value;
         self.value -= rhs;
         if old_value > self.low_threshold && self.value <= self.low_threshold {

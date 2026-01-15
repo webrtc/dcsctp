@@ -50,14 +50,14 @@ impl Add<Duration> for SocketTime {
 impl Sub<Duration> for SocketTime {
     type Output = SocketTime;
     fn sub(self, rhs: Duration) -> SocketTime {
-        SocketTime(self.0 - rhs)
+        SocketTime(self.0.saturating_sub(rhs))
     }
 }
 
 impl Sub<SocketTime> for SocketTime {
     type Output = Duration;
     fn sub(self, rhs: SocketTime) -> Duration {
-        self.0 - rhs.0
+        self.0.saturating_sub(rhs.0)
     }
 }
 

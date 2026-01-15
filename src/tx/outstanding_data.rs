@@ -171,7 +171,7 @@ impl Item {
         self.lifecycle = Lifecycle::Active;
         self.ack_state = AckState::Unacked;
         self.nack_count = 0;
-        self.num_retransmissions += 1;
+        self.num_retransmissions = self.num_retransmissions.saturating_add(1);
     }
 
     pub fn abandon(&mut self) {

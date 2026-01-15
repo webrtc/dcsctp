@@ -36,7 +36,7 @@ impl DataSequencer {
         if is_beginning {
             self.fsn = Fsn(0);
         } else {
-            self.fsn = Fsn(self.fsn.0 + 1);
+            self.fsn += 1;
         }
         let data = Data {
             stream_key: StreamKey::Ordered(self.stream_id),
@@ -49,7 +49,7 @@ impl DataSequencer {
             is_end,
         };
         if is_end {
-            self.message_id = Mid(self.message_id.0 + 1);
+            self.message_id += 1;
         }
         data
     }
@@ -60,7 +60,7 @@ impl DataSequencer {
         if is_beginning {
             self.fsn = Fsn(0);
         } else {
-            self.fsn = Fsn(self.fsn.0 + 1);
+            self.fsn += 1;
         }
         let data = Data {
             stream_key: StreamKey::Unordered(self.stream_id),
@@ -73,7 +73,7 @@ impl DataSequencer {
             is_end,
         };
         if is_end {
-            self.message_id = Mid(self.message_id.0 + 1);
+            self.message_id += 1;
         }
         data
     }
