@@ -32,7 +32,7 @@ impl Events {
 
 impl EventSink for Events {
     fn add(&mut self, event: SocketEvent) {
-        self.events.push_back(event)
+        self.events.push_back(event);
     }
 
     fn next_event(&mut self) -> Option<SocketEvent> {

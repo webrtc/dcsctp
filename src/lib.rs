@@ -78,7 +78,7 @@ pub(crate) mod logging {
         info!(
             "{} {:02}:{:02}:{:02}.{:03} 0000{} # SCTP_PACKET {}",
             prefix, hours, minutes, seconds, ms, s, name
-        )
+        );
     }
 }
 

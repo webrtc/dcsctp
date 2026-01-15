@@ -359,7 +359,6 @@ impl From<DcSctpHandoverSocketState> for bridge::HandoverSocketState {
 impl From<&bridge::HandoverSocketState> for DcSctpHandoverSocketState {
     fn from(value: &bridge::HandoverSocketState) -> Self {
         match *value {
-            bridge::HandoverSocketState::Closed => DcSctpHandoverSocketState::Closed,
             bridge::HandoverSocketState::Connected => DcSctpHandoverSocketState::Connected,
             _ => DcSctpHandoverSocketState::Closed,
         }
@@ -933,7 +932,7 @@ fn set_buffered_amount_low_threshold(socket: &mut DcSctpSocket, stream_id: u16, 
 }
 
 fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
-    socket.0.handle_input(data)
+    socket.0.handle_input(data);
 }
 
 fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
@@ -941,7 +940,7 @@ fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
 }
 
 fn advance_time(socket: &mut DcSctpSocket, ns: u64) {
-    socket.0.advance_time(Duration::from_nanos(ns).into())
+    socket.0.advance_time(Duration::from_nanos(ns).into());
 }
 
 fn poll_timeout(socket: &DcSctpSocket) -> u64 {

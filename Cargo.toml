@@ -30,8 +30,14 @@ unsafe-code = "deny"
 warnings = "deny"
 
 [workspace.lints.clippy]
-all = "deny"
-cargo = "deny"
+all = {level = "deny", priority = -1}
+cargo = {level = "deny", priority = -1}
+unnecessary_semicolon = "warn"
+explicit_iter_loop = "warn"
+semicolon_if_nothing_returned = "warn"
+from_iter_instead_of_collect = "warn"
+match_same_arms = "warn"
+match_wildcard_for_single_variants = "warn"
 
 [package]
 name = "dcsctp"

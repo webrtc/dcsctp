@@ -36,7 +36,7 @@ impl TryFrom<RawChunk<'_>> for UnknownChunk {
 impl SerializableTlv for UnknownChunk {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_chunk_header(self.typ, self.flags, self.value_size(), output);
-        value.copy_from_slice(&self.value)
+        value.copy_from_slice(&self.value);
     }
 
     fn value_size(&self) -> usize {

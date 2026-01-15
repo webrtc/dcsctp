@@ -263,7 +263,7 @@ impl OutstandingData {
             self.outstanding_data.pop_front();
             self.last_cumulative_tsn_ack += 1;
         }
-        self.stream_reset_breakpoint_tsns.retain(|b| *b > cumulative_tsn_ack + 1)
+        self.stream_reset_breakpoint_tsns.retain(|b| *b > cumulative_tsn_ack + 1);
     }
 
     fn ack_gap_blocks(
@@ -279,7 +279,7 @@ impl OutstandingData {
         //   advisory.
         //
         // Note that when NR-SACK is supported, this can be handled differently.
-        for block in gap_ack_blocks.iter() {
+        for block in gap_ack_blocks {
             let start = cumulative_tsn_ack.add_to(block.start as u32);
             let end = cumulative_tsn_ack.add_to(block.end as u32);
             let mut tsn = start;
@@ -324,7 +324,7 @@ impl OutstandingData {
         }
 
         let mut prev_block_last_acked = cumulative_tsn_ack;
-        for block in gap_ack_blocks.iter() {
+        for block in gap_ack_blocks {
             let cur_block_first_acked = cumulative_tsn_ack.add_to(block.start as u32);
             let mut tsn = prev_block_last_acked + 1;
             while tsn < cur_block_first_acked && tsn <= max_tsn_to_nack {
@@ -420,7 +420,7 @@ impl OutstandingData {
                 break;
             }
         }
-        for (tsn, _) in result.iter() {
+        for (tsn, _) in &result {
             tsns.remove(tsn);
         }
         result
@@ -467,7 +467,7 @@ impl OutstandingData {
     pub fn expire_outstanding_chunks(&mut self, now: SocketTime) {
         let mut tsns_to_expire: Vec<Tsn> = Vec::new();
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in self.outstanding_data.iter_mut() {
+        for item in &mut self.outstanding_data {
             tsn += 1;
             // Chunks that are nacked can be expired. Care should be taken not to expire unacked
             // (in-flight) chunks as they might have been received, but the SACK is either delayed
@@ -578,7 +578,7 @@ impl OutstandingData {
 
         let mut end_found = false;
         let mut tsn = self.last_cumulative_tsn_ack;
-        for other in self.outstanding_data.iter_mut() {
+        for other in &mut self.outstanding_data {
             tsn += 1;
             if other.message_id == message_id {
                 end_found |= other.data.is_end;
@@ -625,14 +625,14 @@ impl OutstandingData {
         // A two-pass algorithm is needed, as NackItem will invalidate iterators.
         let mut tsns_to_nack: Vec<Tsn> = Vec::new();
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in self.outstanding_data.iter() {
+        for item in &self.outstanding_data {
             tsn += 1;
             if !item.is_acked() {
                 tsns_to_nack.push(tsn);
             }
         }
 
-        for tsn in tsns_to_nack.iter() {
+        for tsn in &tsns_to_nack {
             self.nack_chunk(*tsn, true, false);
         }
     }
@@ -643,7 +643,7 @@ impl OutstandingData {
         let mut new_cumulative_tsn = self.last_cumulative_tsn_ack;
 
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in self.outstanding_data.iter() {
+        for item in &self.outstanding_data {
             tsn += 1;
             if self.stream_reset_breakpoint_tsns.contains(&tsn)
                 || tsn != new_cumulative_tsn + 1
@@ -676,7 +676,7 @@ impl OutstandingData {
         let mut new_cumulative_tsn = self.last_cumulative_tsn_ack;
 
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in self.outstanding_data.iter() {
+        for item in &self.outstanding_data {
             tsn += 1;
             if self.stream_reset_breakpoint_tsns.contains(&tsn)
                 || tsn != new_cumulative_tsn + 1
@@ -719,7 +719,7 @@ impl OutstandingData {
         let mut states: Vec<(Tsn, ChunkState)> = vec![];
         states.push((self.last_cumulative_tsn_ack, ChunkState::Acked));
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in self.outstanding_data.iter() {
+        for item in &self.outstanding_data {
             tsn += 1;
             let state = if item.is_abandoned() {
                 ChunkState::Abandoned

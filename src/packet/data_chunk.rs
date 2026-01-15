@@ -98,8 +98,8 @@ impl SerializableTlv for DataChunk {
             flags |= 1 << FLAGS_BIT_BEGINNING;
         }
         if self.data.stream_key.is_unordered() {
-            flags |= 1 << FLAGS_BIT_UNORDERED
-        };
+            flags |= 1 << FLAGS_BIT_UNORDERED;
+        }
         let value = write_chunk_header(CHUNK_TYPE, flags, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.tsn.0);
         write_u16_be!(&mut value[4..6], self.data.stream_key.id().0);

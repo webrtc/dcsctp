@@ -110,7 +110,7 @@ mod tests {
                 assert_eq!(i.streams, vec![StreamId(6)]);
             }
             _ => panic!(),
-        };
+        }
     }
 
     #[test]
@@ -139,6 +139,6 @@ mod tests {
                 assert_eq!(i.streams, vec![StreamId(42), StreamId(43)]);
             }
             _ => panic!(),
-        };
+        }
     }
 }

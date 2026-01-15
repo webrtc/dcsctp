@@ -108,7 +108,7 @@ mod tests {
                 assert_eq!(i.info, HEARTBEAT_INFO_BYTES);
             }
             _ => panic!(),
-        };
+        }
     }
 
     #[test]
@@ -128,6 +128,6 @@ mod tests {
         match deserialized.parameters[0] {
             Parameter::HeartbeatInfo(ref i) if i.info == info => {}
             _ => panic!(),
-        };
+        }
     }
 }

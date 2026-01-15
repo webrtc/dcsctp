@@ -92,7 +92,7 @@ mod tests {
         assert_eq!(error.error_causes.len(), 1);
         match &error.error_causes[0] {
             ErrorCause::UnrecognizedChunk(c) => {
-                assert_eq!(c.chunk, vec![73, 0, 0, 4])
+                assert_eq!(c.chunk, vec![73, 0, 0, 4]);
             }
             _ => unreachable!(),
         }
@@ -111,7 +111,7 @@ mod tests {
         let parsed = ErrorChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
         match &parsed.error_causes[0] {
             ErrorCause::UnrecognizedChunk(c) => {
-                assert_eq!(c.chunk, vec![1, 2, 3, 4])
+                assert_eq!(c.chunk, vec![1, 2, 3, 4]);
             }
             _ => unreachable!(),
         }

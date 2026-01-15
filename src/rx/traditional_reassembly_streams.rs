@@ -108,13 +108,13 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
         let mut ret = 0;
         // The `skipped_streams` only cover ordered messages - need to iterate all unordered streams
         // manually to remove those chunks.
-        for (stream_key, stream) in self.streams.iter_mut() {
+        for (stream_key, stream) in &mut self.streams {
             if stream_key.is_unordered() {
-                ret += stream.erase_to(new_cumulative_ack, None::<&SkippedStream>, on_reassembled)
+                ret += stream.erase_to(new_cumulative_ack, None::<&SkippedStream>, on_reassembled);
             }
         }
 
-        for skipped_stream in skipped_streams.iter() {
+        for skipped_stream in skipped_streams {
             if let SkippedStream::ForwardTsn(stream_id, _) = skipped_stream {
                 ret += self.get_or_create(StreamKey::Ordered(*stream_id)).erase_to(
                     new_cumulative_ack,

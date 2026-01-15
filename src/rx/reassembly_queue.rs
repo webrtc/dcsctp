@@ -159,7 +159,7 @@ impl ReassemblyQueue {
             deferred.deferred_operations.into_iter().for_each(|op| match op {
                 DeferredOperation::Data(tsn, data) => self.add(tsn, data),
                 DeferredOperation::ForwardTsn(tsn, skipped) => {
-                    self.handle_forward_tsn(tsn, skipped)
+                    self.handle_forward_tsn(tsn, skipped);
                 }
             });
         }

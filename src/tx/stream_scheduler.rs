@@ -162,8 +162,8 @@ impl StreamScheduler {
                 // For non-interleaved streams, avoid rescheduling while still sending a message as
                 // it needs to be sent in full. For interleaved messaging, reschedule for every
                 // I-DATA chunk sent.
-                self.current_stream = None
-            };
+                self.current_stream = None;
+            }
         }
     }
 }
@@ -336,7 +336,7 @@ mod tests {
             &[TestStreamConfig::new(Some(1), 10), TestStreamConfig::new(Some(1), 10)],
             10,
         );
-        assert_eq!(counts, &[5, 5])
+        assert_eq!(counts, &[5, 5]);
     }
 
     #[test]
@@ -544,7 +544,7 @@ mod tests {
             &[TestStreamConfig::new(Some(100), 10), TestStreamConfig::new(Some(200), 10)],
             15,
         );
-        assert_eq!(counts, &[5, 10])
+        assert_eq!(counts, &[5, 10]);
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
             ],
             50,
         );
-        assert_eq!(counts, &[5, 10, 15, 20])
+        assert_eq!(counts, &[5, 10, 15, 20]);
     }
 
     #[test]
@@ -585,7 +585,7 @@ mod tests {
             &[TestStreamConfig::new(Some(100), 8), TestStreamConfig::new(Some(400), 4)],
             90,
         );
-        assert_eq!(counts, &[10, 80])
+        assert_eq!(counts, &[10, 80]);
     }
 
     #[test]
@@ -608,7 +608,7 @@ mod tests {
         // 30 packets * 10 bytes = 300 bytes at priority 200.
         // 15 packets * 20 bytes = 300 bytes at priority 200.
         // 20 packets * 30 bytes = 600 bytes at priority 400.
-        assert_eq!(counts, &[15, 30, 15, 20])
+        assert_eq!(counts, &[15, 30, 15, 20]);
     }
 
     #[test]

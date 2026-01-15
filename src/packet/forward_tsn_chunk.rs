@@ -91,7 +91,10 @@ impl SerializableTlv for ForwardTsnChunk {
                     write_u16_be!(&mut chunk[0..2], stream_id.0);
                     write_u16_be!(&mut chunk[2..4], ssn.0);
                 }
-                _ => panic!("Unsupported skipped stream"),
+                SkippedStream::IForwardTsn(..) => {
+                    // This would be a bug in the implementation.
+                    unreachable!();
+                }
             }
         }
     }

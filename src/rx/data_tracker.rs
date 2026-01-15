@@ -270,7 +270,7 @@ impl DataTracker {
                 false
             } else {
                 if b.start <= new_cumulative_tsn {
-                    b.start = new_cumulative_tsn + 1
+                    b.start = new_cumulative_tsn + 1;
                 }
                 true
             }
@@ -402,7 +402,7 @@ mod tests {
     const START_TIME: SocketTime = SocketTime::zero();
 
     fn observe(d: &mut DataTracker, now: SocketTime, tsns: &[u32]) {
-        for tsn in tsns.iter() {
+        for tsn in tsns {
             d.observe(now, Tsn(*tsn), /* immediate_ack */ false);
         }
     }

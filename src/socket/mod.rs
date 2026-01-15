@@ -229,28 +229,28 @@ impl EventSink for LoggingEvents {
             SocketEvent::OnBufferedAmountLow(e) => info!("OnBufferedAmountLow: {}", e),
             SocketEvent::OnTotalBufferedAmountLow() => info!("OnTotalBufferedAmountLow"),
             SocketEvent::OnLifecycleMessageFullySent(ref id) => {
-                info!("OnLifecycleMessageFullySent({})", id)
+                info!("OnLifecycleMessageFullySent({})", id);
             }
             SocketEvent::OnLifecycleMessageExpired(ref id) => {
-                info!("OnLifecycleMessageExpired({})", id)
+                info!("OnLifecycleMessageExpired({})", id);
             }
             SocketEvent::OnLifecycleMessageMaybeExpired(ref id) => {
-                info!("OnLifecycleMessageMaybeExpired({})", id)
+                info!("OnLifecycleMessageMaybeExpired({})", id);
             }
             SocketEvent::OnLifecycleMessageDelivered(ref id) => {
-                info!("OnLifecycleMessageDelivered({})", id)
+                info!("OnLifecycleMessageDelivered({})", id);
             }
             SocketEvent::OnLifecycleEnd(ref id) => {
-                info!("OnLifecycleEnd({})", id)
+                info!("OnLifecycleEnd({})", id);
             }
             SocketEvent::OnStreamsResetFailed(ref streams) => {
-                info!("OnStreamsResetFailed({:?})", streams)
+                info!("OnStreamsResetFailed({:?})", streams);
             }
             SocketEvent::OnStreamsResetPerformed(ref streams) => {
-                info!("OnStreamsResetPerformed({:?})", streams)
+                info!("OnStreamsResetPerformed({:?})", streams);
             }
             SocketEvent::OnIncomingStreamReset(ref streams) => {
-                info!("OnIncomingStreamReset({:?})", streams)
+                info!("OnIncomingStreamReset({:?})", streams);
             }
             SocketEvent::OnClosed() => {
                 info!("OnClosed()");
@@ -262,7 +262,7 @@ impl EventSink for LoggingEvents {
                 info!("OnConnectionRestarted()");
             }
         }
-        self.parent.borrow_mut().add(event)
+        self.parent.borrow_mut().add(event);
     }
 
     fn next_event(&mut self) -> Option<SocketEvent> {
@@ -371,7 +371,8 @@ fn compute_capabilities(
             })
             .unwrap_or(&vec![])
             .iter()
-            .cloned(),
+            .cloned()
+            .collect::<HashSet<_>>(),
     );
 
     let partial_reliability = options.enable_partial_reliability
@@ -519,7 +520,7 @@ impl Socket<'_> {
                     builder.bytes_remaining(),
                     |max_size, discard| {
                         for (stream_id, message_id) in discard {
-                            self.send_queue.discard(*stream_id, *message_id)
+                            self.send_queue.discard(*stream_id, *message_id);
                         }
                         self.send_queue.produce(now, max_size)
                     },
@@ -1531,10 +1532,11 @@ impl Socket<'_> {
 
     fn handle_shutdown(&mut self) {
         match self.state {
-            State::Closed | State::ShutdownReceived(_) | State::ShutdownAckSent(_) => {
-                // Nothing to do.
-            }
-            State::CookieWait(_) | State::CookieEchoed(_) => {
+            State::Closed
+            | State::ShutdownReceived(_)
+            | State::ShutdownAckSent(_)
+            | State::CookieWait(_)
+            | State::CookieEchoed(_) => {
                 // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-21>:
                 //
                 //   If a SHUTDOWN chunk is received in the COOKIE-WAIT or COOKIE ECHOED state, the
@@ -1741,7 +1743,10 @@ impl DcSctpSocket for Socket<'_> {
                 self.maybe_send_shutdown_on_packet_received(now, &packet.chunks);
                 for chunk in packet.chunks {
                     match chunk {
-                        Chunk::Data(DataChunk { tsn, data }) => self.handle_data(now, tsn, data),
+                        Chunk::Data(DataChunk { tsn, data })
+                        | Chunk::IData(IDataChunk { tsn, data }) => {
+                            self.handle_data(now, tsn, data);
+                        }
                         Chunk::Init(c) => self.handle_init(c),
                         Chunk::InitAck(c) => self.handle_init_ack(now, c),
                         Chunk::Sack(c) => self.handle_sack(now, c),
@@ -1750,7 +1755,7 @@ impl DcSctpSocket for Socket<'_> {
                         Chunk::ShutdownAck(_) => self.handle_shutdown_ack(&packet.common_header),
                         Chunk::Error(c) => self.handle_error(c),
                         Chunk::CookieEcho(c) => {
-                            self.handle_cookie_echo(now, &packet.common_header, c)
+                            self.handle_cookie_echo(now, &packet.common_header, c);
                         }
                         Chunk::CookieAck(_) => self.handle_cookie_ack(now),
                         Chunk::HeartbeatRequest(c) => self.handle_heartbeat_req(c),
@@ -1760,9 +1765,8 @@ impl DcSctpSocket for Socket<'_> {
                         Chunk::ForwardTsn(ForwardTsnChunk {
                             new_cumulative_tsn,
                             skipped_streams,
-                        }) => self.handle_forward_tsn(now, new_cumulative_tsn, skipped_streams),
-                        Chunk::IData(IDataChunk { tsn, data }) => self.handle_data(now, tsn, data),
-                        Chunk::IForwardTsn(IForwardTsnChunk {
+                        })
+                        | Chunk::IForwardTsn(IForwardTsnChunk {
                             new_cumulative_tsn,
                             skipped_streams,
                         }) => self.handle_forward_tsn(now, new_cumulative_tsn, skipped_streams),
@@ -1861,7 +1865,7 @@ impl DcSctpSocket for Socket<'_> {
                 timeout = closest_timeout(timeout, self.heartbeat_timeout.next_expiry());
                 if let State::ShutdownSent(ref s) = self.state {
                     timeout = closest_timeout(timeout, s.t2_shutdown.next_expiry());
-                };
+                }
                 timeout
             }
         };
@@ -1880,20 +1884,18 @@ impl DcSctpSocket for Socket<'_> {
         //   SHUTDOWN-PENDING state and remains there until all outstanding data has been
         //   acknowledged by its peer.
         match self.state {
-            State::Closed => {
-                // Already closed.
+            State::Closed
+            | State::ShutdownPending(_)
+            | State::ShutdownSent(_)
+            | State::ShutdownAckSent(_)
+            | State::ShutdownReceived(_) => {
+                // Already closed or shutting down.
             }
             State::CookieWait(_) => {
                 // Connection closed during the initial connection phase. There is no outstanding
                 // data, so the socket can just be closed (stopping any connection timers, if any),
                 // as this is the client's intention, by calling [shutdown()].
                 self.internal_close(ErrorKind::NoError, "".to_string());
-            }
-            State::ShutdownPending(_)
-            | State::ShutdownSent(_)
-            | State::ShutdownAckSent(_)
-            | State::ShutdownReceived(_) => {
-                // Already shutting down.
             }
             State::CookieEchoed(_) | State::Established(_) => {
                 transition_between!(self.state,
