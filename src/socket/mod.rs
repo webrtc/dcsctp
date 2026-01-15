@@ -484,7 +484,7 @@ impl Socket<'_> {
                 if packet_idx == 0 {
                     if tcb.data_tracker.should_send_ack(now, true) {
                         builder.add(
-                            Chunk::Sack(tcb.data_tracker.create_selective_ack(
+                            &Chunk::Sack(tcb.data_tracker.create_selective_ack(
                                 tcb.reassembly_queue.remaining_bytes() as u32,
                             )),
                         );
@@ -492,7 +492,7 @@ impl Socket<'_> {
                     if now >= self.limit_forward_tsn_until
                         && tcb.retransmission_queue.should_send_forward_tsn(now)
                     {
-                        builder.add(tcb.retransmission_queue.create_forward_tsn());
+                        builder.add(&tcb.retransmission_queue.create_forward_tsn());
                         // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.5>:
                         //
                         //   IMPLEMENTATION NOTE: An implementation may wish to limit the number of
@@ -531,7 +531,7 @@ impl Socket<'_> {
                 }
 
                 for (tsn, data) in chunks {
-                    builder.add(tcb.make_data_chunk(tsn, data));
+                    builder.add(&tcb.make_data_chunk(tsn, data));
                 }
             }
 
@@ -646,7 +646,7 @@ impl Socket<'_> {
                 self.options.mtu,
             )
             .write_checksum(write_checksum)
-            .add(Chunk::InitAck(init_ack))
+            .add(&Chunk::InitAck(init_ack))
             .build(),
         ));
         self.tx_packets_count += 1;
@@ -682,7 +682,7 @@ impl Socket<'_> {
                     self.options.remote_port,
                     round_down_to_4!(self.options.mtu),
                 )
-                .add(Chunk::Abort(AbortChunk {
+                .add(&Chunk::Abort(AbortChunk {
                     error_causes: vec![ErrorCause::ProtocolViolation(
                         ProtocolViolationErrorCause { information: "INIT-ACK malformed".into() },
                     )],
@@ -746,7 +746,7 @@ impl Socket<'_> {
             self.options.mtu,
         );
 
-        builder.add(Chunk::CookieEcho(s.cookie_echo_chunk.clone()));
+        builder.add(&Chunk::CookieEcho(s.cookie_echo_chunk.clone()));
         self.send_buffered_packets_with(now, &mut builder);
     }
 
@@ -805,7 +805,7 @@ impl Socket<'_> {
         };
         self.events.borrow_mut().add(SocketEvent::SendPacket(
             tcb.new_packet()
-                .add(Chunk::Shutdown(ShutdownChunk {
+                .add(&Chunk::Shutdown(ShutdownChunk {
                     cumulative_tsn_ack: tcb.data_tracker.last_cumulative_acked_tsn(),
                 }))
                 .build(),
@@ -816,7 +816,7 @@ impl Socket<'_> {
     fn send_shutdown_ack(&mut self) {
         let State::ShutdownAckSent(tcb) = &mut self.state else { unreachable!() };
         self.events.borrow_mut().add(SocketEvent::SendPacket(
-            tcb.new_packet().add(Chunk::ShutdownAck(ShutdownAckChunk {})).build(),
+            tcb.new_packet().add(&Chunk::ShutdownAck(ShutdownAckChunk {})).build(),
         ));
         self.tx_packets_count += 1;
     }
@@ -832,7 +832,7 @@ impl Socket<'_> {
         let chunks =
             tcb.retransmission_queue.get_chunks_for_fast_retransmit(now, builder.bytes_remaining());
         for (tsn, data) in chunks {
-            builder.add(tcb.make_data_chunk(tsn, data));
+            builder.add(&tcb.make_data_chunk(tsn, data));
         }
 
         debug_assert!(!builder.is_empty());
@@ -942,8 +942,8 @@ impl Socket<'_> {
                             // "Cookie Received While Shutting Down" error cause to its peer."
                             self.events.borrow_mut().add(SocketEvent::SendPacket(
                                 tcb.new_packet()
-                                    .add(Chunk::ShutdownAck(ShutdownAckChunk {}))
-                                    .add(Chunk::Error(ErrorChunk {
+                                    .add(&Chunk::ShutdownAck(ShutdownAckChunk {}))
+                                    .add(&Chunk::Error(ErrorChunk {
                                         error_causes: vec![
                                             ErrorCause::CookieReceivedWhileShuttingDown(
                                                 CookieReceivedWhileShuttingDownErrorCause {},
@@ -1038,7 +1038,7 @@ impl Socket<'_> {
                     self.options.mtu,
                 );
                 b.write_checksum(write_checksum);
-                b.add(Chunk::CookieAck(CookieAckChunk {}));
+                b.add(&Chunk::CookieAck(CookieAckChunk {}));
                 self.send_buffered_packets_with(now, &mut b);
             }
         }
@@ -1072,7 +1072,7 @@ impl Socket<'_> {
             if let Some(tcb) = self.state.tcb_mut() {
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::Error(ErrorChunk {
+                        .add(&Chunk::Error(ErrorChunk {
                             error_causes: vec![ErrorCause::NoUserData(NoUserDataErrorCause {
                                 tsn,
                             })],
@@ -1118,7 +1118,7 @@ impl Socket<'_> {
         if let Some(tcb) = self.state.tcb_mut() {
             self.events.borrow_mut().add(SocketEvent::SendPacket(
                 tcb.new_packet()
-                    .add(Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
+                    .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
                     .build(),
             ));
             self.tx_packets_count += 1;
@@ -1157,7 +1157,7 @@ impl Socket<'_> {
             if tcb.data_tracker.should_send_ack(now, false) {
                 let mut b = tcb.new_packet();
                 let rwnd = tcb.reassembly_queue.remaining_bytes();
-                b.add(Chunk::Sack(tcb.data_tracker.create_selective_ack(rwnd as u32)));
+                b.add(&Chunk::Sack(tcb.data_tracker.create_selective_ack(rwnd as u32)));
                 self.send_buffered_packets_with(now, &mut b);
             }
         }
@@ -1176,7 +1176,7 @@ impl Socket<'_> {
                 self.options.remote_port,
                 self.options.mtu,
             )
-            .add(Chunk::Init(InitChunk {
+            .add(&Chunk::Init(InitChunk {
                 initiate_tag: s.verification_tag,
                 a_rwnd: self.options.max_receiver_window_buffer_size as u32,
                 nbr_outbound_streams: self.options.announced_maximum_outgoing_streams,
@@ -1200,7 +1200,7 @@ impl Socket<'_> {
                 write_u32_be!(&mut info, self.heartbeat_counter);
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::HeartbeatRequest(HeartbeatRequestChunk {
+                        .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk {
                             parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
                                 info,
                             })],
@@ -1262,7 +1262,7 @@ impl Socket<'_> {
             self.events.borrow_mut().add(SocketEvent::SendPacket(
                 s.tcb
                     .new_packet()
-                    .add(Chunk::Abort(AbortChunk {
+                    .add(&Chunk::Abort(AbortChunk {
                         error_causes: vec![ErrorCause::UserInitiatedAbort(
                             UserInitiatedAbortErrorCause {
                                 reason: "Too many retransmissions".into(),
@@ -1345,7 +1345,7 @@ impl Socket<'_> {
                 chunk.serialize_to(&mut serialized);
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::Error(ErrorChunk {
+                        .add(&Chunk::Error(ErrorChunk {
                             error_causes: vec![ErrorCause::UnrecognizedChunk(
                                 UnrecognizedChunkErrorCause { chunk: serialized },
                             )],
@@ -1494,7 +1494,7 @@ impl Socket<'_> {
         if !responses.is_empty() {
             self.events.borrow_mut().add(SocketEvent::SendPacket(
                 tcb.new_packet()
-                    .add(Chunk::ReConfig(ReConfigChunk { parameters: responses }))
+                    .add(&Chunk::ReConfig(ReConfigChunk { parameters: responses }))
                     .build(),
             ));
             self.tx_packets_count += 1;
@@ -1587,7 +1587,7 @@ impl Socket<'_> {
                 //   and remove all record of the association.
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::ShutdownComplete(ShutdownCompleteChunk {
+                        .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk {
                             tag_reflected: false,
                         }))
                         .build(),
@@ -1617,7 +1617,7 @@ impl Socket<'_> {
                         self.options.remote_port,
                         self.options.mtu,
                     )
-                    .add(Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
+                    .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
                     .build(),
                 ));
                 self.tx_packets_count += 1;
@@ -1814,7 +1814,7 @@ impl DcSctpSocket for Socket<'_> {
             if self.tx_error_counter.is_exhausted() {
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::Abort(AbortChunk {
+                        .add(&Chunk::Abort(AbortChunk {
                             error_causes: vec![ErrorCause::UserInitiatedAbort(
                                 UserInitiatedAbortErrorCause {
                                     reason: "Too many retransmissions".into(),
@@ -1911,7 +1911,7 @@ impl DcSctpSocket for Socket<'_> {
             if let Some(tcb) = self.state.tcb() {
                 self.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
-                        .add(Chunk::Abort(AbortChunk {
+                        .add(&Chunk::Abort(AbortChunk {
                             error_causes: vec![ErrorCause::UserInitiatedAbort(
                                 UserInitiatedAbortErrorCause { reason: "Close called".into() },
                             )],
