@@ -337,7 +337,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::InitAck(InitAckChunk { parameters, ..init_ack }))
+        .add(&Chunk::InitAck(InitAckChunk { parameters, ..init_ack }))
         .build();
         socket_a.handle_input(&packet);
 
@@ -763,7 +763,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::HeartbeatRequest(HeartbeatRequestChunk {
+        .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk {
             parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
                 info: HEARTBEAT_PAYLOAD.to_vec(),
             })],
@@ -1015,7 +1015,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: req.parameters }))
+        .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: req.parameters }))
         .build();
         socket_a.handle_input(&ack_packet);
 
@@ -1072,7 +1072,7 @@ mod tests {
                 options.remote_port,
                 options.mtu,
             )
-            .add(Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: req.parameters }))
+            .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: req.parameters }))
             .build(),
         );
 
@@ -1646,7 +1646,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::Unknown(UnknownChunk { typ: 0x49, flags: 0, value: vec![] }))
+        .add(&Chunk::Unknown(UnknownChunk { typ: 0x49, flags: 0, value: vec![] }))
         .build();
         socket_a.handle_input(&packet);
 
@@ -1666,7 +1666,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::Error(ErrorChunk {
+        .add(&Chunk::Error(ErrorChunk {
             error_causes: vec![ErrorCause::UnrecognizedChunk(UnrecognizedChunkErrorCause {
                 chunk: vec![1, 2, 3, 4],
             })],

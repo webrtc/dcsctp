@@ -174,7 +174,7 @@ impl TransmissionControlBlock {
             unreachable!()
         };
 
-        builder.add(Chunk::ReConfig(ReConfigChunk {
+        builder.add(&Chunk::ReConfig(ReConfigChunk {
             parameters: vec![Parameter::OutgoingSsnResetRequest(
                 OutgoingSsnResetRequestParameter {
                     request_seq_nbr: *request_sequence_number,

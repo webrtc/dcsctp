@@ -166,7 +166,7 @@ impl SctpPacketBuilder {
         self
     }
 
-    pub(crate) fn add(&mut self, chunk: Chunk) -> &mut Self {
+    pub(crate) fn add(&mut self, chunk: &Chunk) -> &mut Self {
         if self.data.is_empty() {
             self.data.reserve(self.max_packet_size);
             self.data.resize(COMMON_HEADER_SIZE, 0);
@@ -416,7 +416,7 @@ mod tests {
             options.mtu,
         );
 
-        b.add(Chunk::Init(InitChunk {
+        b.add(&Chunk::Init(InitChunk {
             initiate_tag: 123,
             a_rwnd: 456,
             nbr_outbound_streams: 65535,
@@ -451,13 +451,13 @@ mod tests {
             options.remote_port,
             options.mtu,
         );
-        b.add(Chunk::Sack(SackChunk {
+        b.add(&Chunk::Sack(SackChunk {
             cumulative_tsn_ack: Tsn(999),
             a_rwnd: 456,
             gap_ack_blocks: vec![GapAckBlock::new(2, 3)],
             duplicate_tsns: vec![Tsn(1), Tsn(2), Tsn(3)],
         }));
-        b.add(Chunk::Data(DataChunk {
+        b.add(&Chunk::Data(DataChunk {
             tsn: Tsn(123),
             data: Data {
                 stream_key: StreamKey::Ordered(StreamId(456)),
@@ -467,7 +467,7 @@ mod tests {
                 ..Default::default()
             },
         }));
-        b.add(Chunk::Data(DataChunk {
+        b.add(&Chunk::Data(DataChunk {
             tsn: Tsn(124),
             data: Data {
                 stream_key: StreamKey::Ordered(StreamId(654)),
@@ -507,7 +507,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         )
-        .add(Chunk::Abort(AbortChunk {
+        .add(&Chunk::Abort(AbortChunk {
             error_causes: vec![ErrorCause::UserInitiatedAbort(UserInitiatedAbortErrorCause {
                 reason: "".to_string(),
             })],
@@ -558,7 +558,7 @@ mod tests {
 
         // Add a smaller chunk first.
         let payload = vec![0; 183];
-        builder.add(Chunk::Data(DataChunk {
+        builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(1),
             data: Data { payload: payload.clone(), ..Default::default() },
         }));
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(builder.bytes_remaining(), 976);
 
         let payload = vec![0; 957];
-        builder.add(Chunk::Data(DataChunk {
+        builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(2),
             data: Data { payload: payload.clone(), ..Default::default() },
         }));
@@ -662,7 +662,7 @@ mod tests {
             options.remote_port,
             options.mtu,
         );
-        b.add(Chunk::Sack(SackChunk {
+        b.add(&Chunk::Sack(SackChunk {
             cumulative_tsn_ack: Tsn(999),
             a_rwnd: 456,
             gap_ack_blocks: vec![],
@@ -688,7 +688,7 @@ mod tests {
             options.mtu,
         );
         b.write_checksum(false);
-        b.add(Chunk::Sack(SackChunk {
+        b.add(&Chunk::Sack(SackChunk {
             cumulative_tsn_ack: Tsn(999),
             a_rwnd: 456,
             gap_ack_blocks: vec![],
