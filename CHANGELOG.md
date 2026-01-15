@@ -8,10 +8,14 @@ and this project adheres to
 
 ## Unreleased
 
+## v0.1.5 - 2026-01-15
+
 ### Added
 
 - `DcSctpSocket::send_many()` is now implemented and accessible with CXX.
 - Exposed handover methods and structs in the CXX interface.
+- Added `dcsctp_cxx::get_metrics()` and `dcsctp_cxx::reset_streams()` to the
+  CXX interface, making it expose the full `DcSctpSocket` trait.
 
 ### Changed
 
