@@ -77,10 +77,7 @@ impl TryFrom<RawChunk<'_>> for IDataChunk {
         let tsn = Tsn(read_u32_be!(&raw.value[0..4]));
         let ppid_or_fsn = read_u32_be!(&raw.value[12..16]);
         let is_beginning = (raw.flags & (1 << FLAGS_BIT_BEGINNING)) != 0;
-        let (ppid, fsn) = match is_beginning {
-            true => (ppid_or_fsn, 0),
-            false => (0, ppid_or_fsn),
-        };
+        let (ppid, fsn) = if is_beginning { (ppid_or_fsn, 0) } else { (0, ppid_or_fsn) };
         let stream_id = StreamId(read_u16_be!(&raw.value[4..6]));
         let is_unordered = (raw.flags & (1 << FLAGS_BIT_UNORDERED)) != 0;
         let data = Data {
@@ -111,10 +108,7 @@ impl SerializableTlv for IDataChunk {
             flags |= 1 << FLAGS_BIT_UNORDERED;
         }
         let value = write_chunk_header(CHUNK_TYPE, flags, self.value_size(), output);
-        let ppid_or_fsn = match self.data.is_beginning {
-            true => self.data.ppid.0,
-            false => self.data.fsn.0,
-        };
+        let ppid_or_fsn = if self.data.is_beginning { self.data.ppid.0 } else { self.data.fsn.0 };
         write_u32_be!(&mut value[0..4], self.tsn.0);
         write_u16_be!(&mut value[4..6], self.data.stream_key.id().0);
         write_u16_be!(&mut value[6..8], 0);
