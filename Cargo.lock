@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "dcsctp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "crc-any",
