@@ -143,10 +143,10 @@ impl TryFrom<RawParameter<'_>> for Parameter {
                     .map(Parameter::ReconfigurationResponse)
             }
             PARAMETER_TYPE_ADD_OUTGOING_STREAMS_REQUEST => {
-                UnknownParameter::try_from(raw).map(Parameter::SsnTsnResetRequest)
+                UnknownParameter::try_from(raw).map(Parameter::AddOutgoingStreamsRequest)
             }
             PARAMETER_TYPE_ADD_INCOMING_STREAMS_REQUEST => {
-                UnknownParameter::try_from(raw).map(Parameter::SsnTsnResetRequest)
+                UnknownParameter::try_from(raw).map(Parameter::AddIncomingStreamsRequest)
             }
             _ => UnknownParameter::try_from(raw).map(Parameter::Unknown),
         }
@@ -160,14 +160,14 @@ impl AsSerializableTlv for Parameter {
             Parameter::StateCookie(p) => p,
             Parameter::OutgoingSsnResetRequest(p) => p,
             Parameter::IncomingSsnResetRequest(p) => p,
-            Parameter::SsnTsnResetRequest(p) => p,
+            Parameter::SsnTsnResetRequest(p)
+            | Parameter::AddOutgoingStreamsRequest(p)
+            | Parameter::AddIncomingStreamsRequest(p)
+            | Parameter::Unknown(p) => p,
             Parameter::ReconfigurationResponse(p) => p,
-            Parameter::AddOutgoingStreamsRequest(p) => p,
-            Parameter::AddIncomingStreamsRequest(p) => p,
             Parameter::SupportedExtensions(p) => p,
             Parameter::ForwardTsnSupported(p) => p,
             Parameter::ZeroChecksumAcceptable(p) => p,
-            Parameter::Unknown(p) => p,
         }
     }
 }
