@@ -24,7 +24,9 @@ pub fn validate_sack(sack: &SackChunk) -> bool {
     // non-overlapping and non-adjacent.
     let mut prev_end = 0;
     for gap_ack_block in &sack.gap_ack_blocks {
-        if gap_ack_block.end < gap_ack_block.start || gap_ack_block.start <= prev_end + 1 {
+        if gap_ack_block.end < gap_ack_block.start
+            || (gap_ack_block.start as u32) <= (prev_end as u32 + 1)
+        {
             return false;
         }
         prev_end = gap_ack_block.end;
@@ -39,7 +41,7 @@ pub fn clean_sack(sack: SackChunk) -> SackChunk {
 
     // First, filter out invalid ranges.
     let mut gap_ack_blocks: Vec<_> =
-        sack.gap_ack_blocks.into_iter().filter(|block| block.end > block.start).collect();
+        sack.gap_ack_blocks.into_iter().filter(|block| block.end >= block.start).collect();
 
     if gap_ack_blocks.len() <= 1 {
         return SackChunk {
@@ -57,7 +59,7 @@ pub fn clean_sack(sack: SackChunk) -> SackChunk {
     merged.push(gap_ack_blocks[0].clone());
 
     for block in gap_ack_blocks.iter().skip(1) {
-        if merged.last().unwrap().end + 1 >= block.start {
+        if (merged.last().unwrap().end as u32) + 1 >= block.start as u32 {
             merged.last_mut().unwrap().end = max(merged.last().unwrap().end, block.end);
         } else {
             merged.push(block.clone());
@@ -263,5 +265,61 @@ mod tests {
 
         let sack = clean_sack(sack);
         assert_eq!(sack.gap_ack_blocks, vec![GapAckBlock { start: 3, end: 9 },]);
+    }
+
+    #[test]
+    fn validate_sack_overflow() {
+        let sack = SackChunk {
+            cumulative_tsn_ack: Tsn(123),
+            a_rwnd: 456,
+            gap_ack_blocks: vec![
+                GapAckBlock { start: 65534, end: 65535 },
+                GapAckBlock { start: 2, end: 3 },
+            ],
+            duplicate_tsns: vec![],
+        };
+
+        assert!(!validate_sack(&sack));
+    }
+
+    #[test]
+    fn clean_sack_merges_with_overflow() {
+        let sack = SackChunk {
+            cumulative_tsn_ack: Tsn(123),
+            a_rwnd: 456,
+            gap_ack_blocks: vec![
+                GapAckBlock { start: 2, end: 65535 },
+                GapAckBlock { start: 10, end: 11 },
+            ],
+            duplicate_tsns: vec![],
+        };
+
+        let cleaned = clean_sack(sack);
+        assert_eq!(cleaned.gap_ack_blocks.len(), 1);
+        assert_eq!(cleaned.gap_ack_blocks[0].start, 2);
+        assert_eq!(cleaned.gap_ack_blocks[0].end, 65535);
+    }
+
+    #[test]
+    fn clean_sack_preserves_single_tsn_blocks() {
+        let sack = SackChunk {
+            cumulative_tsn_ack: Tsn(100),
+            a_rwnd: 200,
+            gap_ack_blocks: vec![
+                GapAckBlock { start: 10, end: 10 },
+                GapAckBlock { start: 5, end: 5 },
+            ],
+            duplicate_tsns: vec![],
+        };
+
+        // Validate fails because they are unsorted
+        assert!(!validate_sack(&sack));
+
+        let cleaned = clean_sack(sack);
+        // Should sort and keep them
+        assert_eq!(
+            cleaned.gap_ack_blocks,
+            vec![GapAckBlock { start: 5, end: 5 }, GapAckBlock { start: 10, end: 10 }]
+        );
     }
 }

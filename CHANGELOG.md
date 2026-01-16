@@ -17,6 +17,7 @@ and this project adheres to
 ### Fixed
 
  - Fixed a wrapping substraction during zero window probing.
+ - Improved chunk validation
 
 ## 0.1.7 - 2026-01-21
 
