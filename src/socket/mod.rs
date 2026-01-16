@@ -270,6 +270,52 @@ impl EventSink for LoggingEvents {
     }
 }
 
+/// Represents the action to take after analyzing the Cookie against the current state.
+/// See <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.4>.
+enum CookieResolution {
+    /// Case A: Peer restarted.
+    RestartDetected,
+    /// Case B: Simultaneous INIT.
+    SimultaneousInit,
+    /// Case C: Late arrival, silently discard.
+    Discard,
+    /// Case D: Tags match, proceed with existing TCB.
+    MaintainExisting,
+    /// No existing TCB, but tags match. Start new.
+    EstablishNew,
+    /// Tags do not match expected values.
+    InvalidTag,
+}
+
+impl CookieResolution {
+    fn from_tcb(
+        header: &CommonHeader,
+        tcb: &TransmissionControlBlock,
+        cookie: &StateCookie,
+    ) -> Self {
+        let v_tag_mismatch = header.verification_tag != tcb.my_verification_tag;
+        let peer_tag_mismatch = tcb.peer_verification_tag != cookie.peer_tag;
+
+        // https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.4
+        if v_tag_mismatch && peer_tag_mismatch && cookie.tie_tag == tcb.tie_tag {
+            // Case A
+            CookieResolution::RestartDetected
+        } else if !v_tag_mismatch && peer_tag_mismatch {
+            // Case B
+            CookieResolution::SimultaneousInit
+        } else if v_tag_mismatch && !peer_tag_mismatch && cookie.tie_tag == 0 {
+            // Case C
+            CookieResolution::Discard
+        } else if !v_tag_mismatch && !peer_tag_mismatch {
+            // Case D
+            CookieResolution::MaintainExisting
+        } else {
+            // Fallback for unhandled collisions or mismatching tags
+            CookieResolution::InvalidTag
+        }
+    }
+}
+
 /// Facilitates state transitions within a `State` enum, allowing the state enum variant arguments
 /// to be moved to the new state, improving code readability.
 macro_rules! transition_between {
@@ -917,132 +963,119 @@ impl Socket<'_> {
         header: &CommonHeader,
         chunk: CookieEchoChunk,
     ) {
-        match StateCookie::from_bytes(&chunk.cookie) {
+        let cookie = match StateCookie::from_bytes(&chunk.cookie) {
+            Ok(c) => c,
             Err(s) => {
-                self.events
+                return self
+                    .events
                     .borrow_mut()
                     .add(SocketEvent::OnError(ErrorKind::ParseFailed, s.into()));
             }
-            Ok(cookie) => {
-                // The init timer can be running on simultaneous connections.
-                let mut re_establish_connection = false;
-                if let Some(tcb) = self.state.tcb() {
-                    // The comments below contains quotes from
-                    // <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.4>.
+        };
 
-                    // "Handle a COOKIE ECHO when a TCB Exists"
-                    if header.verification_tag != tcb.my_verification_tag
-                        && tcb.peer_verification_tag != cookie.peer_tag
-                        && cookie.tie_tag == tcb.tie_tag
-                    {
-                        // "A) In this case, the peer may have restarted."
-                        if matches!(self.state, State::ShutdownAckSent(_)) {
-                            // "If the endpoint is in the SHUTDOWN-ACK-SENT state and recognizes
-                            // that the peer has restarted ... it MUST NOT set up a new association
-                            // but instead resend the SHUTDOWN ACK and send an ERROR chunk with a
-                            // "Cookie Received While Shutting Down" error cause to its peer."
-                            self.events.borrow_mut().add(SocketEvent::SendPacket(
-                                tcb.new_packet()
-                                    .add(&Chunk::ShutdownAck(ShutdownAckChunk {}))
-                                    .add(&Chunk::Error(ErrorChunk {
-                                        error_causes: vec![
-                                            ErrorCause::CookieReceivedWhileShuttingDown(
-                                                CookieReceivedWhileShuttingDownErrorCause {},
-                                            ),
-                                        ],
-                                    }))
-                                    .build(),
-                            ));
-                            self.events.borrow_mut().add(SocketEvent::OnError(
-                                ErrorKind::WrongSequence,
-                                "Received COOKIE-ECHO while shutting down".into(),
-                            ));
+        let resolution = if let Some(tcb) = self.state.tcb() {
+            CookieResolution::from_tcb(header, tcb, &cookie)
+        } else if header.verification_tag != cookie.my_tag {
+            CookieResolution::InvalidTag
+        } else {
+            CookieResolution::EstablishNew
+        };
 
-                            self.tx_packets_count += 1;
-                            return;
-                        } else {
-                            self.events.borrow_mut().add(SocketEvent::OnConnectionRestarted());
-                            re_establish_connection = true;
-                        }
-                    } else if header.verification_tag == tcb.my_verification_tag
-                        && tcb.peer_verification_tag != cookie.peer_tag
-                    {
-                        // TODO: Handle the peer_tag == 0?
+        match resolution {
+            CookieResolution::Discard => return,
+            CookieResolution::InvalidTag => {
+                return self.events.borrow_mut().add(SocketEvent::OnError(
+                    ErrorKind::ParseFailed,
+                    "Received CookieEcho with invalid verification tag".into(),
+                ));
+            }
+            CookieResolution::RestartDetected => {
+                // If the socket is shutting down, reject the restart.
+                if matches!(self.state, State::ShutdownAckSent(_)) {
+                    let tcb = self.state.tcb().expect("TCB must exist in ShutdownAckSent");
 
-                        // "B) In this case, both sides may be attempting to start an association at
-                        // about the same time, but the peer endpoint started its INIT after
-                        // responding to the local endpoint's INIT."
-                        re_establish_connection = true;
-                    } else if header.verification_tag != tcb.my_verification_tag
-                        && tcb.peer_verification_tag == cookie.peer_tag
-                        && cookie.tie_tag == 0
-                    {
-                        // "C) In this case, the local endpoint's cookie has arrived late. Before it
-                        // arrived, the local endpoint sent an INIT and received an INIT ACK and
-                        // finally sent a COOKIE ECHO with the peer's same tag but a new tag of its
-                        // own. The cookie should be silently discarded. The endpoint SHOULD NOT
-                        // change states and should leave any timers running."
-                        return;
-                    } else if header.verification_tag == tcb.my_verification_tag
-                        && tcb.peer_verification_tag == cookie.peer_tag
-                    {
-                        // "D) When both local and remote tags match, the endpoint should enter the
-                        // ESTABLISHED state, if it is in the COOKIE-ECHOED state. It should stop
-                        // any cookie timer that may be running and send a COOKIE ACK."
-                    }
-                } else if header.verification_tag != cookie.my_tag {
+                    let packet = tcb
+                        .new_packet()
+                        .add(&Chunk::ShutdownAck(ShutdownAckChunk {}))
+                        .add(&Chunk::Error(ErrorChunk {
+                            error_causes: vec![ErrorCause::CookieReceivedWhileShuttingDown(
+                                CookieReceivedWhileShuttingDownErrorCause {},
+                            )],
+                        }))
+                        .build();
+
+                    self.events.borrow_mut().add(SocketEvent::SendPacket(packet));
                     self.events.borrow_mut().add(SocketEvent::OnError(
-                        ErrorKind::ParseFailed,
-                        "Received CookieEcho with invalid verification tag".into(),
+                        ErrorKind::WrongSequence,
+                        "Received COOKIE-ECHO while shutting down".into(),
                     ));
+                    self.tx_packets_count += 1;
                     return;
                 }
-
-                if !matches!(self.state, State::Established(_)) || re_establish_connection {
-                    self.send_queue
-                        .enable_message_interleaving(cookie.capabilities.message_interleaving);
-
-                    // If the connection is re-established (peer restarted, but re-used old
-                    // connection), make sure that all message identifiers are reset and any partly
-                    // sent message is re-sent in full. The same is true when the socket is closed
-                    // and later re-opened, which never happens in WebRTC, but is a valid operation
-                    // on the SCTP level. Note that in case of handover, the send queue is already
-                    // re-configured, and shouldn't be reset.
-                    self.send_queue.reset();
-
-                    let tie_tag = rand::rng().random::<u64>();
-                    self.state = State::Established(TransmissionControlBlock::new(
-                        &self.options,
-                        cookie.my_tag,
-                        cookie.my_initial_tsn,
-                        cookie.peer_tag,
-                        cookie.peer_initial_tsn,
-                        tie_tag,
-                        cookie.a_rwnd,
-                        cookie.capabilities,
-                        self.events.clone(),
-                    ));
+                self.events.borrow_mut().add(SocketEvent::OnConnectionRestarted());
+                self.establish_new_tcb(now, &cookie, true);
+            }
+            CookieResolution::SimultaneousInit => {
+                self.establish_new_tcb(now, &cookie, true);
+            }
+            CookieResolution::EstablishNew => {
+                self.establish_new_tcb(now, &cookie, false);
+            }
+            CookieResolution::MaintainExisting => {
+                if matches!(self.state, State::CookieEchoed(_)) {
+                    transition_between!(self.state,
+                       State::CookieEchoed(s) => State::Established(s.tcb)
+                    );
                     self.heartbeat_interval.start(now);
                     info!("{}: Connection established", self.name);
                     self.events.borrow_mut().add(SocketEvent::OnConnected());
                 }
-
-                let State::Established(ref tcb) = self.state else {
-                    unreachable!();
-                };
-
-                let write_checksum = !tcb.capabilities.zero_checksum;
-                let mut b = SctpPacketBuilder::new(
-                    cookie.peer_tag,
-                    self.options.local_port,
-                    self.options.remote_port,
-                    self.options.mtu,
-                );
-                b.write_checksum(write_checksum);
-                b.add(&Chunk::CookieAck(CookieAckChunk {}));
-                self.send_buffered_packets_with(now, &mut b);
             }
         }
+
+        let Some(tcb) = self.state.tcb() else {
+            unreachable!();
+        };
+
+        let write_checksum = !tcb.capabilities.zero_checksum;
+        let mut b = SctpPacketBuilder::new(
+            cookie.peer_tag,
+            self.options.local_port,
+            self.options.remote_port,
+            self.options.mtu,
+        );
+        b.write_checksum(write_checksum);
+        b.add(&Chunk::CookieAck(CookieAckChunk {}));
+        self.send_buffered_packets_with(now, &mut b);
+    }
+
+    /// Transitions the socket to Established using the data in the Cookie.
+    /// If `reset_queue` is true, reset message identifiers (used for restarts).
+    fn establish_new_tcb(&mut self, now: SocketTime, cookie: &StateCookie, reset_queue: bool) {
+        self.send_queue.enable_message_interleaving(cookie.capabilities.message_interleaving);
+
+        if reset_queue {
+            self.send_queue.reset();
+        }
+
+        let tie_tag = rand::rng().random::<u64>();
+        let new_tcb = TransmissionControlBlock::new(
+            &self.options,
+            cookie.my_tag,
+            cookie.my_initial_tsn,
+            cookie.peer_tag,
+            cookie.peer_initial_tsn,
+            tie_tag,
+            cookie.a_rwnd,
+            cookie.capabilities,
+            self.events.clone(),
+        );
+
+        self.state = State::Established(new_tcb);
+        self.heartbeat_interval.start(now);
+
+        info!("{}: Connection established", self.name);
+        self.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
     fn handle_cookie_ack(&mut self, now: SocketTime) {

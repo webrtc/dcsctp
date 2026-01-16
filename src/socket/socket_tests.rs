@@ -3317,4 +3317,75 @@ mod tests {
         let streams = expect_on_streams_reset_performed!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(2)]);
     }
+
+    #[test]
+    fn establish_simultaneous_connection_with_lost_data() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+
+        // Queue data on A
+        socket_a
+            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default());
+
+        socket_a.connect();
+        socket_z.connect();
+
+        // A -> INIT -> Z
+        let packet_a_init = expect_sent_packet!(socket_a.poll_event());
+        // Z -> INIT -> A
+        let packet_z_init = expect_sent_packet!(socket_z.poll_event());
+
+        // A <- INIT
+        socket_a.handle_input(&packet_z_init);
+        // A -> INIT_ACK
+        let packet_a_init_ack = expect_sent_packet!(socket_a.poll_event());
+
+        // Z <- INIT
+        socket_z.handle_input(&packet_a_init);
+        // Z -> INIT_ACK
+        let packet_z_init_ack = expect_sent_packet!(socket_z.poll_event());
+
+        // A <- INIT_ACK
+        socket_a.handle_input(&packet_z_init_ack);
+        // A -> COOKIE_ECHO + DATA.
+        let packet_a_cookie_echo = expect_sent_packet!(socket_a.poll_event());
+        // Verify it contains DATA
+        let packet = SctpPacket::from_bytes(&packet_a_cookie_echo, &options).unwrap();
+        assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Data(_))));
+
+        // DROP packet_a_cookie_echo. Z does not receive it.
+
+        // Z <- INIT_ACK
+        socket_z.handle_input(&packet_a_init_ack);
+        // Z -> COOKIE_ECHO
+        let packet_z_cookie_echo = expect_sent_packet!(socket_z.poll_event());
+
+        // A <- COOKIE_ECHO. A should enter Established.
+        socket_a.handle_input(&packet_z_cookie_echo);
+        expect_on_connected!(socket_a.poll_event());
+        // A -> COOKIE_ACK
+        let packet_a_cookie_ack = expect_sent_packet!(socket_a.poll_event());
+
+        // Z <- COOKIE_ACK. Z should enter Established.
+        socket_z.handle_input(&packet_a_cookie_ack);
+        expect_on_connected!(socket_z.poll_event());
+
+        // Now A should retransmit the lost DATA after RTO.
+        let timeout = socket_a.poll_timeout();
+        assert_ne!(timeout, SocketTime::infinite_future());
+        socket_a.advance_time(timeout);
+
+        // A -> DATA (Retransmission)
+        let packet_retransmit = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet_retransmit, &options).unwrap();
+        assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Data(_))));
+
+        // Z <- DATA
+        socket_z.handle_input(&packet_retransmit);
+
+        // Z should have received the message
+        let msg = socket_z.get_next_message().unwrap();
+        assert_eq!(msg.payload, b"hello");
+    }
 }
