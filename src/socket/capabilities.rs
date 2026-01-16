@@ -14,7 +14,7 @@
 
 /// Indicates what the association supports, meaning that both parties support it and that feature
 /// can be used.
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Capabilities {
     /// RFC 3758 Partial Reliability Extension
     pub partial_reliability: bool,
