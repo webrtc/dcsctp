@@ -42,9 +42,6 @@ use crate::packet::data_chunk::DataChunk;
 use crate::packet::error_causes::ErrorCause;
 use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
-use crate::packet::heartbeat_ack_chunk::HeartbeatAckChunk;
-use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
-use crate::packet::heartbeat_request_chunk::HeartbeatRequestChunk;
 use crate::packet::idata_chunk::IDataChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
 use crate::packet::incoming_ssn_reset_request_parameter::IncomingSsnResetRequestParameter;
@@ -52,7 +49,6 @@ use crate::packet::no_user_data_error_cause::NoUserDataErrorCause;
 use crate::packet::outgoing_ssn_reset_request_parameter::OutgoingSsnResetRequestParameter;
 use crate::packet::parameter::Parameter;
 use crate::packet::re_config_chunk::ReConfigChunk;
-use crate::packet::read_u32_be;
 use crate::packet::reconfiguration_response_parameter::ReconfigurationResponseParameter;
 use crate::packet::reconfiguration_response_parameter::ReconfigurationResponseResult;
 use crate::packet::sack_chunk::SackChunk;
@@ -61,7 +57,6 @@ use crate::packet::sctp_packet::SctpPacket;
 use crate::packet::unknown_chunk::UnknownChunk;
 use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
-use crate::packet::write_u32_be;
 use crate::socket::capabilities::Capabilities;
 use crate::socket::connect::do_connect;
 use crate::socket::connect::handle_cookie_ack;
@@ -72,6 +67,9 @@ use crate::socket::connect::handle_t1cookie_timeout;
 use crate::socket::connect::handle_t1init_timeout;
 use crate::socket::context::Context;
 use crate::socket::context::TxErrorCounter;
+use crate::socket::heartbeat::handle_heartbeat_ack;
+use crate::socket::heartbeat::handle_heartbeat_req;
+use crate::socket::heartbeat::handle_heartbeat_timeouts;
 use crate::socket::shutdown::do_shutdown;
 use crate::socket::shutdown::handle_shutdown;
 use crate::socket::shutdown::handle_shutdown_ack;
@@ -105,6 +103,7 @@ use std::rc::Rc;
 pub mod capabilities;
 pub mod connect;
 pub mod context;
+pub mod heartbeat;
 pub mod shutdown;
 pub mod state;
 pub mod state_cookie;
@@ -379,48 +378,6 @@ impl Socket {
         }
     }
 
-    fn handle_heartbeat_req(&mut self, chunk: HeartbeatRequestChunk) {
-        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.3-9>:
-        //
-        //   The receiver of the HEARTBEAT chunk SHOULD immediately respond with a HEARTBEAT ACK
-        //   chunk that contains the Heartbeat Information TLV, together with any other received
-        //   TLVs, copied unchanged from the received HEARTBEAT chunk.
-        if let Some(tcb) = self.state.tcb_mut() {
-            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                tcb.new_packet()
-                    .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
-                    .build(),
-            ));
-            self.ctx.tx_packets_count += 1;
-        }
-    }
-
-    fn handle_heartbeat_ack(&mut self, now: SocketTime, chunk: HeartbeatAckChunk) {
-        self.ctx.heartbeat_timeout.stop();
-        match chunk.parameters.iter().find_map(|p| match p {
-            Parameter::HeartbeatInfo(HeartbeatInfoParameter { info }) => Some(info),
-            _ => None,
-        }) {
-            Some(info) if info.len() == 4 => {
-                let counter = read_u32_be!(&info);
-                if counter == self.ctx.heartbeat_counter {
-                    let _rtt = now - self.ctx.heartbeat_sent_time;
-                    // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.1>:
-                    //
-                    //   When a HEARTBEAT ACK chunk is received from the peer endpoint, the counter
-                    //   SHOULD also be reset.
-                    self.ctx.tx_error_counter.reset();
-                }
-            }
-            _ => {
-                self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                    ErrorKind::ParseFailed,
-                    "Failed to parse HEARTBEAT-ACK; Invalid info parameter".into(),
-                ));
-            }
-        }
-    }
-
     fn maybe_send_sack(&mut self, now: SocketTime) {
         if let Some(tcb) = self.state.tcb_mut() {
             tcb.data_tracker.observe_packet_end(now);
@@ -430,35 +387,6 @@ impl Socket {
                 b.add(&Chunk::Sack(tcb.data_tracker.create_selective_ack(rwnd as u32)));
                 self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
             }
-        }
-    }
-
-    fn handle_heartbeat_timeouts(&mut self, now: SocketTime) {
-        if self.ctx.heartbeat_interval.expire(now) {
-            if let Some(tcb) = self.state.tcb() {
-                self.ctx.heartbeat_timeout.set_duration(self.ctx.options.rto_initial);
-                self.ctx.heartbeat_timeout.start(now);
-                self.ctx.heartbeat_counter = self.ctx.heartbeat_counter.wrapping_add(1);
-                self.ctx.heartbeat_sent_time = now;
-                let mut info = vec![0; 4];
-                write_u32_be!(&mut info, self.ctx.heartbeat_counter);
-                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                    tcb.new_packet()
-                        .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk {
-                            parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
-                                info,
-                            })],
-                        }))
-                        .build(),
-                ));
-                self.ctx.tx_packets_count += 1;
-            }
-        }
-        if self.ctx.heartbeat_timeout.expire(now) {
-            // Note that the timeout timer is not restarted. It will be started again when the
-            // interval timer expires.
-            debug_assert!(!self.ctx.heartbeat_timeout.is_running());
-            self.ctx.tx_error_counter.increment();
         }
     }
 
@@ -838,8 +766,10 @@ impl DcSctpSocket for Socket {
                         Chunk::CookieAck(_) => {
                             handle_cookie_ack(&mut self.state, &mut self.ctx, now);
                         }
-                        Chunk::HeartbeatRequest(c) => self.handle_heartbeat_req(c),
-                        Chunk::HeartbeatAck(c) => self.handle_heartbeat_ack(now, c),
+                        Chunk::HeartbeatRequest(c) => {
+                            handle_heartbeat_req(&mut self.state, &mut self.ctx, c);
+                        }
+                        Chunk::HeartbeatAck(c) => handle_heartbeat_ack(&mut self.ctx, now, c),
                         Chunk::ShutdownComplete(c) => {
                             handle_shutdown_complete(&mut self.state, &mut self.ctx, c);
                         }
@@ -891,7 +821,7 @@ impl DcSctpSocket for Socket {
                 if tcb.retransmission_queue.handle_timeout(now) {
                     self.ctx.tx_error_counter.increment();
                 }
-                self.handle_heartbeat_timeouts(now);
+                handle_heartbeat_timeouts(&mut self.state, &mut self.ctx, now);
                 self.handle_reconfig_timeout(now);
                 handle_t2_shutdown_timeout(&mut self.state, &mut self.ctx, now);
             }
