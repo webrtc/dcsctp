@@ -26,44 +26,31 @@ use crate::api::SocketEvent;
 use crate::api::SocketState;
 use crate::api::SocketTime;
 use crate::api::StreamId;
-use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::HandoverSocketState;
 use crate::api::handover::SocketHandoverState;
 use crate::events::Events;
 use crate::logging::log_packet;
-use crate::math::round_down_to_4;
 use crate::packet::SerializableTlv;
 use crate::packet::SkippedStream;
 use crate::packet::abort_chunk::AbortChunk;
 use crate::packet::chunk::Chunk;
 use crate::packet::chunk_validators::clean_sack;
-use crate::packet::cookie_ack_chunk::CookieAckChunk;
-use crate::packet::cookie_echo_chunk::CookieEchoChunk;
-use crate::packet::cookie_received_while_shutting_down::CookieReceivedWhileShuttingDownErrorCause;
 use crate::packet::data::Data;
 use crate::packet::data_chunk;
 use crate::packet::data_chunk::DataChunk;
 use crate::packet::error_causes::ErrorCause;
 use crate::packet::error_chunk::ErrorChunk;
-use crate::packet::forward_tsn_chunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
-use crate::packet::forward_tsn_supported_parameter::ForwardTsnSupportedParameter;
 use crate::packet::heartbeat_ack_chunk::HeartbeatAckChunk;
 use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
 use crate::packet::heartbeat_request_chunk::HeartbeatRequestChunk;
-use crate::packet::idata_chunk;
 use crate::packet::idata_chunk::IDataChunk;
-use crate::packet::iforward_tsn_chunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
 use crate::packet::incoming_ssn_reset_request_parameter::IncomingSsnResetRequestParameter;
-use crate::packet::init_ack_chunk::InitAckChunk;
-use crate::packet::init_chunk::InitChunk;
 use crate::packet::no_user_data_error_cause::NoUserDataErrorCause;
 use crate::packet::outgoing_ssn_reset_request_parameter::OutgoingSsnResetRequestParameter;
 use crate::packet::parameter::Parameter;
-use crate::packet::protocol_violation_error_cause::ProtocolViolationErrorCause;
-use crate::packet::re_config_chunk;
 use crate::packet::re_config_chunk::ReConfigChunk;
 use crate::packet::read_u32_be;
 use crate::packet::reconfiguration_response_parameter::ReconfigurationResponseParameter;
@@ -73,24 +60,26 @@ use crate::packet::sctp_packet;
 use crate::packet::sctp_packet::CommonHeader;
 use crate::packet::sctp_packet::SctpPacket;
 use crate::packet::sctp_packet::SctpPacketBuilder;
-use crate::packet::shutdown_ack_chunk::ShutdownAckChunk;
 use crate::packet::shutdown_chunk::ShutdownChunk;
 use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
-use crate::packet::state_cookie_parameter::StateCookieParameter;
-use crate::packet::supported_extensions_parameter::SupportedExtensionsParameter;
 use crate::packet::unknown_chunk::UnknownChunk;
 use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
 use crate::packet::write_u32_be;
-use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
 use crate::socket::capabilities::Capabilities;
+use crate::socket::connect::do_connect;
+use crate::socket::connect::handle_cookie_ack;
+use crate::socket::connect::handle_cookie_echo;
+use crate::socket::connect::handle_init;
+use crate::socket::connect::handle_init_ack;
+use crate::socket::connect::handle_t1cookie_timeout;
+use crate::socket::connect::handle_t1init_timeout;
 use crate::socket::context::Context;
 use crate::socket::context::TxErrorCounter;
+use crate::socket::shutdown::send_shutdown_ack;
 use crate::socket::state::CookieEchoState;
-use crate::socket::state::CookieWaitState;
 use crate::socket::state::ShutdownSentState;
 use crate::socket::state::State;
-use crate::socket::state_cookie::StateCookie;
 use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::socket::transmission_control_block::InflightResetRequest;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
@@ -104,10 +93,8 @@ use crate::types::Tsn;
 use log::info;
 #[cfg(not(test))]
 use log::warn;
-use rand::Rng;
 use std::cell::RefCell;
 use std::cmp::min;
-use std::collections::HashSet;
 #[cfg(test)]
 use std::println as info;
 #[cfg(test)]
@@ -115,18 +102,15 @@ use std::println as warn;
 use std::rc::Rc;
 
 pub mod capabilities;
+pub mod connect;
 pub mod context;
+pub mod shutdown;
 pub mod state;
 pub mod state_cookie;
 pub mod transmission_control_block;
 
 #[cfg(test)]
 pub mod socket_tests;
-
-const MIN_VERIFICATION_TAG: u32 = 1;
-const MAX_VERIFICATION_TAG: u32 = u32::MAX;
-const MIN_INITIAL_TSN: u32 = u32::MIN;
-const MAX_INITIAL_TSN: u32 = u32::MAX;
 
 struct LoggingEvents {
     parent: Rc<RefCell<dyn EventSink>>,
@@ -197,52 +181,6 @@ impl EventSink for LoggingEvents {
     }
 }
 
-/// Represents the action to take after analyzing the Cookie against the current state.
-/// See <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.4>.
-enum CookieResolution {
-    /// Case A: Peer restarted.
-    RestartDetected,
-    /// Case B: Simultaneous INIT.
-    SimultaneousInit,
-    /// Case C: Late arrival, silently discard.
-    Discard,
-    /// Case D: Tags match, proceed with existing TCB.
-    MaintainExisting,
-    /// No existing TCB, but tags match. Start new.
-    EstablishNew,
-    /// Tags do not match expected values.
-    InvalidTag,
-}
-
-impl CookieResolution {
-    fn from_tcb(
-        header: &CommonHeader,
-        tcb: &TransmissionControlBlock,
-        cookie: &StateCookie,
-    ) -> Self {
-        let v_tag_mismatch = header.verification_tag != tcb.my_verification_tag;
-        let peer_tag_mismatch = tcb.peer_verification_tag != cookie.peer_tag;
-
-        // https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.4
-        if v_tag_mismatch && peer_tag_mismatch && cookie.tie_tag == tcb.tie_tag {
-            // Case A
-            CookieResolution::RestartDetected
-        } else if !v_tag_mismatch && peer_tag_mismatch {
-            // Case B
-            CookieResolution::SimultaneousInit
-        } else if v_tag_mismatch && !peer_tag_mismatch && cookie.tie_tag == 0 {
-            // Case C
-            CookieResolution::Discard
-        } else if !v_tag_mismatch && !peer_tag_mismatch {
-            // Case D
-            CookieResolution::MaintainExisting
-        } else {
-            // Fallback for unhandled collisions or mismatching tags
-            CookieResolution::InvalidTag
-        }
-    }
-}
-
 /// An SCTP socket.
 ///
 /// The socket is the main entry point for using the `dcsctp` library. It is used to send and
@@ -262,99 +200,6 @@ fn closest_timeout(a: Option<SocketTime>, b: Option<SocketTime>) -> Option<Socke
         (None, Some(_)) => b,
         (Some(_), None) => a,
         (Some(t1), Some(t2)) => Some(min(t1, t2)),
-    }
-}
-
-fn detemine_sctp_implementation(cookie: &[u8]) -> SctpImplementation {
-    if cookie.len() > 8 {
-        return match std::str::from_utf8(&cookie[0..8]) {
-            Ok("dcSCTP00") => SctpImplementation::DcsctpCc,
-            Ok("dcSCTPr0") => SctpImplementation::DcsctpRs,
-            Ok("KAME-BSD") => SctpImplementation::UsrSctp,
-            _ => SctpImplementation::Unknown,
-        };
-    }
-    SctpImplementation::Unknown
-}
-
-fn make_capability_parameters(options: &Options, support_zero_checksum: bool) -> Vec<Parameter> {
-    let mut result: Vec<Parameter> = Vec::new();
-    let mut chunk_types: Vec<u8> = Vec::new();
-    chunk_types.push(re_config_chunk::CHUNK_TYPE);
-
-    if options.enable_partial_reliability {
-        result.push(Parameter::ForwardTsnSupported(ForwardTsnSupportedParameter {}));
-        chunk_types.push(forward_tsn_chunk::CHUNK_TYPE);
-    }
-    if options.enable_message_interleaving {
-        chunk_types.push(idata_chunk::CHUNK_TYPE);
-        chunk_types.push(iforward_tsn_chunk::CHUNK_TYPE);
-    }
-    if support_zero_checksum {
-        result.push(Parameter::ZeroChecksumAcceptable(ZeroChecksumAcceptableParameter {
-            method: options.zero_checksum_alternate_error_detection_method,
-        }));
-    }
-    result.push(Parameter::SupportedExtensions(SupportedExtensionsParameter { chunk_types }));
-
-    result
-}
-
-fn compute_capabilities(
-    options: &Options,
-    peer_nbr_outbound_streams: u16,
-    peer_nbr_inbound_streams: u16,
-    parameters: &[Parameter],
-) -> Capabilities {
-    let supported: HashSet<u8> = HashSet::from_iter(
-        parameters
-            .iter()
-            .find_map(|e| match e {
-                Parameter::SupportedExtensions(SupportedExtensionsParameter { chunk_types }) => {
-                    Some(chunk_types)
-                }
-                _ => None,
-            })
-            .unwrap_or(&vec![])
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>(),
-    );
-
-    let partial_reliability = options.enable_partial_reliability
-        && (parameters.iter().any(|e| matches!(e, Parameter::ForwardTsnSupported(_)))
-            || supported.contains(&forward_tsn_chunk::CHUNK_TYPE));
-
-    let message_interleaving = options.enable_message_interleaving
-        && supported.contains(&idata_chunk::CHUNK_TYPE)
-        && supported.contains(&iforward_tsn_chunk::CHUNK_TYPE);
-
-    let peer_zero_checksum = *parameters
-        .iter()
-        .find_map(|e| match e {
-            Parameter::ZeroChecksumAcceptable(ZeroChecksumAcceptableParameter { method }) => {
-                Some(method)
-            }
-            _ => None,
-        })
-        .unwrap_or(&ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE);
-    let zero_checksum = (options.zero_checksum_alternate_error_detection_method
-        != ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE)
-        && (options.zero_checksum_alternate_error_detection_method == peer_zero_checksum);
-
-    Capabilities {
-        partial_reliability,
-        message_interleaving,
-        reconfig: supported.contains(&re_config_chunk::CHUNK_TYPE),
-        zero_checksum,
-        negotiated_maximum_incoming_streams: min(
-            options.announced_maximum_incoming_streams,
-            peer_nbr_outbound_streams,
-        ),
-        negotiated_maximum_outgoing_streams: min(
-            options.announced_maximum_outgoing_streams,
-            peer_nbr_inbound_streams,
-        ),
     }
 }
 
@@ -395,205 +240,6 @@ impl Socket {
             tx_error_counter: TxErrorCounter::new(options.max_retransmissions),
         };
         Socket { name: name.into(), now, state: State::Closed, ctx }
-    }
-
-    fn handle_init(&mut self, chunk: InitChunk) {
-        let my_verification_tag: u32;
-        let my_initial_tsn: Tsn;
-        let tie_tag: u64;
-
-        match &mut self.state {
-            State::Closed => {
-                my_initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
-                my_verification_tag =
-                    rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
-                tie_tag = 0;
-            }
-            State::CookieWait(CookieWaitState { verification_tag, initial_tsn, .. })
-            | State::CookieEchoed(CookieEchoState { verification_tag, initial_tsn, .. }) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.1>:
-                //
-                //   This usually indicates an initialization collision, i.e., each endpoint is
-                //   attempting, at about the same time, to establish an association with the other
-                //   endpoint.
-                info!("Received Init indicating simultaneous connections");
-                my_verification_tag = *verification_tag;
-                my_initial_tsn = *initial_tsn;
-                tie_tag = 0;
-            }
-            State::ShutdownAckSent(_) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-18>:
-                //
-                //   If an endpoint is in the SHUTDOWN-ACK-SENT state and receives an INIT chunk
-                //   (e.g., if the SHUTDOWN COMPLETE chunk was lost) with source and destination
-                //   transport addresses (either in the IP addresses or in the INIT chunk) that
-                //   belong to this association, it SHOULD discard the INIT chunk and retransmit
-                // the   SHUTDOWN ACK chunk.
-                self.send_shutdown_ack();
-                return;
-            }
-            State::Established(tcb)
-            | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
-            | State::ShutdownReceived(tcb) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.2>:
-                //
-                //   The outbound SCTP packet containing this INIT ACK chunk MUST carry a
-                //   Verification Tag value equal to the Initiate Tag found in the unexpected INIT
-                //   chunk. And the INIT ACK chunk MUST contain a new Initiate Tag (randomly
-                //   generated; see Section 5.3.1). Other parameters for the endpoint SHOULD be
-                //   copied from the existing parameters of the association (e.g., number of
-                //   outbound streams) into the INIT ACK chunk and cookie.
-                //
-                // Create a new verification tag, different from the previous one.
-                my_verification_tag =
-                    rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
-                my_initial_tsn = tcb.retransmission_queue.next_tsn().add_to(1000000);
-                tie_tag = tcb.tie_tag;
-            }
-        }
-
-        let capabilities = compute_capabilities(
-            &self.ctx.options,
-            chunk.nbr_outbound_streams,
-            chunk.nbr_inbound_streams,
-            &chunk.parameters,
-        );
-        let write_checksum = !capabilities.zero_checksum;
-        let mut parameters =
-            make_capability_parameters(&self.ctx.options, capabilities.zero_checksum);
-        parameters.push(Parameter::StateCookie(StateCookieParameter {
-            cookie: StateCookie {
-                peer_tag: chunk.initiate_tag,
-                my_tag: my_verification_tag,
-                peer_initial_tsn: chunk.initial_tsn,
-                my_initial_tsn,
-                a_rwnd: chunk.a_rwnd,
-                tie_tag,
-                capabilities,
-            }
-            .serialize(),
-        }));
-        let init_ack = InitAckChunk {
-            initiate_tag: my_verification_tag,
-            a_rwnd: self.ctx.options.max_receiver_window_buffer_size as u32,
-            nbr_outbound_streams: self.ctx.options.announced_maximum_outgoing_streams,
-            nbr_inbound_streams: self.ctx.options.announced_maximum_incoming_streams,
-            initial_tsn: my_initial_tsn,
-            parameters,
-        };
-
-        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            SctpPacketBuilder::new(
-                chunk.initiate_tag,
-                self.ctx.options.local_port,
-                self.ctx.options.remote_port,
-                self.ctx.options.mtu,
-            )
-            .write_checksum(write_checksum)
-            .add(&Chunk::InitAck(init_ack))
-            .build(),
-        ));
-        self.ctx.tx_packets_count += 1;
-    }
-
-    fn handle_init_ack(&mut self, now: SocketTime, chunk: InitAckChunk) {
-        let State::CookieWait(s) = &mut self.state else {
-            // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.3>:
-            //
-            //   If an INIT ACK chunk is received by an endpoint in any state other than the
-            //   COOKIE-WAIT or CLOSED state, the endpoint SHOULD discard the INIT ACK chunk. An
-            //   unexpected INIT ACK chunk usually indicates the processing of an old or duplicated
-            //   INIT chunk.
-            info!("Received INIT_ACK in unexpected state");
-            return;
-        };
-
-        let capabilities = compute_capabilities(
-            &self.ctx.options,
-            chunk.nbr_outbound_streams,
-            chunk.nbr_inbound_streams,
-            &chunk.parameters,
-        );
-
-        let Some(cookie) = chunk.parameters.into_iter().find_map(|p| match p {
-            Parameter::StateCookie(StateCookieParameter { cookie }) => Some(cookie),
-            _ => None,
-        }) else {
-            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                SctpPacketBuilder::new(
-                    s.verification_tag,
-                    self.ctx.options.local_port,
-                    self.ctx.options.remote_port,
-                    round_down_to_4!(self.ctx.options.mtu),
-                )
-                .add(&Chunk::Abort(AbortChunk {
-                    error_causes: vec![ErrorCause::ProtocolViolation(
-                        ProtocolViolationErrorCause { information: "INIT-ACK malformed".into() },
-                    )],
-                }))
-                .build(),
-            ));
-            self.ctx.tx_packets_count += 1;
-            self.ctx.internal_close(
-                &mut self.state,
-                ErrorKind::ProtocolViolation,
-                "InitAck chunk doesn't contain a cookie".into(),
-            );
-            return;
-        };
-
-        self.ctx.send_queue.enable_message_interleaving(capabilities.message_interleaving);
-        let mut t1_cookie = Timer::new(
-            self.ctx.options.t1_cookie_timeout,
-            BackoffAlgorithm::Exponential,
-            self.ctx.options.max_init_retransmits,
-            None,
-        );
-        t1_cookie.start(now);
-        self.ctx.peer_implementation = detemine_sctp_implementation(&cookie);
-        self.ctx.send_queue.reset();
-        let tie_tag = rand::rng().random::<u64>();
-        self.state = State::CookieEchoed(CookieEchoState {
-            t1_cookie,
-            cookie_echo_chunk: CookieEchoChunk { cookie },
-            initial_tsn: s.initial_tsn,
-            verification_tag: s.verification_tag,
-            tcb: TransmissionControlBlock::new(
-                &self.ctx.options,
-                s.verification_tag,
-                s.initial_tsn,
-                chunk.initiate_tag,
-                chunk.initial_tsn,
-                tie_tag,
-                chunk.a_rwnd,
-                capabilities,
-                self.ctx.events.clone(),
-            ),
-        });
-
-        // The connection isn't fully established just yet.
-        self.send_cookie_echo(now);
-    }
-
-    fn send_cookie_echo(&mut self, now: SocketTime) {
-        let State::CookieEchoed(ref s) = self.state else {
-            unreachable!();
-        };
-
-        // From <https://datatracker.ietf.org/doc/html/rfc9260.html#section-5.1-2.3.2>:
-        //
-        //   The COOKIE ECHO chunk MAY be bundled with any pending outbound DATA chunks, but it MUST
-        //   be the first chunk in the packet [...]
-        let mut builder = SctpPacketBuilder::new(
-            s.tcb.peer_verification_tag,
-            self.ctx.options.local_port,
-            self.ctx.options.remote_port,
-            self.ctx.options.mtu,
-        );
-
-        builder.add(&Chunk::CookieEcho(s.cookie_echo_chunk.clone()));
-        self.ctx.send_buffered_packets_with(&mut self.state, now, &mut builder);
     }
 
     fn maybe_send_shutdown(&mut self, now: SocketTime) {
@@ -642,7 +288,7 @@ impl Socket {
             State::ShutdownReceived(tcb) => State::ShutdownAckSent(tcb)
         );
 
-        self.send_shutdown_ack();
+        send_shutdown_ack(&mut self.state, &mut self.ctx);
     }
 
     fn send_shutdown(&mut self) {
@@ -655,14 +301,6 @@ impl Socket {
                     cumulative_tsn_ack: tcb.data_tracker.last_cumulative_acked_tsn(),
                 }))
                 .build(),
-        ));
-        self.ctx.tx_packets_count += 1;
-    }
-
-    fn send_shutdown_ack(&mut self) {
-        let State::ShutdownAckSent(tcb) = &mut self.state else { unreachable!() };
-        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            tcb.new_packet().add(&Chunk::ShutdownAck(ShutdownAckChunk {})).build(),
         ));
         self.ctx.tx_packets_count += 1;
     }
@@ -755,147 +393,6 @@ impl Socket {
         let message =
             chunk.error_causes.into_iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
         self.ctx.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
-    }
-
-    fn handle_cookie_echo(
-        &mut self,
-        now: SocketTime,
-        header: &CommonHeader,
-        chunk: CookieEchoChunk,
-    ) {
-        let cookie = match StateCookie::from_bytes(&chunk.cookie) {
-            Ok(c) => c,
-            Err(s) => {
-                return self
-                    .ctx
-                    .events
-                    .borrow_mut()
-                    .add(SocketEvent::OnError(ErrorKind::ParseFailed, s.into()));
-            }
-        };
-
-        let resolution = if let Some(tcb) = self.state.tcb() {
-            CookieResolution::from_tcb(header, tcb, &cookie)
-        } else if header.verification_tag != cookie.my_tag {
-            CookieResolution::InvalidTag
-        } else {
-            CookieResolution::EstablishNew
-        };
-
-        match resolution {
-            CookieResolution::Discard => return,
-            CookieResolution::InvalidTag => {
-                return self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                    ErrorKind::ParseFailed,
-                    "Received CookieEcho with invalid verification tag".into(),
-                ));
-            }
-            CookieResolution::RestartDetected => {
-                // If the socket is shutting down, reject the restart.
-                if matches!(self.state, State::ShutdownAckSent(_)) {
-                    let tcb = self.state.tcb().expect("TCB must exist in ShutdownAckSent");
-
-                    let packet = tcb
-                        .new_packet()
-                        .add(&Chunk::ShutdownAck(ShutdownAckChunk {}))
-                        .add(&Chunk::Error(ErrorChunk {
-                            error_causes: vec![ErrorCause::CookieReceivedWhileShuttingDown(
-                                CookieReceivedWhileShuttingDownErrorCause {},
-                            )],
-                        }))
-                        .build();
-
-                    self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(packet));
-                    self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                        ErrorKind::WrongSequence,
-                        "Received COOKIE-ECHO while shutting down".into(),
-                    ));
-                    self.ctx.tx_packets_count += 1;
-                    return;
-                }
-                self.ctx.events.borrow_mut().add(SocketEvent::OnConnectionRestarted());
-                self.establish_new_tcb(now, &cookie, true);
-            }
-            CookieResolution::SimultaneousInit => {
-                self.establish_new_tcb(now, &cookie, true);
-            }
-            CookieResolution::EstablishNew => {
-                self.establish_new_tcb(now, &cookie, false);
-            }
-            CookieResolution::MaintainExisting => {
-                if matches!(self.state, State::CookieEchoed(_)) {
-                    transition_between!(self.state,
-                       State::CookieEchoed(s) => State::Established(s.tcb)
-                    );
-                    self.ctx.heartbeat_interval.start(now);
-                    info!("{}: Connection established", self.name);
-                    self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
-                }
-            }
-        }
-
-        let Some(tcb) = self.state.tcb() else {
-            unreachable!();
-        };
-
-        let write_checksum = !tcb.capabilities.zero_checksum;
-        let mut b = SctpPacketBuilder::new(
-            cookie.peer_tag,
-            self.ctx.options.local_port,
-            self.ctx.options.remote_port,
-            self.ctx.options.mtu,
-        );
-        b.write_checksum(write_checksum);
-        b.add(&Chunk::CookieAck(CookieAckChunk {}));
-        self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
-    }
-
-    /// Transitions the socket to Established using the data in the Cookie.
-    /// If `reset_queue` is true, reset message identifiers (used for restarts).
-    fn establish_new_tcb(&mut self, now: SocketTime, cookie: &StateCookie, reset_queue: bool) {
-        self.ctx.send_queue.enable_message_interleaving(cookie.capabilities.message_interleaving);
-
-        if reset_queue {
-            self.ctx.send_queue.reset();
-        }
-
-        let tie_tag = rand::rng().random::<u64>();
-        let new_tcb = TransmissionControlBlock::new(
-            &self.ctx.options,
-            cookie.my_tag,
-            cookie.my_initial_tsn,
-            cookie.peer_tag,
-            cookie.peer_initial_tsn,
-            tie_tag,
-            cookie.a_rwnd,
-            cookie.capabilities,
-            self.ctx.events.clone(),
-        );
-
-        self.state = State::Established(new_tcb);
-        self.ctx.heartbeat_interval.start(now);
-
-        info!("{}: Connection established", self.name);
-        self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
-    }
-
-    fn handle_cookie_ack(&mut self, now: SocketTime) {
-        if !matches!(self.state, State::CookieEchoed(_)) {
-            // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.5>:
-            //
-            //   At any state other than COOKIE-ECHOED, an endpoint SHOULD silently discard a
-            //   received COOKIE ACK chunk.
-            warn!("Received COOKIE_ACK not in COOKIE_ECHOED state");
-            return;
-        }
-
-        transition_between!(self.state,
-           State::CookieEchoed(s) => State::Established(s.tcb)
-        );
-
-        self.ctx.heartbeat_interval.start(now);
-        info!("Socket is connected!");
-        self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
     fn handle_data(&mut self, now: SocketTime, tsn: Tsn, data: Data) {
@@ -996,32 +493,6 @@ impl Socket {
                 self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
             }
         }
-    }
-
-    fn send_init(&mut self) {
-        let State::CookieWait(ref s) = self.state else {
-            unreachable!();
-        };
-        let support_zero_checksum = self.ctx.options.zero_checksum_alternate_error_detection_method
-            != ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
-        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            SctpPacketBuilder::new(
-                0,
-                self.ctx.options.local_port,
-                self.ctx.options.remote_port,
-                self.ctx.options.mtu,
-            )
-            .add(&Chunk::Init(InitChunk {
-                initiate_tag: s.verification_tag,
-                a_rwnd: self.ctx.options.max_receiver_window_buffer_size as u32,
-                nbr_outbound_streams: self.ctx.options.announced_maximum_outgoing_streams,
-                nbr_inbound_streams: self.ctx.options.announced_maximum_incoming_streams,
-                initial_tsn: s.initial_tsn,
-                parameters: make_capability_parameters(&self.ctx.options, support_zero_checksum),
-            }))
-            .build(),
-        ));
-        self.ctx.tx_packets_count += 1;
     }
 
     fn handle_heartbeat_timeouts(&mut self, now: SocketTime) {
@@ -1348,36 +819,6 @@ impl Socket {
         self.ctx.send_buffered_packets(&mut self.state, now);
     }
 
-    fn handle_t1init_timeout(&mut self, now: SocketTime) {
-        let State::CookieWait(s) = &mut self.state else { unreachable!() };
-        if s.t1_init.expire(now) {
-            if s.t1_init.is_running() {
-                self.send_init();
-            } else {
-                self.ctx.internal_close(
-                    &mut self.state,
-                    ErrorKind::TooManyRetries,
-                    "No INIT_ACK received".into(),
-                );
-            }
-        }
-    }
-
-    fn handle_t1cookie_timeout(&mut self, now: SocketTime) {
-        let State::CookieEchoed(s) = &mut self.state else { unreachable!() };
-        if s.t1_cookie.expire(now) {
-            if !s.t1_cookie.is_running() {
-                self.ctx.internal_close(
-                    &mut self.state,
-                    ErrorKind::TooManyRetries,
-                    "No COOKIE_ACK received".into(),
-                );
-            } else {
-                self.send_cookie_echo(now);
-            }
-        }
-    }
-
     fn handle_shutdown(&mut self) {
         match self.state {
             State::Closed
@@ -1416,7 +857,7 @@ impl Socket {
                         State::ShutdownAckSent(tcb)
                 );
 
-                self.send_shutdown_ack();
+                send_shutdown_ack(&mut self.state, &mut self.ctx);
             }
         }
     }
@@ -1562,17 +1003,7 @@ impl DcSctpSocket for Socket {
             return;
         };
         let now = *self.now.borrow();
-        let mut t1_init = Timer::new(
-            self.ctx.options.t1_init_timeout,
-            BackoffAlgorithm::Exponential,
-            self.ctx.options.max_init_retransmits,
-            None,
-        );
-        t1_init.start(now);
-        let initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
-        let verification_tag = rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
-        self.state = State::CookieWait(CookieWaitState { t1_init, initial_tsn, verification_tag });
-        self.send_init();
+        do_connect(&mut self.state, &mut self.ctx, now);
     }
 
     fn handle_input(&mut self, packet: &[u8]) {
@@ -1595,17 +1026,27 @@ impl DcSctpSocket for Socket {
                         | Chunk::IData(IDataChunk { tsn, data }) => {
                             self.handle_data(now, tsn, data);
                         }
-                        Chunk::Init(c) => self.handle_init(c),
-                        Chunk::InitAck(c) => self.handle_init_ack(now, c),
+                        Chunk::Init(c) => handle_init(&mut self.state, &mut self.ctx, c),
+                        Chunk::InitAck(c) => {
+                            handle_init_ack(&mut self.state, &mut self.ctx, now, c);
+                        }
                         Chunk::Sack(c) => self.handle_sack(now, c),
                         Chunk::Abort(c) => self.handle_abort(c),
                         Chunk::Shutdown(_) => self.handle_shutdown(),
                         Chunk::ShutdownAck(_) => self.handle_shutdown_ack(&packet.common_header),
                         Chunk::Error(c) => self.handle_error(c),
                         Chunk::CookieEcho(c) => {
-                            self.handle_cookie_echo(now, &packet.common_header, c);
+                            handle_cookie_echo(
+                                &mut self.state,
+                                &mut self.ctx,
+                                now,
+                                &packet.common_header,
+                                c,
+                            );
                         }
-                        Chunk::CookieAck(_) => self.handle_cookie_ack(now),
+                        Chunk::CookieAck(_) => {
+                            handle_cookie_ack(&mut self.state, &mut self.ctx, now);
+                        }
                         Chunk::HeartbeatRequest(c) => self.handle_heartbeat_req(c),
                         Chunk::HeartbeatAck(c) => self.handle_heartbeat_ack(now, c),
                         Chunk::ShutdownComplete(c) => self.handle_shutdown_complete(c),
@@ -1640,13 +1081,13 @@ impl DcSctpSocket for Socket {
             State::Closed => {}
             &mut State::CookieWait(ref s) => {
                 debug_assert!(s.t1_init.is_running());
-                self.handle_t1init_timeout(now);
+                handle_t1init_timeout(&mut self.state, &mut self.ctx, now);
             }
             State::CookieEchoed(s) => {
                 // NOTE: Only let the t1-cookie timer drive retransmissions.
                 debug_assert!(s.t1_cookie.is_running());
                 s.tcb.data_tracker.handle_timeout(now);
-                self.handle_t1cookie_timeout(now);
+                handle_t1cookie_timeout(&mut self.state, &mut self.ctx, now);
             }
             State::Established(tcb)
             | State::ShutdownPending(tcb)
