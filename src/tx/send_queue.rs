@@ -184,18 +184,18 @@ impl<'a> OutgoingStream<'a> {
     }
 }
 
-pub struct SendQueue<'a> {
+pub struct SendQueue {
     enable_message_interleaving: bool,
     default_priority: u16,
     default_low_buffered_amount_low_threshold: usize,
-    buffered_amount: ThresholdWatcher<'a>,
+    buffered_amount: ThresholdWatcher<'static>,
     current_message_id: OutgoingMessageId,
     scheduler: StreamScheduler,
-    streams: HashMap<StreamId, OutgoingStream<'a>>,
+    streams: HashMap<StreamId, OutgoingStream<'static>>,
     events: Rc<RefCell<dyn EventSink>>,
 }
 
-impl<'a> SendQueue<'a> {
+impl SendQueue {
     pub fn new(
         max_payload_bytes: usize,
         options: &Options,
@@ -269,7 +269,7 @@ impl<'a> SendQueue<'a> {
         priority: u16,
         low_threshold: usize,
         events: Rc<RefCell<dyn EventSink>>,
-    ) -> OutgoingStream<'a> {
+    ) -> OutgoingStream<'static> {
         OutgoingStream::new(priority, low_threshold, move || {
             events.borrow_mut().add(SocketEvent::OnBufferedAmountLow(stream_id));
         })
@@ -628,7 +628,7 @@ mod tests {
         events.borrow_mut().next_event()
     }
 
-    fn add(q: &mut SendQueue<'_>, sid: StreamId, ppid: PpId, payload: Vec<u8>) {
+    fn add(q: &mut SendQueue, sid: StreamId, ppid: PpId, payload: Vec<u8>) {
         q.add(START_TIME, Message::new(sid, ppid, payload), &SendOptions { ..Default::default() });
     }
 
@@ -1392,7 +1392,7 @@ mod tests {
         assert_eq!(q.get_priority(StreamId(2)), 42);
     }
 
-    fn handover_queue(q: SendQueue<'_>, events: Rc<RefCell<dyn EventSink>>) -> SendQueue<'_> {
+    fn handover_queue(q: SendQueue, events: Rc<RefCell<dyn EventSink>>) -> SendQueue {
         assert!(q.get_handover_readiness().is_ready());
 
         let mut state = SocketHandoverState::default();

@@ -333,13 +333,13 @@ macro_rules! transition_between {
 /// receive messages, and to manage the connection.
 ///
 /// To create a socket, use the [`Socket::new`] method.
-pub struct Socket<'a> {
+pub struct Socket {
     name: String,
     now: Rc<RefCell<SocketTime>>,
     options: Options,
     state: State,
     events: Rc<RefCell<dyn EventSink>>,
-    send_queue: SendQueue<'a>,
+    send_queue: SendQueue,
 
     limit_forward_tsn_until: SocketTime,
 
@@ -458,7 +458,7 @@ fn compute_capabilities(
     }
 }
 
-impl Socket<'_> {
+impl Socket {
     /// Creates a new `Socket`.
     ///
     /// The provided `name` is only used for logging to identify this socket, and `start_time`
@@ -1732,7 +1732,7 @@ impl Socket<'_> {
     }
 }
 
-impl DcSctpSocket for Socket<'_> {
+impl DcSctpSocket for Socket {
     fn poll_event(&mut self) -> Option<SocketEvent> {
         self.events.borrow_mut().next_event()
     }

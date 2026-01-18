@@ -766,7 +766,7 @@ mod tests {
         chunks.iter().map(|(tsn, data)| (data.stream_key.id(), *tsn)).collect()
     }
 
-    fn add_message(sq: &mut SendQueue<'_>, now: SocketTime) {
+    fn add_message(sq: &mut SendQueue, now: SocketTime) {
         sq.add(
             now,
             Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
