@@ -84,12 +84,19 @@ use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCaus
 use crate::packet::write_u32_be;
 use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
 use crate::socket::capabilities::Capabilities;
+use crate::socket::context::Context;
+use crate::socket::context::TxErrorCounter;
+use crate::socket::state::CookieEchoState;
+use crate::socket::state::CookieWaitState;
+use crate::socket::state::ShutdownSentState;
+use crate::socket::state::State;
 use crate::socket::state_cookie::StateCookie;
 use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::socket::transmission_control_block::InflightResetRequest;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
 use crate::timer::BackoffAlgorithm;
 use crate::timer::Timer;
+use crate::transition_between;
 use crate::tx::retransmission_queue::HandleSackResult;
 use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
@@ -101,15 +108,15 @@ use rand::Rng;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::HashSet;
-use std::mem;
 #[cfg(test)]
 use std::println as info;
 #[cfg(test)]
 use std::println as warn;
 use std::rc::Rc;
-use std::time::Duration;
 
 pub mod capabilities;
+pub mod context;
+pub mod state;
 pub mod state_cookie;
 pub mod transmission_control_block;
 
@@ -120,86 +127,6 @@ const MIN_VERIFICATION_TAG: u32 = 1;
 const MAX_VERIFICATION_TAG: u32 = u32::MAX;
 const MIN_INITIAL_TSN: u32 = u32::MIN;
 const MAX_INITIAL_TSN: u32 = u32::MAX;
-
-struct CookieWaitState {
-    t1_init: Timer,
-    initial_tsn: Tsn,
-    verification_tag: u32,
-}
-
-struct CookieEchoState {
-    t1_cookie: Timer,
-    cookie_echo_chunk: CookieEchoChunk,
-    initial_tsn: Tsn,
-    verification_tag: u32,
-    tcb: TransmissionControlBlock,
-}
-
-struct ShutdownSentState {
-    t2_shutdown: Timer,
-    tcb: TransmissionControlBlock,
-}
-
-enum State {
-    Closed,
-    CookieWait(CookieWaitState),
-    CookieEchoed(CookieEchoState),
-    Established(TransmissionControlBlock),
-    ShutdownPending(TransmissionControlBlock),
-    ShutdownSent(ShutdownSentState),
-    ShutdownReceived(TransmissionControlBlock),
-    ShutdownAckSent(TransmissionControlBlock),
-}
-
-impl State {
-    fn tcb_mut(&mut self) -> Option<&mut TransmissionControlBlock> {
-        match self {
-            State::CookieEchoed(CookieEchoState { tcb, .. })
-            | State::Established(tcb)
-            | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
-            | State::ShutdownReceived(tcb)
-            | State::ShutdownAckSent(tcb) => Some(tcb),
-            _ => None,
-        }
-    }
-
-    fn tcb(&self) -> Option<&TransmissionControlBlock> {
-        match self {
-            State::CookieEchoed(CookieEchoState { tcb, .. })
-            | State::Established(tcb)
-            | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
-            | State::ShutdownReceived(tcb)
-            | State::ShutdownAckSent(tcb) => Some(tcb),
-            _ => None,
-        }
-    }
-}
-
-struct TxErrorCounter {
-    error_counter: u32,
-    limit: Option<u32>,
-}
-
-impl TxErrorCounter {
-    fn increment(&mut self) {
-        match self.limit {
-            Some(limit) if self.error_counter <= limit => {
-                self.error_counter += 1;
-            }
-            _ => {}
-        }
-    }
-
-    fn reset(&mut self) {
-        self.error_counter = 0;
-    }
-
-    fn is_exhausted(&self) -> bool {
-        if let Some(limit) = self.limit { self.error_counter > limit } else { false }
-    }
-}
 
 struct LoggingEvents {
     parent: Rc<RefCell<dyn EventSink>>,
@@ -316,17 +243,6 @@ impl CookieResolution {
     }
 }
 
-/// Facilitates state transitions within a `State` enum, allowing the state enum variant arguments
-/// to be moved to the new state, improving code readability.
-macro_rules! transition_between {
-  ($state:expr, $($from_pat:pat),+ => $to_expr:expr) => {
-      $state = match mem::replace(&mut $state, State::Closed) {
-          $($from_pat => $to_expr,)+
-          _ => unreachable!(),
-      };
-  };
-}
-
 /// An SCTP socket.
 ///
 /// The socket is the main entry point for using the `dcsctp` library. It is used to send and
@@ -336,24 +252,8 @@ macro_rules! transition_between {
 pub struct Socket {
     name: String,
     now: Rc<RefCell<SocketTime>>,
-    options: Options,
     state: State,
-    events: Rc<RefCell<dyn EventSink>>,
-    send_queue: SendQueue,
-
-    limit_forward_tsn_until: SocketTime,
-
-    heartbeat_interval: Timer,
-    heartbeat_timeout: Timer,
-    heartbeat_counter: u32,
-    heartbeat_sent_time: SocketTime,
-
-    rx_packets_count: usize,
-    tx_packets_count: usize,
-    tx_messages_count: usize,
-    peer_implementation: SctpImplementation,
-
-    tx_error_counter: TxErrorCounter,
+    ctx: Context,
 }
 
 fn closest_timeout(a: Option<SocketTime>, b: Option<SocketTime>) -> Option<SocketTime> {
@@ -469,11 +369,8 @@ impl Socket {
         let events: Rc<RefCell<dyn EventSink>> =
             Rc::new(RefCell::new(LoggingEvents::new(events, name.into(), Rc::clone(&now))));
         let sqe = Rc::clone(&events);
-        Socket {
-            name: name.into(),
-            now,
+        let ctx = Context {
             options: options.clone(),
-            state: State::Closed,
             events,
             send_queue: SendQueue::new(options.mtu, options, sqe),
             limit_forward_tsn_until: SocketTime::zero(),
@@ -495,109 +392,9 @@ impl Socket {
             tx_packets_count: 0,
             tx_messages_count: 0,
             peer_implementation: SctpImplementation::Unknown,
-            tx_error_counter: TxErrorCounter {
-                error_counter: 0,
-                limit: options.max_retransmissions,
-            },
-        }
-    }
-
-    fn internal_close(&mut self, error: ErrorKind, message: String) {
-        if !matches!(self.state, State::Closed) {
-            self.heartbeat_interval.stop();
-            self.heartbeat_timeout.stop();
-            if error == ErrorKind::NoError {
-                self.events.borrow_mut().add(SocketEvent::OnClosed());
-            } else {
-                self.events.borrow_mut().add(SocketEvent::OnAborted(error, message));
-            }
-            self.state = State::Closed;
-        }
-    }
-
-    fn send_buffered_packets(&mut self, now: SocketTime) {
-        if let Some(tcb) = &self.state.tcb_mut() {
-            let mut packet = tcb.new_packet();
-            self.send_buffered_packets_with(now, &mut packet);
-        }
-    }
-
-    /// Given a builder that is either empty, or only contains control chunks, add more control
-    /// chunks and data chunks to it, and send it and possibly more packets, as is allowed by the
-    /// congestion window.
-    fn send_buffered_packets_with(&mut self, now: SocketTime, builder: &mut SctpPacketBuilder) {
-        for packet_idx in 0..self.options.max_burst {
-            if let Some(tcb) = self.state.tcb_mut() {
-                if packet_idx == 0 {
-                    if tcb.data_tracker.should_send_ack(now, true) {
-                        builder.add(
-                            &Chunk::Sack(tcb.data_tracker.create_selective_ack(
-                                tcb.reassembly_queue.remaining_bytes() as u32,
-                            )),
-                        );
-                    }
-                    if now >= self.limit_forward_tsn_until
-                        && tcb.retransmission_queue.should_send_forward_tsn(now)
-                    {
-                        builder.add(&tcb.retransmission_queue.create_forward_tsn());
-                        // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.5>:
-                        //
-                        //   IMPLEMENTATION NOTE: An implementation may wish to limit the number of
-                        //   duplicate FORWARD TSN chunks it sends by [...] waiting a full RTT
-                        //   before sending a duplicate FORWARD TSN. [...] Any delay applied to the
-                        //   sending of FORWARD TSN chunk SHOULD NOT exceed 200ms and MUST NOT
-                        //   exceed 500ms.
-                        self.limit_forward_tsn_until =
-                            now + min(Duration::from_millis(200), tcb.rto.srtt());
-                    }
-
-                    if matches!(tcb.current_reset_request, CurrentResetRequest::None)
-                        && self.send_queue.has_streams_ready_to_be_reset()
-                    {
-                        tcb.start_ssn_reset_request(
-                            now,
-                            self.send_queue.get_streams_ready_to_reset(),
-                            builder,
-                        );
-                    }
-                }
-                let chunks = tcb.retransmission_queue.get_chunks_to_send(
-                    now,
-                    builder.bytes_remaining(),
-                    |max_size, discard| {
-                        for (stream_id, message_id) in discard {
-                            self.send_queue.discard(*stream_id, *message_id);
-                        }
-                        self.send_queue.produce(now, max_size)
-                    },
-                );
-
-                if !chunks.is_empty() {
-                    // Sending data means that the path is not idle - restart heartbeat timer.
-                    self.heartbeat_interval.start(now);
-                }
-
-                for (tsn, data) in chunks {
-                    builder.add(&tcb.make_data_chunk(tsn, data));
-                }
-            }
-
-            if builder.is_empty() {
-                break;
-            }
-            self.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
-            self.tx_packets_count += 1;
-
-            // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.1-2.3.2>:
-            //
-            //   [...] until the COOKIE ACK chunk is returned, the sender MUST NOT send any other
-            //   packets to the peer.
-            //
-            // Let the cookie echo timeout drive sending that chunk and any data
-            if matches!(self.state, State::CookieEchoed(_)) {
-                return;
-            }
-        }
+            tx_error_counter: TxErrorCounter::new(options.max_retransmissions),
+        };
+        Socket { name: name.into(), now, state: State::Closed, ctx }
     }
 
     fn handle_init(&mut self, chunk: InitChunk) {
@@ -657,13 +454,14 @@ impl Socket {
         }
 
         let capabilities = compute_capabilities(
-            &self.options,
+            &self.ctx.options,
             chunk.nbr_outbound_streams,
             chunk.nbr_inbound_streams,
             &chunk.parameters,
         );
         let write_checksum = !capabilities.zero_checksum;
-        let mut parameters = make_capability_parameters(&self.options, capabilities.zero_checksum);
+        let mut parameters =
+            make_capability_parameters(&self.ctx.options, capabilities.zero_checksum);
         parameters.push(Parameter::StateCookie(StateCookieParameter {
             cookie: StateCookie {
                 peer_tag: chunk.initiate_tag,
@@ -678,25 +476,25 @@ impl Socket {
         }));
         let init_ack = InitAckChunk {
             initiate_tag: my_verification_tag,
-            a_rwnd: self.options.max_receiver_window_buffer_size as u32,
-            nbr_outbound_streams: self.options.announced_maximum_outgoing_streams,
-            nbr_inbound_streams: self.options.announced_maximum_incoming_streams,
+            a_rwnd: self.ctx.options.max_receiver_window_buffer_size as u32,
+            nbr_outbound_streams: self.ctx.options.announced_maximum_outgoing_streams,
+            nbr_inbound_streams: self.ctx.options.announced_maximum_incoming_streams,
             initial_tsn: my_initial_tsn,
             parameters,
         };
 
-        self.events.borrow_mut().add(SocketEvent::SendPacket(
+        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
             SctpPacketBuilder::new(
                 chunk.initiate_tag,
-                self.options.local_port,
-                self.options.remote_port,
-                self.options.mtu,
+                self.ctx.options.local_port,
+                self.ctx.options.remote_port,
+                self.ctx.options.mtu,
             )
             .write_checksum(write_checksum)
             .add(&Chunk::InitAck(init_ack))
             .build(),
         ));
-        self.tx_packets_count += 1;
+        self.ctx.tx_packets_count += 1;
     }
 
     fn handle_init_ack(&mut self, now: SocketTime, chunk: InitAckChunk) {
@@ -712,7 +510,7 @@ impl Socket {
         };
 
         let capabilities = compute_capabilities(
-            &self.options,
+            &self.ctx.options,
             chunk.nbr_outbound_streams,
             chunk.nbr_inbound_streams,
             &chunk.parameters,
@@ -722,12 +520,12 @@ impl Socket {
             Parameter::StateCookie(StateCookieParameter { cookie }) => Some(cookie),
             _ => None,
         }) else {
-            self.events.borrow_mut().add(SocketEvent::SendPacket(
+            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                 SctpPacketBuilder::new(
                     s.verification_tag,
-                    self.options.local_port,
-                    self.options.remote_port,
-                    round_down_to_4!(self.options.mtu),
+                    self.ctx.options.local_port,
+                    self.ctx.options.remote_port,
+                    round_down_to_4!(self.ctx.options.mtu),
                 )
                 .add(&Chunk::Abort(AbortChunk {
                     error_causes: vec![ErrorCause::ProtocolViolation(
@@ -736,24 +534,25 @@ impl Socket {
                 }))
                 .build(),
             ));
-            self.tx_packets_count += 1;
-            self.internal_close(
+            self.ctx.tx_packets_count += 1;
+            self.ctx.internal_close(
+                &mut self.state,
                 ErrorKind::ProtocolViolation,
                 "InitAck chunk doesn't contain a cookie".into(),
             );
             return;
         };
 
-        self.send_queue.enable_message_interleaving(capabilities.message_interleaving);
+        self.ctx.send_queue.enable_message_interleaving(capabilities.message_interleaving);
         let mut t1_cookie = Timer::new(
-            self.options.t1_cookie_timeout,
+            self.ctx.options.t1_cookie_timeout,
             BackoffAlgorithm::Exponential,
-            self.options.max_init_retransmits,
+            self.ctx.options.max_init_retransmits,
             None,
         );
         t1_cookie.start(now);
-        self.peer_implementation = detemine_sctp_implementation(&cookie);
-        self.send_queue.reset();
+        self.ctx.peer_implementation = detemine_sctp_implementation(&cookie);
+        self.ctx.send_queue.reset();
         let tie_tag = rand::rng().random::<u64>();
         self.state = State::CookieEchoed(CookieEchoState {
             t1_cookie,
@@ -761,7 +560,7 @@ impl Socket {
             initial_tsn: s.initial_tsn,
             verification_tag: s.verification_tag,
             tcb: TransmissionControlBlock::new(
-                &self.options,
+                &self.ctx.options,
                 s.verification_tag,
                 s.initial_tsn,
                 chunk.initiate_tag,
@@ -769,7 +568,7 @@ impl Socket {
                 tie_tag,
                 chunk.a_rwnd,
                 capabilities,
-                self.events.clone(),
+                self.ctx.events.clone(),
             ),
         });
 
@@ -788,13 +587,13 @@ impl Socket {
         //   be the first chunk in the packet [...]
         let mut builder = SctpPacketBuilder::new(
             s.tcb.peer_verification_tag,
-            self.options.local_port,
-            self.options.remote_port,
-            self.options.mtu,
+            self.ctx.options.local_port,
+            self.ctx.options.remote_port,
+            self.ctx.options.mtu,
         );
 
         builder.add(&Chunk::CookieEcho(s.cookie_echo_chunk.clone()));
-        self.send_buffered_packets_with(now, &mut builder);
+        self.ctx.send_buffered_packets_with(&mut self.state, now, &mut builder);
     }
 
     fn maybe_send_shutdown(&mut self, now: SocketTime) {
@@ -813,7 +612,7 @@ impl Socket {
         let mut t2_shutdown = Timer::new(
             tcb.rto.rto(),
             BackoffAlgorithm::Exponential,
-            self.options.max_retransmissions,
+            self.ctx.options.max_retransmissions,
             None,
         );
         t2_shutdown.start(now);
@@ -850,22 +649,22 @@ impl Socket {
         let State::ShutdownSent(ShutdownSentState { tcb, .. }) = &mut self.state else {
             unreachable!()
         };
-        self.events.borrow_mut().add(SocketEvent::SendPacket(
+        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
             tcb.new_packet()
                 .add(&Chunk::Shutdown(ShutdownChunk {
                     cumulative_tsn_ack: tcb.data_tracker.last_cumulative_acked_tsn(),
                 }))
                 .build(),
         ));
-        self.tx_packets_count += 1;
+        self.ctx.tx_packets_count += 1;
     }
 
     fn send_shutdown_ack(&mut self) {
         let State::ShutdownAckSent(tcb) = &mut self.state else { unreachable!() };
-        self.events.borrow_mut().add(SocketEvent::SendPacket(
+        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
             tcb.new_packet().add(&Chunk::ShutdownAck(ShutdownAckChunk {})).build(),
         ));
-        self.tx_packets_count += 1;
+        self.ctx.tx_packets_count += 1;
     }
 
     fn maybe_send_fast_retransmit(&mut self, now: SocketTime) {
@@ -883,13 +682,14 @@ impl Socket {
         }
 
         debug_assert!(!builder.is_empty());
-        self.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
-        self.tx_packets_count += 1;
+        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
+        self.ctx.tx_packets_count += 1;
     }
 
     fn handle_sack(&mut self, now: SocketTime, sack: SackChunk) {
         let Some(tcb) = self.state.tcb_mut() else {
-            self.events
+            self.ctx
+                .events
                 .borrow_mut()
                 .add(SocketEvent::OnError(ErrorKind::NotConnected, "No TCB".into()));
             return;
@@ -908,7 +708,7 @@ impl Socket {
                     tcb.data_tracker.update_rto(tcb.rto.rto());
                 }
                 if reset_error_counter {
-                    self.tx_error_counter.reset();
+                    self.ctx.tx_error_counter.reset();
                 }
             }
         }
@@ -932,7 +732,7 @@ impl Socket {
 
         // Receiving an ACK will decrease outstanding bytes (maybe now below cwnd?) or indicate
         // packet loss that may result in sending FORWARD-TSN.
-        self.send_buffered_packets(now);
+        self.ctx.send_buffered_packets(&mut self.state, now);
     }
 
     fn handle_abort(&mut self, chunk: AbortChunk) {
@@ -945,7 +745,7 @@ impl Socket {
         }
         let reason =
             chunk.error_causes.into_iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
-        self.internal_close(ErrorKind::PeerReported, reason);
+        self.ctx.internal_close(&mut self.state, ErrorKind::PeerReported, reason);
     }
 
     fn handle_error(&mut self, chunk: ErrorChunk) {
@@ -954,7 +754,7 @@ impl Socket {
         }
         let message =
             chunk.error_causes.into_iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
-        self.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
+        self.ctx.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
     }
 
     fn handle_cookie_echo(
@@ -967,6 +767,7 @@ impl Socket {
             Ok(c) => c,
             Err(s) => {
                 return self
+                    .ctx
                     .events
                     .borrow_mut()
                     .add(SocketEvent::OnError(ErrorKind::ParseFailed, s.into()));
@@ -984,7 +785,7 @@ impl Socket {
         match resolution {
             CookieResolution::Discard => return,
             CookieResolution::InvalidTag => {
-                return self.events.borrow_mut().add(SocketEvent::OnError(
+                return self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                     ErrorKind::ParseFailed,
                     "Received CookieEcho with invalid verification tag".into(),
                 ));
@@ -1004,15 +805,15 @@ impl Socket {
                         }))
                         .build();
 
-                    self.events.borrow_mut().add(SocketEvent::SendPacket(packet));
-                    self.events.borrow_mut().add(SocketEvent::OnError(
+                    self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(packet));
+                    self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                         ErrorKind::WrongSequence,
                         "Received COOKIE-ECHO while shutting down".into(),
                     ));
-                    self.tx_packets_count += 1;
+                    self.ctx.tx_packets_count += 1;
                     return;
                 }
-                self.events.borrow_mut().add(SocketEvent::OnConnectionRestarted());
+                self.ctx.events.borrow_mut().add(SocketEvent::OnConnectionRestarted());
                 self.establish_new_tcb(now, &cookie, true);
             }
             CookieResolution::SimultaneousInit => {
@@ -1026,9 +827,9 @@ impl Socket {
                     transition_between!(self.state,
                        State::CookieEchoed(s) => State::Established(s.tcb)
                     );
-                    self.heartbeat_interval.start(now);
+                    self.ctx.heartbeat_interval.start(now);
                     info!("{}: Connection established", self.name);
-                    self.events.borrow_mut().add(SocketEvent::OnConnected());
+                    self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
                 }
             }
         }
@@ -1040,27 +841,27 @@ impl Socket {
         let write_checksum = !tcb.capabilities.zero_checksum;
         let mut b = SctpPacketBuilder::new(
             cookie.peer_tag,
-            self.options.local_port,
-            self.options.remote_port,
-            self.options.mtu,
+            self.ctx.options.local_port,
+            self.ctx.options.remote_port,
+            self.ctx.options.mtu,
         );
         b.write_checksum(write_checksum);
         b.add(&Chunk::CookieAck(CookieAckChunk {}));
-        self.send_buffered_packets_with(now, &mut b);
+        self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
     }
 
     /// Transitions the socket to Established using the data in the Cookie.
     /// If `reset_queue` is true, reset message identifiers (used for restarts).
     fn establish_new_tcb(&mut self, now: SocketTime, cookie: &StateCookie, reset_queue: bool) {
-        self.send_queue.enable_message_interleaving(cookie.capabilities.message_interleaving);
+        self.ctx.send_queue.enable_message_interleaving(cookie.capabilities.message_interleaving);
 
         if reset_queue {
-            self.send_queue.reset();
+            self.ctx.send_queue.reset();
         }
 
         let tie_tag = rand::rng().random::<u64>();
         let new_tcb = TransmissionControlBlock::new(
-            &self.options,
+            &self.ctx.options,
             cookie.my_tag,
             cookie.my_initial_tsn,
             cookie.peer_tag,
@@ -1068,14 +869,14 @@ impl Socket {
             tie_tag,
             cookie.a_rwnd,
             cookie.capabilities,
-            self.events.clone(),
+            self.ctx.events.clone(),
         );
 
         self.state = State::Established(new_tcb);
-        self.heartbeat_interval.start(now);
+        self.ctx.heartbeat_interval.start(now);
 
         info!("{}: Connection established", self.name);
-        self.events.borrow_mut().add(SocketEvent::OnConnected());
+        self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
     fn handle_cookie_ack(&mut self, now: SocketTime) {
@@ -1092,19 +893,19 @@ impl Socket {
            State::CookieEchoed(s) => State::Established(s.tcb)
         );
 
-        self.heartbeat_interval.start(now);
+        self.ctx.heartbeat_interval.start(now);
         info!("Socket is connected!");
-        self.events.borrow_mut().add(SocketEvent::OnConnected());
+        self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
     fn handle_data(&mut self, now: SocketTime, tsn: Tsn, data: Data) {
         if data.payload.is_empty() {
-            self.events.borrow_mut().add(SocketEvent::OnError(
+            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                 ErrorKind::ProtocolViolation,
                 "Received DATA chunk with no user data".into(),
             ));
             if let Some(tcb) = self.state.tcb_mut() {
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::Error(ErrorChunk {
                             error_causes: vec![ErrorCause::NoUserData(NoUserDataErrorCause {
@@ -1113,12 +914,12 @@ impl Socket {
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
+                self.ctx.tx_packets_count += 1;
             }
             return;
         }
         let Some(tcb) = self.state.tcb_mut() else {
-            self.events.borrow_mut().add(SocketEvent::OnError(
+            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                 ErrorKind::NotConnected,
                 "Received unexpected commands on socket that is not connected".into(),
             ));
@@ -1150,34 +951,34 @@ impl Socket {
         //   chunk that contains the Heartbeat Information TLV, together with any other received
         //   TLVs, copied unchanged from the received HEARTBEAT chunk.
         if let Some(tcb) = self.state.tcb_mut() {
-            self.events.borrow_mut().add(SocketEvent::SendPacket(
+            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                 tcb.new_packet()
                     .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
                     .build(),
             ));
-            self.tx_packets_count += 1;
+            self.ctx.tx_packets_count += 1;
         }
     }
 
     fn handle_heartbeat_ack(&mut self, now: SocketTime, chunk: HeartbeatAckChunk) {
-        self.heartbeat_timeout.stop();
+        self.ctx.heartbeat_timeout.stop();
         match chunk.parameters.iter().find_map(|p| match p {
             Parameter::HeartbeatInfo(HeartbeatInfoParameter { info }) => Some(info),
             _ => None,
         }) {
             Some(info) if info.len() == 4 => {
                 let counter = read_u32_be!(&info);
-                if counter == self.heartbeat_counter {
-                    let _rtt = now - self.heartbeat_sent_time;
+                if counter == self.ctx.heartbeat_counter {
+                    let _rtt = now - self.ctx.heartbeat_sent_time;
                     // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.1>:
                     //
                     //   When a HEARTBEAT ACK chunk is received from the peer endpoint, the counter
                     //   SHOULD also be reset.
-                    self.tx_error_counter.reset();
+                    self.ctx.tx_error_counter.reset();
                 }
             }
             _ => {
-                self.events.borrow_mut().add(SocketEvent::OnError(
+                self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                     ErrorKind::ParseFailed,
                     "Failed to parse HEARTBEAT-ACK; Invalid info parameter".into(),
                 ));
@@ -1192,7 +993,7 @@ impl Socket {
                 let mut b = tcb.new_packet();
                 let rwnd = tcb.reassembly_queue.remaining_bytes();
                 b.add(&Chunk::Sack(tcb.data_tracker.create_selective_ack(rwnd as u32)));
-                self.send_buffered_packets_with(now, &mut b);
+                self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
             }
         }
     }
@@ -1201,38 +1002,38 @@ impl Socket {
         let State::CookieWait(ref s) = self.state else {
             unreachable!();
         };
-        let support_zero_checksum = self.options.zero_checksum_alternate_error_detection_method
+        let support_zero_checksum = self.ctx.options.zero_checksum_alternate_error_detection_method
             != ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
-        self.events.borrow_mut().add(SocketEvent::SendPacket(
+        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
             SctpPacketBuilder::new(
                 0,
-                self.options.local_port,
-                self.options.remote_port,
-                self.options.mtu,
+                self.ctx.options.local_port,
+                self.ctx.options.remote_port,
+                self.ctx.options.mtu,
             )
             .add(&Chunk::Init(InitChunk {
                 initiate_tag: s.verification_tag,
-                a_rwnd: self.options.max_receiver_window_buffer_size as u32,
-                nbr_outbound_streams: self.options.announced_maximum_outgoing_streams,
-                nbr_inbound_streams: self.options.announced_maximum_incoming_streams,
+                a_rwnd: self.ctx.options.max_receiver_window_buffer_size as u32,
+                nbr_outbound_streams: self.ctx.options.announced_maximum_outgoing_streams,
+                nbr_inbound_streams: self.ctx.options.announced_maximum_incoming_streams,
                 initial_tsn: s.initial_tsn,
-                parameters: make_capability_parameters(&self.options, support_zero_checksum),
+                parameters: make_capability_parameters(&self.ctx.options, support_zero_checksum),
             }))
             .build(),
         ));
-        self.tx_packets_count += 1;
+        self.ctx.tx_packets_count += 1;
     }
 
     fn handle_heartbeat_timeouts(&mut self, now: SocketTime) {
-        if self.heartbeat_interval.expire(now) {
+        if self.ctx.heartbeat_interval.expire(now) {
             if let Some(tcb) = self.state.tcb() {
-                self.heartbeat_timeout.set_duration(self.options.rto_initial);
-                self.heartbeat_timeout.start(now);
-                self.heartbeat_counter = self.heartbeat_counter.wrapping_add(1);
-                self.heartbeat_sent_time = now;
+                self.ctx.heartbeat_timeout.set_duration(self.ctx.options.rto_initial);
+                self.ctx.heartbeat_timeout.start(now);
+                self.ctx.heartbeat_counter = self.ctx.heartbeat_counter.wrapping_add(1);
+                self.ctx.heartbeat_sent_time = now;
                 let mut info = vec![0; 4];
-                write_u32_be!(&mut info, self.heartbeat_counter);
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                write_u32_be!(&mut info, self.ctx.heartbeat_counter);
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk {
                             parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
@@ -1241,14 +1042,14 @@ impl Socket {
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
+                self.ctx.tx_packets_count += 1;
             }
         }
-        if self.heartbeat_timeout.expire(now) {
+        if self.ctx.heartbeat_timeout.expire(now) {
             // Note that the timeout timer is not restarted. It will be started again when the
             // interval timer expires.
-            debug_assert!(!self.heartbeat_timeout.is_running());
-            self.tx_error_counter.increment();
+            debug_assert!(!self.ctx.heartbeat_timeout.is_running());
+            self.ctx.tx_error_counter.increment();
         }
     }
 
@@ -1269,8 +1070,8 @@ impl Socket {
                 CurrentResetRequest::Inflight(..) => {
                     // There is an outstanding request, which timed out while waiting for a
                     // response.
-                    self.tx_error_counter.increment();
-                    if self.tx_error_counter.is_exhausted() {
+                    self.ctx.tx_error_counter.increment();
+                    if self.ctx.tx_error_counter.is_exhausted() {
                         return;
                     }
                 }
@@ -1278,8 +1079,8 @@ impl Socket {
             tcb.reconfig_timer.set_duration(tcb.rto.rto());
             let mut builder = tcb.new_packet();
             tcb.add_prepared_ssn_reset_request(&mut builder);
-            self.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
-            self.tx_packets_count += 1;
+            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
+            self.ctx.tx_packets_count += 1;
         }
     }
 
@@ -1293,7 +1094,7 @@ impl Socket {
                 return;
             }
 
-            self.events.borrow_mut().add(SocketEvent::SendPacket(
+            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                 s.tcb
                     .new_packet()
                     .add(&Chunk::Abort(AbortChunk {
@@ -1305,8 +1106,12 @@ impl Socket {
                     }))
                     .build(),
             ));
-            self.tx_packets_count += 1;
-            self.internal_close(ErrorKind::TooManyRetries, "Too many retransmissions".into());
+            self.ctx.tx_packets_count += 1;
+            self.ctx.internal_close(
+                &mut self.state,
+                ErrorKind::TooManyRetries,
+                "Too many retransmissions".into(),
+            );
         }
     }
 
@@ -1367,7 +1172,8 @@ impl Socket {
         let report_as_error = (typ & 0x40) != 0;
         let continue_processing = (typ & 0x80) != 0;
         if report_as_error {
-            self.events
+            self.ctx
+                .events
                 .borrow_mut()
                 .add(SocketEvent::OnError(ErrorKind::ParseFailed, format!("Received {}, ", chunk)));
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-3.2-3.2.6.1.2.2.1>:
@@ -1377,7 +1183,7 @@ impl Socket {
             if let Some(tcb) = self.state.tcb() {
                 let mut serialized = vec![0; chunk.serialized_size()];
                 chunk.serialize_to(&mut serialized);
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::Error(ErrorChunk {
                             error_causes: vec![ErrorCause::UnrecognizedChunk(
@@ -1386,7 +1192,7 @@ impl Socket {
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
+                self.ctx.tx_packets_count += 1;
             }
         }
         continue_processing
@@ -1439,7 +1245,8 @@ impl Socket {
                             //   E4: Any queued TSNs (queued at step E2) MUST now be released and
                             //   processed normally."
                             tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&streams);
-                            self.events
+                            self.ctx
+                                .events
                                 .borrow_mut()
                                 .add(SocketEvent::OnIncomingStreamReset(streams));
                             ReconfigurationResponseResult::SuccessPerformed
@@ -1491,12 +1298,12 @@ impl Socket {
                             tcb.current_reset_request = match result {
                                 ReconfigurationResponseResult::SuccessNothingToDo
                                 | ReconfigurationResponseResult::SuccessPerformed => {
-                                    self.events.borrow_mut().add(
+                                    self.ctx.events.borrow_mut().add(
                                         SocketEvent::OnStreamsResetPerformed(
                                             request.streams.clone(),
                                         ),
                                     );
-                                    self.send_queue.commit_reset_streams();
+                                    self.ctx.send_queue.commit_reset_streams();
 
                                     CurrentResetRequest::None
                                 }
@@ -1510,10 +1317,10 @@ impl Socket {
                                 | ReconfigurationResponseResult::ErrorWrongSSN
                                 | ReconfigurationResponseResult::ErrorRequestAlreadyInProgress
                                 | ReconfigurationResponseResult::ErrorBadSequenceNumber => {
-                                    self.events.borrow_mut().add(
+                                    self.ctx.events.borrow_mut().add(
                                         SocketEvent::OnStreamsResetFailed(request.streams.clone()),
                                     );
-                                    self.send_queue.rollback_reset_streams();
+                                    self.ctx.send_queue.rollback_reset_streams();
 
                                     CurrentResetRequest::None
                                 }
@@ -1526,19 +1333,19 @@ impl Socket {
         }
 
         if !responses.is_empty() {
-            self.events.borrow_mut().add(SocketEvent::SendPacket(
+            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                 tcb.new_packet()
                     .add(&Chunk::ReConfig(ReConfigChunk { parameters: responses }))
                     .build(),
             ));
-            self.tx_packets_count += 1;
+            self.ctx.tx_packets_count += 1;
         }
 
         // Note: Handling this response may result in outgoing stream resets finishing (either
         // successfully or with failure). If there still are pending streams that were waiting for
         // this request to finish, continue resetting them. Also, if a response was processed,
         // pending to-be-reset streams may now have become unpaused. Try to send more DATA chunks.
-        self.send_buffered_packets(now);
+        self.ctx.send_buffered_packets(&mut self.state, now);
     }
 
     fn handle_t1init_timeout(&mut self, now: SocketTime) {
@@ -1547,7 +1354,11 @@ impl Socket {
             if s.t1_init.is_running() {
                 self.send_init();
             } else {
-                self.internal_close(ErrorKind::TooManyRetries, "No INIT_ACK received".into());
+                self.ctx.internal_close(
+                    &mut self.state,
+                    ErrorKind::TooManyRetries,
+                    "No INIT_ACK received".into(),
+                );
             }
         }
     }
@@ -1556,7 +1367,11 @@ impl Socket {
         let State::CookieEchoed(s) = &mut self.state else { unreachable!() };
         if s.t1_cookie.expire(now) {
             if !s.t1_cookie.is_running() {
-                self.internal_close(ErrorKind::TooManyRetries, "No COOKIE_ACK received".into());
+                self.ctx.internal_close(
+                    &mut self.state,
+                    ErrorKind::TooManyRetries,
+                    "No COOKIE_ACK received".into(),
+                );
             } else {
                 self.send_cookie_echo(now);
             }
@@ -1620,15 +1435,15 @@ impl Socket {
                 //   If an endpoint is in the SHUTDOWN-ACK-SENT state and receives a SHUTDOWN ACK,
                 //   it MUST stop the T2-shutdown timer, send a SHUTDOWN COMPLETE chunk to its peer,
                 //   and remove all record of the association.
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk {
                             tag_reflected: false,
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
-                self.internal_close(ErrorKind::NoError, "".to_string());
+                self.ctx.tx_packets_count += 1;
+                self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
             }
             _ => {
                 // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.5.1-1.10.1.1>:
@@ -1645,17 +1460,17 @@ impl Socket {
                 //   Verification Tag field of the outbound packet with the Verification Tag
                 //   received in the SHUTDOWN ACK chunk and set the T bit in the Chunk Flags to
                 //   indicate that the Verification Tag is reflected.
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     SctpPacketBuilder::new(
                         header.verification_tag,
-                        self.options.local_port,
-                        self.options.remote_port,
-                        self.options.mtu,
+                        self.ctx.options.local_port,
+                        self.ctx.options.remote_port,
+                        self.ctx.options.mtu,
                     )
                     .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
                     .build(),
                 ));
-                self.tx_packets_count += 1;
+                self.ctx.tx_packets_count += 1;
             }
         }
     }
@@ -1669,7 +1484,7 @@ impl Socket {
             //   endpoint is in the SHUTDOWN-ACK-SENT state, the endpoint SHOULD stop the
             //   T2-shutdown timer and remove all knowledge of the association (and thus the
             //   association enters the CLOSED state).
-            self.internal_close(ErrorKind::NoError, "".to_string());
+            self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
         }
     }
 
@@ -1692,16 +1507,16 @@ impl Socket {
         let lifecycle_id = &send_options.lifecycle_id;
         let add_error_events = |kind, msg: &str| {
             if let Some(id) = lifecycle_id {
-                self.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id.clone()));
+                self.ctx.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id.clone()));
             }
-            self.events.borrow_mut().add(SocketEvent::OnError(kind, msg.to_string()));
+            self.ctx.events.borrow_mut().add(SocketEvent::OnError(kind, msg.to_string()));
         };
 
         if message.payload.is_empty() {
             add_error_events(ErrorKind::ProtocolViolation, "Unable to send empty message");
             return SendStatus::ErrorMessageEmpty;
         }
-        if message.payload.len() > self.options.max_message_size {
+        if message.payload.len() > self.ctx.options.max_message_size {
             add_error_events(ErrorKind::ProtocolViolation, "Unable to send too large message");
             return SendStatus::ErrorMessageTooLarge;
         }
@@ -1718,9 +1533,9 @@ impl Socket {
             );
             return SendStatus::ErrorShuttingDown;
         }
-        if self.send_queue.total_buffered_amount() >= self.options.max_send_buffer_size
-            || self.send_queue.buffered_amount(message.stream_id)
-                >= self.options.per_stream_send_queue_limit
+        if self.ctx.send_queue.total_buffered_amount() >= self.ctx.options.max_send_buffer_size
+            || self.ctx.send_queue.buffered_amount(message.stream_id)
+                >= self.ctx.options.per_stream_send_queue_limit
         {
             add_error_events(
                 ErrorKind::ResourceExhaustion,
@@ -1734,7 +1549,7 @@ impl Socket {
 
 impl DcSctpSocket for Socket {
     fn poll_event(&mut self) -> Option<SocketEvent> {
-        self.events.borrow_mut().next_event()
+        self.ctx.events.borrow_mut().next_event()
     }
 
     fn get_next_message(&mut self) -> Option<Message> {
@@ -1748,9 +1563,9 @@ impl DcSctpSocket for Socket {
         };
         let now = *self.now.borrow();
         let mut t1_init = Timer::new(
-            self.options.t1_init_timeout,
+            self.ctx.options.t1_init_timeout,
             BackoffAlgorithm::Exponential,
-            self.options.max_init_retransmits,
+            self.ctx.options.max_init_retransmits,
             None,
         );
         t1_init.start(now);
@@ -1761,13 +1576,13 @@ impl DcSctpSocket for Socket {
     }
 
     fn handle_input(&mut self, packet: &[u8]) {
-        self.rx_packets_count += 1;
+        self.ctx.rx_packets_count += 1;
         let now = *self.now.borrow();
         log_packet(&self.name, now.into(), false, packet);
 
-        match SctpPacket::from_bytes(packet, &self.options) {
+        match SctpPacket::from_bytes(packet, &self.ctx.options) {
             Err(_e) => {
-                self.events.borrow_mut().add(SocketEvent::OnError(
+                self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                     ErrorKind::ParseFailed,
                     "Failed to parse SCTP packet".into(),
                 ));
@@ -1840,7 +1655,7 @@ impl DcSctpSocket for Socket {
             | State::ShutdownAckSent(tcb) => {
                 tcb.data_tracker.handle_timeout(now);
                 if tcb.retransmission_queue.handle_timeout(now) {
-                    self.tx_error_counter.increment();
+                    self.ctx.tx_error_counter.increment();
                 }
                 self.handle_heartbeat_timeouts(now);
                 self.handle_reconfig_timeout(now);
@@ -1848,8 +1663,8 @@ impl DcSctpSocket for Socket {
             }
         }
         if let Some(tcb) = self.state.tcb_mut() {
-            if self.tx_error_counter.is_exhausted() {
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+            if self.ctx.tx_error_counter.is_exhausted() {
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::Abort(AbortChunk {
                             error_causes: vec![ErrorCause::UserInitiatedAbort(
@@ -1860,8 +1675,12 @@ impl DcSctpSocket for Socket {
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
-                self.internal_close(ErrorKind::TooManyRetries, "Too many retransmissions".into());
+                self.ctx.tx_packets_count += 1;
+                self.ctx.internal_close(
+                    &mut self.state,
+                    ErrorKind::TooManyRetries,
+                    "Too many retransmissions".into(),
+                );
                 return;
             }
 
@@ -1870,7 +1689,7 @@ impl DcSctpSocket for Socket {
             //   [...] until the COOKIE ACK chunk is returned, the sender MUST NOT send any other
             //   packets to the peer.
             if !matches!(self.state, State::CookieEchoed(_)) {
-                self.send_buffered_packets(now);
+                self.ctx.send_buffered_packets(&mut self.state, now);
             }
         }
     }
@@ -1894,8 +1713,8 @@ impl DcSctpSocket for Socket {
                 let mut timeout = tcb.retransmission_queue.next_timeout();
                 timeout = closest_timeout(timeout, tcb.reconfig_timer.next_expiry());
                 timeout = closest_timeout(timeout, tcb.data_tracker.next_timeout());
-                timeout = closest_timeout(timeout, self.heartbeat_interval.next_expiry());
-                timeout = closest_timeout(timeout, self.heartbeat_timeout.next_expiry());
+                timeout = closest_timeout(timeout, self.ctx.heartbeat_interval.next_expiry());
+                timeout = closest_timeout(timeout, self.ctx.heartbeat_timeout.next_expiry());
                 if let State::ShutdownSent(ref s) = self.state {
                     timeout = closest_timeout(timeout, s.t2_shutdown.next_expiry());
                 }
@@ -1928,7 +1747,7 @@ impl DcSctpSocket for Socket {
                 // Connection closed during the initial connection phase. There is no outstanding
                 // data, so the socket can just be closed (stopping any connection timers, if any),
                 // as this is the client's intention, by calling [shutdown()].
-                self.internal_close(ErrorKind::NoError, "".to_string());
+                self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
             }
             State::CookieEchoed(_) | State::Established(_) => {
                 transition_between!(self.state,
@@ -1944,7 +1763,7 @@ impl DcSctpSocket for Socket {
     fn close(&mut self) {
         if !matches!(self.state, State::Closed) {
             if let Some(tcb) = self.state.tcb() {
-                self.events.borrow_mut().add(SocketEvent::SendPacket(
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
                     tcb.new_packet()
                         .add(&Chunk::Abort(AbortChunk {
                             error_causes: vec![ErrorCause::UserInitiatedAbort(
@@ -1953,9 +1772,9 @@ impl DcSctpSocket for Socket {
                         }))
                         .build(),
                 ));
-                self.tx_packets_count += 1;
+                self.ctx.tx_packets_count += 1;
             }
-            self.internal_close(ErrorKind::NoError, String::new());
+            self.ctx.internal_close(&mut self.state, ErrorKind::NoError, String::new());
         }
     }
 
@@ -1979,19 +1798,19 @@ impl DcSctpSocket for Socket {
     }
 
     fn options(&self) -> Options {
-        self.options.clone()
+        self.ctx.options.clone()
     }
 
     fn set_max_message_size(&mut self, max_message_size: usize) {
-        self.options.max_message_size = max_message_size;
+        self.ctx.options.max_message_size = max_message_size;
     }
 
     fn set_stream_priority(&mut self, stream_id: StreamId, priority: u16) {
-        self.send_queue.set_priority(stream_id, priority);
+        self.ctx.send_queue.set_priority(stream_id, priority);
     }
 
     fn get_stream_priority(&self, stream_id: StreamId) -> u16 {
-        self.send_queue.get_priority(stream_id)
+        self.ctx.send_queue.get_priority(stream_id)
     }
 
     fn send(&mut self, message: Message, send_options: &SendOptions) -> SendStatus {
@@ -2001,9 +1820,9 @@ impl DcSctpSocket for Socket {
         }
 
         let now = *self.now.borrow();
-        self.tx_messages_count += 1;
-        self.send_queue.add(now, message, send_options);
-        self.send_buffered_packets(now);
+        self.ctx.tx_messages_count += 1;
+        self.ctx.send_queue.add(now, message, send_options);
+        self.ctx.send_buffered_packets(&mut self.state, now);
         SendStatus::Success
     }
 
@@ -2014,14 +1833,14 @@ impl DcSctpSocket for Socket {
             .map(|message| {
                 let status = self.validate_send(&message, send_options);
                 if status == SendStatus::Success {
-                    self.tx_messages_count += 1;
-                    self.send_queue.add(now, message, send_options);
+                    self.ctx.tx_messages_count += 1;
+                    self.ctx.send_queue.add(now, message, send_options);
                 }
                 status
             })
             .collect();
 
-        self.send_buffered_packets(now);
+        self.ctx.send_buffered_packets(&mut self.state, now);
         statuses
     }
 
@@ -2034,45 +1853,45 @@ impl DcSctpSocket for Socket {
         }
         let now = *self.now.borrow();
         for stream_id in outgoing_streams {
-            self.send_queue.prepare_reset_stream(*stream_id);
+            self.ctx.send_queue.prepare_reset_stream(*stream_id);
         }
 
         // This will send the SSN reset request control messagae.
-        self.send_buffered_packets(now);
+        self.ctx.send_buffered_packets(&mut self.state, now);
 
         ResetStreamsStatus::Performed
     }
 
     fn buffered_amount(&self, stream_id: StreamId) -> usize {
-        self.send_queue.buffered_amount(stream_id)
+        self.ctx.send_queue.buffered_amount(stream_id)
     }
 
     fn buffered_amount_low_threshold(&self, stream_id: StreamId) -> usize {
-        self.send_queue.buffered_amount_low_threshold(stream_id)
+        self.ctx.send_queue.buffered_amount_low_threshold(stream_id)
     }
 
     fn set_buffered_amount_low_threshold(&mut self, stream_id: StreamId, bytes: usize) {
-        self.send_queue.set_buffered_amount_low_threshold(stream_id, bytes);
+        self.ctx.send_queue.set_buffered_amount_low_threshold(stream_id, bytes);
     }
 
     fn get_metrics(&self) -> Option<Metrics> {
         let tcb = self.state.tcb()?;
 
         let packet_payload_size =
-            self.options.mtu - sctp_packet::COMMON_HEADER_SIZE - data_chunk::HEADER_SIZE;
+            self.ctx.options.mtu - sctp_packet::COMMON_HEADER_SIZE - data_chunk::HEADER_SIZE;
         Some(Metrics {
-            tx_packets_count: self.tx_packets_count,
-            tx_messages_count: self.tx_messages_count,
+            tx_packets_count: self.ctx.tx_packets_count,
+            tx_messages_count: self.ctx.tx_messages_count,
             rtx_packets_count: tcb.retransmission_queue.rtx_packets_count(),
             rtx_bytes_count: tcb.retransmission_queue.rtx_bytes_count(),
             cwnd_bytes: tcb.retransmission_queue.cwnd(),
             srtt: tcb.rto.srtt(),
             unack_data_count: tcb.retransmission_queue.unacked_items()
-                + self.send_queue.total_buffered_amount().div_ceil(packet_payload_size),
-            rx_packets_count: self.rx_packets_count,
+                + self.ctx.send_queue.total_buffered_amount().div_ceil(packet_payload_size),
+            rx_packets_count: self.ctx.rx_packets_count,
             rx_messages_count: tcb.reassembly_queue.rx_messages_count(),
             peer_rwnd_bytes: tcb.retransmission_queue.rwnd() as u32,
-            peer_implementation: self.peer_implementation,
+            peer_implementation: self.ctx.peer_implementation,
             uses_message_interleaving: tcb.capabilities.message_interleaving,
             uses_zero_checksum: tcb.capabilities.zero_checksum,
             negotiated_maximum_incoming_streams: tcb
@@ -2088,7 +1907,7 @@ impl DcSctpSocket for Socket {
         match &self.state {
             State::Closed => HandoverReadiness::READY,
             State::Established(tcb) => {
-                self.send_queue.get_handover_readiness() | tcb.get_handover_readiness()
+                self.ctx.send_queue.get_handover_readiness() | tcb.get_handover_readiness()
             }
             _ => HandoverReadiness::WRONG_CONNECTION_STATE,
         }
@@ -2096,7 +1915,7 @@ impl DcSctpSocket for Socket {
 
     fn restore_from_state(&mut self, state: &SocketHandoverState) {
         if !matches!(self.state, State::Closed) {
-            self.events.borrow_mut().add(SocketEvent::OnError(
+            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                 ErrorKind::NotConnected,
                 "Only closed socket can be restored from state".into(),
             ));
@@ -2106,7 +1925,7 @@ impl DcSctpSocket for Socket {
             return;
         }
 
-        self.send_queue.restore_from_state(state);
+        self.ctx.send_queue.restore_from_state(state);
 
         let capabilities = Capabilities {
             partial_reliability: state.capabilities.partial_reliability,
@@ -2121,7 +1940,7 @@ impl DcSctpSocket for Socket {
                 .negotiated_maximum_outgoing_streams,
         };
         let mut tcb = TransmissionControlBlock::new(
-            &self.options,
+            &self.ctx.options,
             state.my_verification_tag,
             Tsn(state.my_initial_tsn),
             state.peer_verification_tag,
@@ -2129,12 +1948,12 @@ impl DcSctpSocket for Socket {
             state.tie_tag,
             /* rwnd */ 0,
             capabilities,
-            Rc::clone(&self.events),
+            Rc::clone(&self.ctx.events),
         );
         tcb.restore_from_state(state);
 
         self.state = State::Established(tcb);
-        self.events.borrow_mut().add(SocketEvent::OnConnected());
+        self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
     }
 
     fn get_handover_state_and_close(&mut self) -> Option<SocketHandoverState> {
@@ -2146,9 +1965,9 @@ impl DcSctpSocket for Socket {
 
         if let State::Established(tcb) = &self.state {
             handover_state.socket_state = HandoverSocketState::Connected;
-            self.send_queue.add_to_handover_state(&mut handover_state);
+            self.ctx.send_queue.add_to_handover_state(&mut handover_state);
             tcb.add_to_handover_state(&mut handover_state);
-            self.events.borrow_mut().add(SocketEvent::OnClosed());
+            self.ctx.events.borrow_mut().add(SocketEvent::OnClosed());
             self.state = State::Closed;
         }
         Some(handover_state)
