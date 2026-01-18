@@ -32,11 +32,8 @@ use crate::api::handover::SocketHandoverState;
 use crate::events::Events;
 use crate::logging::log_packet;
 use crate::packet::SerializableTlv;
-use crate::packet::SkippedStream;
 use crate::packet::abort_chunk::AbortChunk;
 use crate::packet::chunk::Chunk;
-use crate::packet::chunk_validators::clean_sack;
-use crate::packet::data::Data;
 use crate::packet::data_chunk;
 use crate::packet::data_chunk::DataChunk;
 use crate::packet::error_causes::ErrorCause;
@@ -44,8 +41,6 @@ use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
 use crate::packet::idata_chunk::IDataChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
-use crate::packet::no_user_data_error_cause::NoUserDataErrorCause;
-use crate::packet::sack_chunk::SackChunk;
 use crate::packet::sctp_packet;
 use crate::packet::sctp_packet::SctpPacket;
 use crate::packet::unknown_chunk::UnknownChunk;
@@ -61,6 +56,11 @@ use crate::socket::connect::handle_t1cookie_timeout;
 use crate::socket::connect::handle_t1init_timeout;
 use crate::socket::context::Context;
 use crate::socket::context::TxErrorCounter;
+use crate::socket::data::handle_data;
+use crate::socket::data::handle_forward_tsn;
+use crate::socket::data::handle_sack;
+use crate::socket::data::maybe_send_sack;
+use crate::socket::data::validate_send;
 use crate::socket::heartbeat::handle_heartbeat_ack;
 use crate::socket::heartbeat::handle_heartbeat_req;
 use crate::socket::heartbeat::handle_heartbeat_timeouts;
@@ -69,8 +69,6 @@ use crate::socket::shutdown::handle_shutdown;
 use crate::socket::shutdown::handle_shutdown_ack;
 use crate::socket::shutdown::handle_shutdown_complete;
 use crate::socket::shutdown::handle_t2_shutdown_timeout;
-use crate::socket::shutdown::maybe_send_shutdown;
-use crate::socket::shutdown::maybe_send_shutdown_ack;
 use crate::socket::shutdown::maybe_send_shutdown_on_packet_received;
 use crate::socket::state::ShutdownSentState;
 use crate::socket::state::State;
@@ -80,7 +78,6 @@ use crate::socket::stream_reset::handle_reconfig_timeout;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
 use crate::timer::BackoffAlgorithm;
 use crate::timer::Timer;
-use crate::tx::retransmission_queue::HandleSackResult;
 use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
 #[cfg(not(test))]
@@ -98,6 +95,7 @@ use std::rc::Rc;
 pub mod capabilities;
 pub mod connect;
 pub mod context;
+pub mod data;
 pub mod heartbeat;
 pub mod shutdown;
 pub mod state;
@@ -238,74 +236,6 @@ impl Socket {
         Socket { name: name.into(), now, state: State::Closed, ctx }
     }
 
-    fn maybe_send_fast_retransmit(&mut self, now: SocketTime) {
-        let tcb = self.state.tcb_mut().unwrap();
-        if !tcb.retransmission_queue.has_data_to_be_fast_retransmitted() {
-            return;
-        }
-
-        let mut builder = tcb.new_packet();
-
-        let chunks =
-            tcb.retransmission_queue.get_chunks_for_fast_retransmit(now, builder.bytes_remaining());
-        for (tsn, data) in chunks {
-            builder.add(&tcb.make_data_chunk(tsn, data));
-        }
-
-        debug_assert!(!builder.is_empty());
-        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
-        self.ctx.tx_packets_count += 1;
-    }
-
-    fn handle_sack(&mut self, now: SocketTime, sack: SackChunk) {
-        let Some(tcb) = self.state.tcb_mut() else {
-            self.ctx
-                .events
-                .borrow_mut()
-                .add(SocketEvent::OnError(ErrorKind::NotConnected, "No TCB".into()));
-            return;
-        };
-
-        let sack = clean_sack(sack);
-        match tcb.retransmission_queue.handle_sack(now, &sack) {
-            HandleSackResult::Invalid => {
-                log::debug!("Dropping out-of-order SACK with TSN {}", sack.cumulative_tsn_ack);
-                return;
-            }
-            HandleSackResult::Valid { rtt, reset_error_counter } => {
-                if let Some(rtt) = rtt {
-                    tcb.rto.observe_rto(rtt);
-                    tcb.retransmission_queue.update_rto(tcb.rto.rto());
-                    tcb.data_tracker.update_rto(tcb.rto.rto());
-                }
-                if reset_error_counter {
-                    self.ctx.tx_error_counter.reset();
-                }
-            }
-        }
-
-        match self.state {
-            State::ShutdownPending(_) => maybe_send_shutdown(&mut self.state, &mut self.ctx, now),
-            State::ShutdownReceived(_) => maybe_send_shutdown_ack(&mut self.state, &mut self.ctx),
-            _ => (),
-        }
-
-        // Receiving an ACK may make the socket go into fast recovery mode. From
-        // <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4>:
-        //
-        //   If not in Fast Recovery, determine how many of the earliest (i.e., lowest TSN) DATA
-        //   chunks marked for retransmission will fit into a single packet, subject to constraint
-        //   of the PMTU of the destination transport address to which the packet is being sent.
-        //   Call this value K. Retransmit those K DATA chunks in a single packet. When a Fast
-        //   Retransmit is being performed, the sender SHOULD ignore the value of cwnd and SHOULD
-        //   NOT delay retransmission for this single packet.
-        self.maybe_send_fast_retransmit(now);
-
-        // Receiving an ACK will decrease outstanding bytes (maybe now below cwnd?) or indicate
-        // packet loss that may result in sending FORWARD-TSN.
-        self.ctx.send_buffered_packets(&mut self.state, now);
-    }
-
     fn handle_abort(&mut self, chunk: AbortChunk) {
         if self.state.tcb().is_none() {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-3.3.7>:
@@ -328,82 +258,9 @@ impl Socket {
         self.ctx.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
     }
 
-    fn handle_data(&mut self, now: SocketTime, tsn: Tsn, data: Data) {
-        if data.payload.is_empty() {
-            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                ErrorKind::ProtocolViolation,
-                "Received DATA chunk with no user data".into(),
-            ));
-            if let Some(tcb) = self.state.tcb_mut() {
-                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                    tcb.new_packet()
-                        .add(&Chunk::Error(ErrorChunk {
-                            error_causes: vec![ErrorCause::NoUserData(NoUserDataErrorCause {
-                                tsn,
-                            })],
-                        }))
-                        .build(),
-                ));
-                self.ctx.tx_packets_count += 1;
-            }
-            return;
-        }
-        let Some(tcb) = self.state.tcb_mut() else {
-            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                ErrorKind::NotConnected,
-                "Received unexpected commands on socket that is not connected".into(),
-            ));
-            return;
-        };
-        if tcb.reassembly_queue.is_full() {
-            // If the reassembly queue is full, there is nothing that can be done. The specification
-            // only allows dropping gap-ack-blocks, and that's not likely to help as the socket has
-            // been trying to fill gaps since the watermark was reached.
-            return;
-        }
-        if tcb.reassembly_queue.is_above_watermark() {
-            // TODO: Implement
-            return;
-        }
-        if !tcb.data_tracker.is_tsn_valid(tsn) {
-            // TODO: Implement
-            return;
-        }
-        if tcb.data_tracker.observe(now, tsn, false) {
-            tcb.reassembly_queue.add(tsn, data);
-        }
-    }
-
-    fn maybe_send_sack(&mut self, now: SocketTime) {
-        if let Some(tcb) = self.state.tcb_mut() {
-            tcb.data_tracker.observe_packet_end(now);
-            if tcb.data_tracker.should_send_ack(now, false) {
-                let mut b = tcb.new_packet();
-                let rwnd = tcb.reassembly_queue.remaining_bytes();
-                b.add(&Chunk::Sack(tcb.data_tracker.create_selective_ack(rwnd as u32)));
-                self.ctx.send_buffered_packets_with(&mut self.state, now, &mut b);
-            }
-        }
-    }
-
     pub fn verification_tag(&self) -> u32 {
         self.state.tcb().map_or(0, |tcb| tcb.my_verification_tag)
     }
-
-    fn handle_forward_tsn(
-        &mut self,
-        now: SocketTime,
-        new_cumulative_tsn: Tsn,
-        skipped_streams: Vec<SkippedStream>,
-    ) {
-        if let Some(tcb) = self.state.tcb_mut() {
-            if tcb.data_tracker.handle_forward_tsn(now, new_cumulative_tsn) {
-                tcb.reassembly_queue.handle_forward_tsn(new_cumulative_tsn, skipped_streams);
-            }
-        }
-    }
-
-    fn handle_iforward_tsn(&mut self, _now: SocketTime, _chunk: IForwardTsnChunk) {}
 
     fn handle_unrecognized_chunk(&mut self, chunk: UnknownChunk) -> bool {
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-3.2-3.2.5>:
@@ -438,49 +295,6 @@ impl Socket {
             }
         }
         continue_processing
-    }
-
-    fn validate_send(&self, message: &Message, send_options: &SendOptions) -> SendStatus {
-        let lifecycle_id = &send_options.lifecycle_id;
-        let add_error_events = |kind, msg: &str| {
-            if let Some(id) = lifecycle_id {
-                self.ctx.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id.clone()));
-            }
-            self.ctx.events.borrow_mut().add(SocketEvent::OnError(kind, msg.to_string()));
-        };
-
-        if message.payload.is_empty() {
-            add_error_events(ErrorKind::ProtocolViolation, "Unable to send empty message");
-            return SendStatus::ErrorMessageEmpty;
-        }
-        if message.payload.len() > self.ctx.options.max_message_size {
-            add_error_events(ErrorKind::ProtocolViolation, "Unable to send too large message");
-            return SendStatus::ErrorMessageTooLarge;
-        }
-        if matches!(
-            self.state,
-            State::ShutdownPending(_)
-                | State::ShutdownSent(_)
-                | State::ShutdownReceived(_)
-                | State::ShutdownAckSent(_)
-        ) {
-            add_error_events(
-                ErrorKind::WrongSequence,
-                "Unable to send message as the socket is shutting down",
-            );
-            return SendStatus::ErrorShuttingDown;
-        }
-        if self.ctx.send_queue.total_buffered_amount() >= self.ctx.options.max_send_buffer_size
-            || self.ctx.send_queue.buffered_amount(message.stream_id)
-                >= self.ctx.options.per_stream_send_queue_limit
-        {
-            add_error_events(
-                ErrorKind::ResourceExhaustion,
-                "Unable to send message as the send queue is full",
-            );
-            return SendStatus::ErrorResourceExhaustion;
-        }
-        SendStatus::Success
     }
 }
 
@@ -525,13 +339,13 @@ impl DcSctpSocket for Socket {
                     match chunk {
                         Chunk::Data(DataChunk { tsn, data })
                         | Chunk::IData(IDataChunk { tsn, data }) => {
-                            self.handle_data(now, tsn, data);
+                            handle_data(&mut self.state, &mut self.ctx, now, tsn, data);
                         }
                         Chunk::Init(c) => handle_init(&mut self.state, &mut self.ctx, c),
                         Chunk::InitAck(c) => {
                             handle_init_ack(&mut self.state, &mut self.ctx, now, c);
                         }
-                        Chunk::Sack(c) => self.handle_sack(now, c),
+                        Chunk::Sack(c) => handle_sack(&mut self.state, &mut self.ctx, now, c),
                         Chunk::Abort(c) => self.handle_abort(c),
                         Chunk::Shutdown(_) => handle_shutdown(&mut self.state, &mut self.ctx),
                         Chunk::ShutdownAck(_) => handle_shutdown_ack(
@@ -569,7 +383,12 @@ impl DcSctpSocket for Socket {
                         | Chunk::IForwardTsn(IForwardTsnChunk {
                             new_cumulative_tsn,
                             skipped_streams,
-                        }) => self.handle_forward_tsn(now, new_cumulative_tsn, skipped_streams),
+                        }) => handle_forward_tsn(
+                            &mut self.state,
+                            now,
+                            new_cumulative_tsn,
+                            skipped_streams,
+                        ),
                         Chunk::Unknown(c) => {
                             if !self.handle_unrecognized_chunk(c) {
                                 break;
@@ -577,7 +396,7 @@ impl DcSctpSocket for Socket {
                         }
                     }
                 }
-                self.maybe_send_sack(now);
+                maybe_send_sack(&mut self.state, &mut self.ctx, now);
             }
         }
     }
@@ -737,7 +556,7 @@ impl DcSctpSocket for Socket {
     }
 
     fn send(&mut self, message: Message, send_options: &SendOptions) -> SendStatus {
-        let status = self.validate_send(&message, send_options);
+        let status = validate_send(&mut self.state, &mut self.ctx, &message, send_options);
         if status != SendStatus::Success {
             return status;
         }
@@ -754,7 +573,7 @@ impl DcSctpSocket for Socket {
         let statuses = messages
             .into_iter()
             .map(|message| {
-                let status = self.validate_send(&message, send_options);
+                let status = validate_send(&mut self.state, &mut self.ctx, &message, send_options);
                 if status == SendStatus::Success {
                     self.ctx.tx_messages_count += 1;
                     self.ctx.send_queue.add(now, message, send_options);
