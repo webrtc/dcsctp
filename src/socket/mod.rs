@@ -57,11 +57,7 @@ use crate::packet::reconfiguration_response_parameter::ReconfigurationResponsePa
 use crate::packet::reconfiguration_response_parameter::ReconfigurationResponseResult;
 use crate::packet::sack_chunk::SackChunk;
 use crate::packet::sctp_packet;
-use crate::packet::sctp_packet::CommonHeader;
 use crate::packet::sctp_packet::SctpPacket;
-use crate::packet::sctp_packet::SctpPacketBuilder;
-use crate::packet::shutdown_chunk::ShutdownChunk;
-use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
 use crate::packet::unknown_chunk::UnknownChunk;
 use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
@@ -76,8 +72,14 @@ use crate::socket::connect::handle_t1cookie_timeout;
 use crate::socket::connect::handle_t1init_timeout;
 use crate::socket::context::Context;
 use crate::socket::context::TxErrorCounter;
-use crate::socket::shutdown::send_shutdown_ack;
-use crate::socket::state::CookieEchoState;
+use crate::socket::shutdown::do_shutdown;
+use crate::socket::shutdown::handle_shutdown;
+use crate::socket::shutdown::handle_shutdown_ack;
+use crate::socket::shutdown::handle_shutdown_complete;
+use crate::socket::shutdown::handle_t2_shutdown_timeout;
+use crate::socket::shutdown::maybe_send_shutdown;
+use crate::socket::shutdown::maybe_send_shutdown_ack;
+use crate::socket::shutdown::maybe_send_shutdown_on_packet_received;
 use crate::socket::state::ShutdownSentState;
 use crate::socket::state::State;
 use crate::socket::transmission_control_block::CurrentResetRequest;
@@ -85,7 +87,6 @@ use crate::socket::transmission_control_block::InflightResetRequest;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
 use crate::timer::BackoffAlgorithm;
 use crate::timer::Timer;
-use crate::transition_between;
 use crate::tx::retransmission_queue::HandleSackResult;
 use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
@@ -242,69 +243,6 @@ impl Socket {
         Socket { name: name.into(), now, state: State::Closed, ctx }
     }
 
-    fn maybe_send_shutdown(&mut self, now: SocketTime) {
-        let State::ShutdownPending(tcb) = &self.state else { unreachable!() };
-        if tcb.retransmission_queue.unacked_bytes() != 0 {
-            // Not ready to shutdown yet.
-            return;
-        }
-
-        // From <https://datatracker.ietf.org/doc/html/rfc9260.html#section-9.2-3>:
-        //
-        //   Once all its outstanding data has been acknowledged, the endpoint sends a SHUTDOWN
-        //   chunk to its peer, including in the Cumulative TSN Ack field the last sequential TSN it
-        //   has received from the peer. It SHOULD then start the T2-shutdown timer and enter the
-        //   SHUTDOWN-SENT state.
-        let mut t2_shutdown = Timer::new(
-            tcb.rto.rto(),
-            BackoffAlgorithm::Exponential,
-            self.ctx.options.max_retransmissions,
-            None,
-        );
-        t2_shutdown.start(now);
-
-        transition_between!(self.state,
-            State::ShutdownPending(tcb) =>
-                State::ShutdownSent(ShutdownSentState { tcb, t2_shutdown })
-        );
-
-        self.send_shutdown();
-    }
-
-    fn maybe_send_shutdown_ack(&mut self) {
-        let State::ShutdownReceived(tcb) = &mut self.state else { unreachable!() };
-        if tcb.retransmission_queue.unacked_bytes() != 0 {
-            // Not ready to shutdown yet.
-            return;
-        }
-
-        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-12>:
-        //
-        //   If the receiver of the SHUTDOWN chunk has no more outstanding DATA chunks, the SHUTDOWN
-        //   chunk receiver MUST send a SHUTDOWN ACK chunk and start a T2-shutdown timer of its own,
-        //   entering the SHUTDOWN-ACK-SENT state. If the timer expires, the endpoint MUST resend
-        //   the SHUTDOWN ACK chunk [...]
-        transition_between!(self.state,
-            State::ShutdownReceived(tcb) => State::ShutdownAckSent(tcb)
-        );
-
-        send_shutdown_ack(&mut self.state, &mut self.ctx);
-    }
-
-    fn send_shutdown(&mut self) {
-        let State::ShutdownSent(ShutdownSentState { tcb, .. }) = &mut self.state else {
-            unreachable!()
-        };
-        self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            tcb.new_packet()
-                .add(&Chunk::Shutdown(ShutdownChunk {
-                    cumulative_tsn_ack: tcb.data_tracker.last_cumulative_acked_tsn(),
-                }))
-                .build(),
-        ));
-        self.ctx.tx_packets_count += 1;
-    }
-
     fn maybe_send_fast_retransmit(&mut self, now: SocketTime) {
         let tcb = self.state.tcb_mut().unwrap();
         if !tcb.retransmission_queue.has_data_to_be_fast_retransmitted() {
@@ -352,8 +290,8 @@ impl Socket {
         }
 
         match self.state {
-            State::ShutdownPending(_) => self.maybe_send_shutdown(now),
-            State::ShutdownReceived(_) => self.maybe_send_shutdown_ack(),
+            State::ShutdownPending(_) => maybe_send_shutdown(&mut self.state, &mut self.ctx, now),
+            State::ShutdownReceived(_) => maybe_send_shutdown_ack(&mut self.state, &mut self.ctx),
             _ => (),
         }
 
@@ -552,37 +490,6 @@ impl Socket {
             tcb.add_prepared_ssn_reset_request(&mut builder);
             self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
             self.ctx.tx_packets_count += 1;
-        }
-    }
-
-    fn handle_t2_shutdown_timeout(&mut self, now: SocketTime) {
-        let State::ShutdownSent(s) = &mut self.state else {
-            return;
-        };
-        if s.t2_shutdown.expire(now) {
-            if s.t2_shutdown.is_running() {
-                self.send_shutdown();
-                return;
-            }
-
-            self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                s.tcb
-                    .new_packet()
-                    .add(&Chunk::Abort(AbortChunk {
-                        error_causes: vec![ErrorCause::UserInitiatedAbort(
-                            UserInitiatedAbortErrorCause {
-                                reason: "Too many retransmissions".into(),
-                            },
-                        )],
-                    }))
-                    .build(),
-            ));
-            self.ctx.tx_packets_count += 1;
-            self.ctx.internal_close(
-                &mut self.state,
-                ErrorKind::TooManyRetries,
-                "Too many retransmissions".into(),
-            );
         }
     }
 
@@ -819,131 +726,6 @@ impl Socket {
         self.ctx.send_buffered_packets(&mut self.state, now);
     }
 
-    fn handle_shutdown(&mut self) {
-        match self.state {
-            State::Closed
-            | State::ShutdownReceived(_)
-            | State::ShutdownAckSent(_)
-            | State::CookieWait(_)
-            | State::CookieEchoed(_) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-21>:
-                //
-                //   If a SHUTDOWN chunk is received in the COOKIE-WAIT or COOKIE ECHOED state, the
-                //   SHUTDOWN chunk SHOULD be silently discarded.
-            }
-            State::Established(_) | State::ShutdownPending(_) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-6>:
-                //
-                //   Upon reception of the SHUTDOWN chunk, the peer endpoint does the following:
-                //   enter the SHUTDOWN-RECEIVED state, stop accepting new data from its SCTP user,
-                //   and verify, by checking the Cumulative TSN Ack field of the chunk, that all its
-                //   outstanding DATA chunks have been received by the SHUTDOWN chunk sender.
-                transition_between!(self.state,
-                    State::Established(tcb), State::ShutdownPending(tcb) =>
-                        State::ShutdownReceived(tcb)
-                );
-
-                self.maybe_send_shutdown_ack();
-            }
-            State::ShutdownSent(_) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-22>:
-                //
-                //   If an endpoint is in the SHUTDOWN-SENT state and receives a SHUTDOWN chunk from
-                //   its peer, the endpoint SHOULD respond immediately with a SHUTDOWN ACK chunk to
-                //   its peer and move into the SHUTDOWN-ACK-SENT state, restarting its T2-shutdown
-                //   timer.
-                transition_between!(self.state,
-                    State::ShutdownSent(ShutdownSentState { tcb, .. }) =>
-                        State::ShutdownAckSent(tcb)
-                );
-
-                send_shutdown_ack(&mut self.state, &mut self.ctx);
-            }
-        }
-    }
-
-    fn handle_shutdown_ack(&mut self, header: &CommonHeader) {
-        match &self.state {
-            State::ShutdownSent(ShutdownSentState { tcb, .. }) | State::ShutdownAckSent(tcb) => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-14>:
-                //
-                //   Upon the receipt of the SHUTDOWN ACK chunk, the sender of the SHUTDOWN chunk
-                //   MUST stop the T2-shutdown timer, send a SHUTDOWN COMPLETE chunk to its peer,
-                //   and remove all record of the association.
-                //
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-23>:
-                //
-                //   If an endpoint is in the SHUTDOWN-ACK-SENT state and receives a SHUTDOWN ACK,
-                //   it MUST stop the T2-shutdown timer, send a SHUTDOWN COMPLETE chunk to its peer,
-                //   and remove all record of the association.
-                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                    tcb.new_packet()
-                        .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk {
-                            tag_reflected: false,
-                        }))
-                        .build(),
-                ));
-                self.ctx.tx_packets_count += 1;
-                self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
-            }
-            _ => {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.5.1-1.10.1.1>:
-                //
-                //   If the receiver is in COOKIE-ECHOED or COOKIE-WAIT state, the procedures in
-                //   Section 8.4 SHOULD be followed; in other words, it is treated as an OOTB
-                //   packet.
-                //
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.4-3.5.1>:
-                //
-                //   If the packet contains a SHUTDOWN ACK chunk, the receiver SHOULD respond to the
-                //   sender of the OOTB packet with a SHUTDOWN COMPLETE chunk. When sending the
-                //   SHUTDOWN COMPLETE chunk, the receiver of the OOTB packet MUST fill in the
-                //   Verification Tag field of the outbound packet with the Verification Tag
-                //   received in the SHUTDOWN ACK chunk and set the T bit in the Chunk Flags to
-                //   indicate that the Verification Tag is reflected.
-                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                    SctpPacketBuilder::new(
-                        header.verification_tag,
-                        self.ctx.options.local_port,
-                        self.ctx.options.remote_port,
-                        self.ctx.options.mtu,
-                    )
-                    .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
-                    .build(),
-                ));
-                self.ctx.tx_packets_count += 1;
-            }
-        }
-    }
-
-    fn handle_shutdown_complete(&mut self, _chunk: ShutdownCompleteChunk) {
-        if let State::ShutdownAckSent(_) = self.state {
-            // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-15>:
-            //
-            //   Upon reception of the SHUTDOWN COMPLETE chunk, the endpoint verifies that it is in
-            //   the SHUTDOWN-ACK-SENT state; if it is not, the chunk SHOULD be discarded. If the
-            //   endpoint is in the SHUTDOWN-ACK-SENT state, the endpoint SHOULD stop the
-            //   T2-shutdown timer and remove all knowledge of the association (and thus the
-            //   association enters the CLOSED state).
-            self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
-        }
-    }
-
-    fn maybe_send_shutdown_on_packet_received(&mut self, now: SocketTime, chunks: &[Chunk]) {
-        if let State::ShutdownSent(s) = &mut self.state {
-            if chunks.iter().any(|c| matches!(c, Chunk::Data(_))) {
-                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-10>:
-                //
-                //   While in the SHUTDOWN-SENT state, the SHUTDOWN chunk sender MUST immediately
-                //   respond to each received packet containing one or more DATA chunks with a
-                //   SHUTDOWN chunk and restart the T2-shutdown timer.
-                s.t2_shutdown.set_duration(s.tcb.rto.rto());
-                s.t2_shutdown.start(now);
-                self.send_shutdown();
-            }
-        }
-    }
-
     fn validate_send(&self, message: &Message, send_options: &SendOptions) -> SendStatus {
         let lifecycle_id = &send_options.lifecycle_id;
         let add_error_events = |kind, msg: &str| {
@@ -1019,7 +801,12 @@ impl DcSctpSocket for Socket {
                 ));
             }
             Ok(packet) => {
-                self.maybe_send_shutdown_on_packet_received(now, &packet.chunks);
+                maybe_send_shutdown_on_packet_received(
+                    &mut self.state,
+                    &mut self.ctx,
+                    now,
+                    &packet.chunks,
+                );
                 for chunk in packet.chunks {
                     match chunk {
                         Chunk::Data(DataChunk { tsn, data })
@@ -1032,8 +819,12 @@ impl DcSctpSocket for Socket {
                         }
                         Chunk::Sack(c) => self.handle_sack(now, c),
                         Chunk::Abort(c) => self.handle_abort(c),
-                        Chunk::Shutdown(_) => self.handle_shutdown(),
-                        Chunk::ShutdownAck(_) => self.handle_shutdown_ack(&packet.common_header),
+                        Chunk::Shutdown(_) => handle_shutdown(&mut self.state, &mut self.ctx),
+                        Chunk::ShutdownAck(_) => handle_shutdown_ack(
+                            &mut self.state,
+                            &mut self.ctx,
+                            &packet.common_header,
+                        ),
                         Chunk::Error(c) => self.handle_error(c),
                         Chunk::CookieEcho(c) => {
                             handle_cookie_echo(
@@ -1049,7 +840,9 @@ impl DcSctpSocket for Socket {
                         }
                         Chunk::HeartbeatRequest(c) => self.handle_heartbeat_req(c),
                         Chunk::HeartbeatAck(c) => self.handle_heartbeat_ack(now, c),
-                        Chunk::ShutdownComplete(c) => self.handle_shutdown_complete(c),
+                        Chunk::ShutdownComplete(c) => {
+                            handle_shutdown_complete(&mut self.state, &mut self.ctx, c);
+                        }
                         Chunk::ReConfig(c) => self.handle_reconfig(now, c),
                         Chunk::ForwardTsn(ForwardTsnChunk {
                             new_cumulative_tsn,
@@ -1100,7 +893,7 @@ impl DcSctpSocket for Socket {
                 }
                 self.handle_heartbeat_timeouts(now);
                 self.handle_reconfig_timeout(now);
-                self.handle_t2_shutdown_timeout(now);
+                handle_t2_shutdown_timeout(&mut self.state, &mut self.ctx, now);
             }
         }
         if let Some(tcb) = self.state.tcb_mut() {
@@ -1169,36 +962,7 @@ impl DcSctpSocket for Socket {
     }
 
     fn shutdown(&mut self) {
-        let now = *self.now.borrow();
-
-        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-2>:
-        //
-        //   Upon receipt of the SHUTDOWN primitive from its upper layer, the endpoint enters the
-        //   SHUTDOWN-PENDING state and remains there until all outstanding data has been
-        //   acknowledged by its peer.
-        match self.state {
-            State::Closed
-            | State::ShutdownPending(_)
-            | State::ShutdownSent(_)
-            | State::ShutdownAckSent(_)
-            | State::ShutdownReceived(_) => {
-                // Already closed or shutting down.
-            }
-            State::CookieWait(_) => {
-                // Connection closed during the initial connection phase. There is no outstanding
-                // data, so the socket can just be closed (stopping any connection timers, if any),
-                // as this is the client's intention, by calling [shutdown()].
-                self.ctx.internal_close(&mut self.state, ErrorKind::NoError, "".to_string());
-            }
-            State::CookieEchoed(_) | State::Established(_) => {
-                transition_between!(self.state,
-                    State::CookieEchoed(CookieEchoState { tcb, .. }) | State::Established(tcb) =>
-                        State::ShutdownPending(tcb)
-                );
-
-                self.maybe_send_shutdown(now);
-            }
-        }
+        do_shutdown(&mut self.state, &mut self.ctx, *self.now.borrow());
     }
 
     fn close(&mut self) {
