@@ -95,8 +95,8 @@ mod tests {
     }
 
     fn exchange_packets(
-        socket_a: &mut Socket<'_>,
-        socket_z: &mut Socket<'_>,
+        socket_a: &mut Socket,
+        socket_z: &mut Socket,
     ) -> (VecDeque<SocketEvent>, VecDeque<SocketEvent>) {
         let mut events_a: VecDeque<SocketEvent> = VecDeque::new();
         let mut events_z: VecDeque<SocketEvent> = VecDeque::new();
@@ -133,7 +133,7 @@ mod tests {
         }
     }
 
-    fn connect_sockets(socket_a: &mut Socket<'_>, socket_z: &mut Socket<'_>) {
+    fn connect_sockets(socket_a: &mut Socket, socket_z: &mut Socket) {
         socket_a.connect();
         // A -> INIT -> Z
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(socket_z.state(), SocketState::Connected);
     }
 
-    fn handover_socket(from_socket: &mut Socket<'_>, to_socket: &mut Socket<'_>) {
+    fn handover_socket(from_socket: &mut Socket, to_socket: &mut Socket) {
         assert!(matches!(to_socket.state(), SocketState::Closed));
         expect_no_event!(from_socket.poll_event());
         assert!(from_socket.get_handover_readiness().is_ready());
