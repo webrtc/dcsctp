@@ -8,7 +8,13 @@ and this project adheres to
 
 ## Unreleased
 
-## v0.1.5 - 2026-01-15
+## 0.1.6 - 2026-01-19
+
+### Fixed
+
+ - Fixed a bug with simultaneous connection attempts.
+
+## 0.1.5 - 2026-01-15
 
 ### Added
 
