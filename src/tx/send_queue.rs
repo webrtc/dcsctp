@@ -590,15 +590,16 @@ impl SendQueue {
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
         state.tx.streams.iter().for_each(|s| {
             let stream_id = StreamId(s.id);
-            self.streams.insert(
+            let mut stream = SendQueue::make_stream(
                 stream_id,
-                SendQueue::make_stream(
-                    stream_id,
-                    s.priority,
-                    self.default_low_buffered_amount_low_threshold,
-                    Rc::clone(&self.events),
-                ),
+                s.priority,
+                self.default_low_buffered_amount_low_threshold,
+                Rc::clone(&self.events),
             );
+            stream.next_ssn = Ssn(s.next_ssn);
+            stream.next_unordered_mid = Mid(s.next_unordered_mid);
+            stream.next_ordered_mid = Mid(s.next_ordered_mid);
+            self.streams.insert(stream_id, stream);
         });
     }
 }
@@ -1536,5 +1537,42 @@ mod tests {
         assert_eq!(expect_on_lifecycle_message_expired!(next_event(&events)), LifecycleId::from(1));
         assert_eq!(expect_on_lifecycle_end!(next_event(&events)), LifecycleId::from(1));
         expect_no_event!(next_event(&events));
+    }
+
+    #[test]
+    fn handover_restores_stream_counters() {
+        let mut q = SendQueue::new(MTU, &Options::default(), make_events());
+
+        q.add(
+            START_TIME,
+            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            &SendOptions::default(),
+        );
+
+        // Add a message and consume it to increase the sequence number on that stream.
+        let chunk = q.produce(START_TIME, MTU).unwrap();
+        assert_eq!(chunk.data.stream_key, StreamKey::Ordered(StreamId(1)));
+        assert_eq!(chunk.data.ssn, Ssn(0));
+
+        let mut state = SocketHandoverState::default();
+        q.add_to_handover_state(&mut state);
+
+        assert_eq!(state.tx.streams.len(), 1);
+        let s = &state.tx.streams[0];
+        // Peek into the handover state to check that the next ssn is correct.
+        assert_eq!(s.next_ssn, 1);
+
+        let mut q2 = SendQueue::new(MTU, &Options::default(), make_events());
+        q2.restore_from_state(&state);
+
+        // On the restored queue, consuming a new message should yield the next ssn.
+        q2.add(
+            START_TIME,
+            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            &SendOptions::default(),
+        );
+
+        let chunk2 = q2.produce(START_TIME, MTU).unwrap();
+        assert_eq!(chunk2.data.ssn, Ssn(1));
     }
 }
