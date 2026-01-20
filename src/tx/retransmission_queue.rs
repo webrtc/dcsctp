@@ -220,34 +220,41 @@ impl RetransmissionQueue {
         match self.phase() {
             CongestionAlgorithmPhase::SlowStart => {
                 if is_fully_utilized && !self.is_in_fast_recovery() {
-                    // From <https://datatracker.ietf.org/doc/html/rfc4960#section-7.2.1>:
+                    // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.1>:
                     //
-                    //   Only when these three conditions are met can the cwnd be increased;
-                    //   otherwise, the cwnd MUST not be increased. If these conditions are met,
-                    //   then cwnd MUST be increased by, at most, the lesser of 1) the total size of
-                    //   the previously outstanding DATA chunk(s) acknowledged, and 2) the
-                    //   destination's path MTU.
+                    //   When cwnd is less than or equal to ssthresh, an SCTP endpoint MUST use the
+                    //   slow-start algorithm to increase cwnd only if the current congestion window
+                    //   is being fully utilized and the data sender is not in Fast Recovery. Only
+                    //   when these two conditions are met can the cwnd be increased; otherwise, the
+                    //   cwnd MUST NOT be increased. If these conditions are met, then cwnd MUST be
+                    //   increased by, at most, the lesser of
+                    //
+                    //   1. the total size of the previously outstanding DATA chunk(s) acknowledged
+                    //      and
+                    //
+                    //   2. L times the destination's PMDCS.
                     self.cwnd += min(total_bytes_acked, self.mtu);
                     log::debug!("SS increase cwnd={} ({})", self.cwnd, old_cwnd);
                 }
             }
             CongestionAlgorithmPhase::CongestionAvoidance => {
-                // From <https://datatracker.ietf.org/doc/html/rfc4960#section-7.2.2>:
+                // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.2>:
                 //
-                //   Whenever cwnd is greater than ssthresh, upon each SACK arrival that advances
-                //   the Cumulative TSN Ack Point, increase partial_bytes_acked by the total number
-                //   of bytes of all new chunks acknowledged in that SACK including chunks
-                //   acknowledged by the new Cumulative TSN Ack and by Gap Ack Blocks.
+                //   Whenever cwnd is greater than ssthresh, upon each SACK chunk arrival, increase
+                //   partial_bytes_acked by the total number of bytes (including the chunk header
+                //   and the padding) of all new DATA chunks acknowledged in that SACK chunk,
+                //   including chunks acknowledged by the new Cumulative TSN Ack, by Gap Ack Blocks,
+                //   and by the number of bytes of duplicated chunks reported in Duplicate TSNs.
                 let old_pba = self.partial_bytes_acked;
                 self.partial_bytes_acked += total_bytes_acked;
                 if self.partial_bytes_acked >= self.cwnd && is_fully_utilized {
-                    // From <https://datatracker.ietf.org/doc/html/rfc4960#section-7.2.2>:
+                    // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.2>:
                     //
-                    //   When partial_bytes_acked is equal to or greater than cwnd and before the
-                    //   arrival of the SACK the sender had cwnd or more bytes of data outstanding
-                    //   (i.e., before arrival of the SACK, flightsize was greater than or equal to
-                    //   cwnd), increase cwnd by MTU, and reset partial_bytes_acked to
-                    //   (partial_bytes_acked - cwnd).
+                    //   When (1) partial_bytes_acked is equal to or greater than cwnd and (2)
+                    //   before the arrival of the SACK chunk the sender had cwnd or more bytes of
+                    //   data outstanding (i.e., before the arrival of the SACK chunk, flightsize
+                    //   was greater than or equal to cwnd), partial_bytes_acked is reset to
+                    //   (partial_bytes_acked - cwnd). Next, cwnd is increased by PMDCS.
                     //
                     // Errata: <https://datatracker.ietf.org/doc/html/rfc8540#section-3.12>
                     self.partial_bytes_acked -= self.cwnd;
@@ -408,10 +415,10 @@ impl RetransmissionQueue {
         let old_cwnd = self.cwnd;
         let old_unacked_bytes = self.unacked_bytes();
 
-        // From <https://datatracker.ietf.org/doc/html/rfc4960#section-6.3.3>:
+        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.3>:
         //
-        //   For the destination address for which the timer expires, adjust its ssthresh with rules
-        //   defined in Section 7.2.3 and set the cwnd <- MTU.
+        //   E1)  For the destination address for which the timer expires, adjust its ssthresh with
+        //        rules defined in Section 7.2.3 and set cwnd = PMDCS.
         self.ssthresh = max(self.cwnd / 2, 4 * self.mtu);
 
         self.cwnd = self.mtu;
@@ -419,11 +426,11 @@ impl RetransmissionQueue {
         // Errata: <https://datatracker.ietf.org/doc/html/rfc8540#section-3.11>
         self.partial_bytes_acked = 0;
 
-        // From <https://datatracker.ietf.org/doc/html/rfc4960#section-6.3.3>:
+        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.3>:
         //
-        //   For the destination address for which the timer expires, set RTO <- RTO * 2 ("back off
-        //   the timer"). The maximum value discussed in rule C7 above (RTO.max) may be used to
-        //   provide an upper bound to this doubling operation.
+        //   E2)  For the destination address for which the timer expires, set RTO = RTO * 2 ("back
+        //        off the timer").  The maximum value discussed in rule C7 above ('RTO.Max') MAY be
+        //        used to provide an upper bound to this doubling operation.
         //
         // This is already done by the timer implementation.
         //
@@ -435,10 +442,10 @@ impl RetransmissionQueue {
         //   as soon as cwnd allows (normally, when a SACK arrives).
         self.outstanding_data.nack_all();
 
-        // From <https://datatracker.ietf.org/doc/html/rfc4960#section-6.3.3>:
+        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.3>:
         //
-        //   Start the retransmission timer T3-rtx on the destination address to which the
-        //   retransmission is sent, if rule R1 above indicates to do so.
+        //   E4)  Start the retransmission timer T3-rtx on the destination address to which the
+        //        retransmission is sent if rule R1 above indicates to do so.
         //
         // This is already done by the timer implementation.
 
@@ -663,11 +670,11 @@ impl RetransmissionQueue {
         if self.unacked_bytes() == 0 {
             // TODO: Make the implementation compliant with RFC 9260.
             //
-            // From <https://datatracker.ietf.org/doc/html/rfc4960#section-6.1>:
+            // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.1>:
             //
-            //   However, regardless of the value of rwnd (including if it is 0), the data sender
-            //   can always have one DATA chunk in flight to the receiver if allowed by cwnd (see
-            //   rule B, below).
+            //   A zero window probe MUST only be sent when the cwnd allows (see rule B below).  A
+            //   zero window probe SHOULD only be sent when all outstanding DATA chunks have been
+            //   cumulatively acknowledged and no DATA chunks are in flight.
             return left;
         }
         min(self.rwnd, left)
@@ -864,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn ack_with_gap_blocks_from_rfc4960_section334() {
+    fn ack_with_gap_blocks_from_rfc9260_section334() {
         let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;

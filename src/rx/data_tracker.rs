@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn example_from_rfc4960_section334() {
+    fn example_from_rfc9260_section334() {
         let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
         observe(&mut d, now, &[11, 12, 14, 15, 17]);
