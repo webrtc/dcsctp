@@ -1212,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn ack_with_gap_blocks_from_rfc4960_section334() {
+    fn ack_with_gap_blocks_from_rfc9260_section334() {
         let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
         let mut seq = DataSequencer::new(StreamId(1));
         insert(&mut buf, seq.ordered("a", "B"));
