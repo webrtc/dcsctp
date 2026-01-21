@@ -14,10 +14,9 @@
 
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::ensure;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const PARAMETER_TYPE: u16 = 1;
@@ -40,9 +39,9 @@ pub struct HeartbeatInfoParameter {
 }
 
 impl TryFrom<RawParameter<'_>> for HeartbeatInfoParameter {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == PARAMETER_TYPE, ChunkParseError::InvalidType);
         let info = raw.value.to_vec();
         Ok(Self { info })

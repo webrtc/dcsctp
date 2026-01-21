@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::packet::AsSerializableTlv;
+use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::cookie_received_while_shutting_down::CookieReceivedWhileShuttingDownErrorCause;
 use crate::packet::cookie_received_while_shutting_down::{self};
@@ -26,7 +27,6 @@ use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
 use crate::packet::unrecognized_chunk_error_cause::{self};
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
 use crate::packet::user_initiated_abort_error_cause::{self};
-use anyhow::Error;
 use std::fmt;
 
 #[derive(Debug)]
@@ -54,9 +54,9 @@ impl fmt::Display for ErrorCause {
 }
 
 impl TryFrom<RawParameter<'_>> for ErrorCause {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         match raw.typ {
             unrecognized_chunk_error_cause::CAUSE_CODE => {
                 UnrecognizedChunkErrorCause::try_from(raw).map(ErrorCause::UnrecognizedChunk)
@@ -92,7 +92,7 @@ impl AsSerializableTlv for ErrorCause {
     }
 }
 
-pub fn error_cause_from_bytes(data: &[u8]) -> Result<Vec<ErrorCause>, Error> {
+pub fn error_cause_from_bytes(data: &[u8]) -> Result<Vec<ErrorCause>, ChunkParseError> {
     let mut result = Vec::<ErrorCause>::with_capacity(2);
     let mut remaining = data;
 

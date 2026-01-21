@@ -14,10 +14,9 @@
 
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::ensure;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const PARAMETER_TYPE: u16 = 0x8008;
@@ -43,9 +42,9 @@ pub struct SupportedExtensionsParameter {
 }
 
 impl TryFrom<RawParameter<'_>> for SupportedExtensionsParameter {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == PARAMETER_TYPE, ChunkParseError::InvalidType);
         let chunk_types = raw.value.to_vec();
         Ok(Self { chunk_types })

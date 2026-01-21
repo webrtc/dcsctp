@@ -14,10 +14,9 @@
 
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::ensure;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CAUSE_CODE: u16 = 10;
@@ -35,9 +34,9 @@ pub(crate) const CAUSE_CODE: u16 = 10;
 pub struct CookieReceivedWhileShuttingDownErrorCause {}
 
 impl TryFrom<RawParameter<'_>> for CookieReceivedWhileShuttingDownErrorCause {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CAUSE_CODE, ChunkParseError::InvalidType);
         ensure!(raw.value.is_empty(), ChunkParseError::InvalidLength);
         Ok(Self {})

@@ -16,8 +16,7 @@ use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
-use anyhow::Error;
-use anyhow::ensure;
+use crate::packet::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 8;
@@ -35,9 +34,9 @@ pub(crate) const CHUNK_TYPE: u8 = 8;
 pub struct ShutdownAckChunk {}
 
 impl TryFrom<RawChunk<'_>> for ShutdownAckChunk {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
         ensure!(raw.value.is_empty(), ChunkParseError::InvalidLength);
         Ok(Self {})

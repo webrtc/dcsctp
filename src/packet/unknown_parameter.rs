@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
-use anyhow::Error;
 use core::fmt;
 
 #[derive(Debug)]
@@ -25,9 +25,9 @@ pub(crate) struct UnknownParameter {
 }
 
 impl TryFrom<RawParameter<'_>> for UnknownParameter {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         Ok(Self { typ: raw.typ, value: raw.value.to_vec() })
     }
 }

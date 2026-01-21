@@ -16,12 +16,11 @@ use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
+use crate::packet::ensure;
 use crate::packet::parameter::Parameter;
 use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::parameter::parameters_serialize_to;
 use crate::packet::parameter::parameters_serialized_size;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 5;
@@ -45,9 +44,9 @@ pub struct HeartbeatAckChunk {
 }
 
 impl TryFrom<RawChunk<'_>> for HeartbeatAckChunk {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
         let parameters = parameters_from_bytes(raw.value)?;

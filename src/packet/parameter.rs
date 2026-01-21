@@ -17,6 +17,7 @@ use crate::packet::AsSerializableTlv;
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::TLV_HEADER_SIZE;
+use crate::packet::ensure;
 use crate::packet::forward_tsn_supported_parameter::ForwardTsnSupportedParameter;
 use crate::packet::forward_tsn_supported_parameter::{self};
 use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
@@ -36,8 +37,6 @@ use crate::packet::unknown_parameter::UnknownParameter;
 use crate::packet::write_u16_be;
 use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
 use crate::packet::zero_checksum_acceptable_parameter::{self};
-use anyhow::Error;
-use anyhow::ensure;
 use std::cmp;
 
 pub(crate) const PARAMETER_HEADER_SIZE: usize = 4;
@@ -61,7 +60,7 @@ pub(crate) struct RawParameter<'a> {
 }
 
 impl<'a> RawParameter<'a> {
-    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
         ensure!(bytes.len() >= PARAMETER_HEADER_SIZE, ChunkParseError::InvalidLength);
         let typ = read_u16_be!(&bytes[0..2]);
         let length = read_u16_be!(&bytes[2..4]) as usize;
@@ -107,9 +106,9 @@ pub enum Parameter {
 }
 
 impl TryFrom<RawParameter<'_>> for Parameter {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         match raw.typ {
             heartbeat_info_parameter::PARAMETER_TYPE => {
                 HeartbeatInfoParameter::try_from(raw).map(Parameter::HeartbeatInfo)
@@ -172,7 +171,7 @@ impl AsSerializableTlv for Parameter {
     }
 }
 
-pub fn parameters_from_bytes(data: &[u8]) -> Result<Vec<Parameter>, Error> {
+pub fn parameters_from_bytes(data: &[u8]) -> Result<Vec<Parameter>, ChunkParseError> {
     let mut result = Vec::<Parameter>::with_capacity(2);
     let mut remaining = data;
 

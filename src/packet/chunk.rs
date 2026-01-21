@@ -25,6 +25,7 @@ use crate::packet::cookie_echo_chunk;
 use crate::packet::cookie_echo_chunk::CookieEchoChunk;
 use crate::packet::data_chunk;
 use crate::packet::data_chunk::DataChunk;
+use crate::packet::ensure;
 use crate::packet::error_chunk;
 use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk;
@@ -54,8 +55,6 @@ use crate::packet::shutdown_complete_chunk;
 use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
 use crate::packet::unknown_chunk::UnknownChunk;
 use crate::packet::write_u16_be;
-use anyhow::Error;
-use anyhow::ensure;
 use std::cmp;
 
 /// Intermediate representation of a chunk for which the type hasn't been fully discriminated, see
@@ -80,7 +79,7 @@ pub(crate) struct RawChunk<'a> {
 impl<'a> RawChunk<'a> {
     /// Reads a chunk from `bytes` and returns a raw representation of the frame and the remaining
     /// data that was not consumed when reading this chunk.
-    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
         ensure!(bytes.len() >= TLV_HEADER_SIZE, ChunkParseError::InvalidLength);
 
         let length = read_u16_be!(&bytes[2..4]) as usize;
@@ -132,9 +131,9 @@ pub enum Chunk {
 }
 
 impl TryFrom<RawChunk<'_>> for Chunk {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         match raw.typ {
             data_chunk::CHUNK_TYPE => DataChunk::try_from(raw).map(Chunk::Data),
             init_chunk::CHUNK_TYPE => InitChunk::try_from(raw).map(Chunk::Init),
@@ -207,9 +206,9 @@ mod tests {
     const CHUNK_TYPE: u8 = 0x42;
 
     impl TryFrom<RawChunk<'_>> for TestChunk {
-        type Error = Error;
+        type Error = ChunkParseError;
 
-        fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+        fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
             ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
             ensure!(raw.value.len() == 4, ChunkParseError::InvalidLength);
 
@@ -249,21 +248,15 @@ mod tests {
     #[test]
     fn parse_insufficient_size() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00];
-        assert_eq!(
-            RawChunk::from_bytes(BYTES).unwrap_err().downcast_ref::<ChunkParseError>().unwrap(),
-            &ChunkParseError::InvalidLength,
-        );
+        assert_eq!(RawChunk::from_bytes(BYTES).unwrap_err(), ChunkParseError::InvalidLength);
     }
 
     #[test]
     fn parse_invalid_type() {
         const BYTES: &[u8] = &[0x41, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0)
-                .unwrap_err()
-                .downcast_ref::<ChunkParseError>()
-                .unwrap(),
-            &ChunkParseError::InvalidType,
+            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            ChunkParseError::InvalidType,
         );
     }
 
@@ -271,11 +264,8 @@ mod tests {
     fn parse_invalid_length() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0)
-                .unwrap_err()
-                .downcast_ref::<ChunkParseError>()
-                .unwrap(),
-            &ChunkParseError::InvalidLength,
+            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            ChunkParseError::InvalidLength,
         );
     }
 

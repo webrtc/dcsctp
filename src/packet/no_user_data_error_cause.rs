@@ -14,13 +14,12 @@
 
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::ensure;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
 use crate::packet::read_u32_be;
 use crate::packet::write_u32_be;
 use crate::types::Tsn;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CAUSE_CODE: u16 = 9;
@@ -42,9 +41,9 @@ pub struct NoUserDataErrorCause {
 }
 
 impl TryFrom<RawParameter<'_>> for NoUserDataErrorCause {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CAUSE_CODE, ChunkParseError::InvalidType);
         ensure!(raw.value.len() == 4, ChunkParseError::InvalidLength);
         let tsn = Tsn(read_u32_be!(&raw.value[0..4]));
