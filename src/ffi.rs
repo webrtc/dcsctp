@@ -14,6 +14,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::api::BatchSendError;
 use crate::api::DcSctpSocket as DcSctpSocketTrait;
 use crate::api::ErrorKind as DcSctpErrorKind;
 use crate::api::LifecycleId;
@@ -21,10 +22,10 @@ use crate::api::Message as DcSctpMessage;
 use crate::api::Metrics as DcSctpMetrics;
 use crate::api::Options as DcSctpOptions;
 use crate::api::PpId;
-use crate::api::ResetStreamsStatus as DcSctpResetStreamsStatus;
+use crate::api::ResetStreamsError;
 use crate::api::SctpImplementation as DcSctpSctpImplementation;
+use crate::api::SendError;
 use crate::api::SendOptions as DcSctpSendOptions;
-use crate::api::SendStatus as DcSctpSendStatus;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
 use crate::api::StreamId;
@@ -757,16 +758,14 @@ impl From<&bridge::Options> for DcSctpOptions {
     }
 }
 
-impl From<DcSctpSendStatus> for bridge::SendStatus {
-    fn from(status: DcSctpSendStatus) -> Self {
-        match status {
-            DcSctpSendStatus::Success => bridge::SendStatus::Success,
-            DcSctpSendStatus::ErrorMessageEmpty => bridge::SendStatus::ErrorMessageEmpty,
-            DcSctpSendStatus::ErrorMessageTooLarge => bridge::SendStatus::ErrorMessageTooLarge,
-            DcSctpSendStatus::ErrorResourceExhaustion => {
-                bridge::SendStatus::ErrorResourceExhaustion
-            }
-            DcSctpSendStatus::ErrorShuttingDown => bridge::SendStatus::ErrorShuttingDown,
+impl From<Result<(), SendError>> for bridge::SendStatus {
+    fn from(result: Result<(), SendError>) -> Self {
+        match result {
+            Ok(()) => bridge::SendStatus::Success,
+            Err(SendError::EmptyPayload) => bridge::SendStatus::ErrorMessageEmpty,
+            Err(SendError::MessageTooLarge { .. }) => bridge::SendStatus::ErrorMessageTooLarge,
+            Err(SendError::ResourceExhaustion) => bridge::SendStatus::ErrorResourceExhaustion,
+            Err(SendError::ShuttingDown) => bridge::SendStatus::ErrorShuttingDown,
         }
     }
 }
@@ -784,12 +783,12 @@ impl From<&bridge::SendOptions> for DcSctpSendOptions {
     }
 }
 
-impl From<DcSctpResetStreamsStatus> for bridge::ResetStreamsStatus {
-    fn from(status: DcSctpResetStreamsStatus) -> Self {
-        match status {
-            DcSctpResetStreamsStatus::NotConnected => bridge::ResetStreamsStatus::NotConnected,
-            DcSctpResetStreamsStatus::Performed => bridge::ResetStreamsStatus::Performed,
-            DcSctpResetStreamsStatus::NotSupported => bridge::ResetStreamsStatus::NotSupported,
+impl From<Result<(), ResetStreamsError>> for bridge::ResetStreamsStatus {
+    fn from(result: Result<(), ResetStreamsError>) -> Self {
+        match result {
+            Ok(()) => bridge::ResetStreamsStatus::Performed,
+            Err(ResetStreamsError::NotConnected) => bridge::ResetStreamsStatus::NotConnected,
+            Err(ResetStreamsError::NotSupported) => bridge::ResetStreamsStatus::NotSupported,
         }
     }
 }
@@ -983,15 +982,36 @@ fn send_many(
     messages: Vec<bridge::Message>,
     options: &bridge::SendOptions,
 ) -> Vec<bridge::SendStatus> {
-    let messages = messages
+    let msg_len = messages.len();
+    let messages: Vec<DcSctpMessage> = messages
         .into_iter()
         .map(|msg| DcSctpMessage::new(StreamId(msg.stream_id), PpId(msg.ppid), msg.payload))
         .collect();
-    socket.0.send_many(messages, &options.into()).into_iter().map(Into::into).collect()
+    let options: DcSctpSendOptions = options.into();
+
+    match socket.0.send_many(messages, &options) {
+        Ok(()) => vec![bridge::SendStatus::Success; msg_len],
+        Err(BatchSendError(errors)) => {
+            let mut statuses = Vec::with_capacity(msg_len);
+            let mut error_iter = errors.into_iter().peekable();
+
+            for i in 0..msg_len {
+                if let Some((idx, _)) = error_iter.peek() {
+                    if *idx == i {
+                        let (_, err) = error_iter.next().unwrap();
+                        statuses.push(Err(err).into());
+                        continue;
+                    }
+                }
+                statuses.push(bridge::SendStatus::Success);
+            }
+            statuses
+        }
+    }
 }
 
 fn restore_from_state(socket: &mut DcSctpSocket, state: &bridge::SocketHandoverState) {
-    socket.0.restore_from_state(&state.into());
+    let _ = socket.0.restore_from_state(&state.into());
 }
 
 fn get_handover_readiness(socket: &DcSctpSocket) -> u32 {
@@ -1003,7 +1023,7 @@ fn get_handover_readiness_string(socket: &DcSctpSocket) -> String {
 }
 
 fn get_handover_state_and_close(socket: &mut DcSctpSocket) -> bridge::SocketHandoverState {
-    socket.0.get_handover_state_and_close().map(Into::into).unwrap_or_default()
+    socket.0.get_handover_state_and_close().unwrap_or_default().into()
 }
 
 fn reset_streams(socket: &mut DcSctpSocket, stream_ids: Vec<u16>) -> bridge::ResetStreamsStatus {

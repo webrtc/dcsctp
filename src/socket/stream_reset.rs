@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::ResetStreamsStatus;
+use crate::api::ResetStreamsError;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
 use crate::api::StreamId;
@@ -33,12 +33,12 @@ pub(crate) fn do_reset_streams(
     ctx: &mut Context,
     now: SocketTime,
     outgoing_streams: &[StreamId],
-) -> ResetStreamsStatus {
+) -> Result<(), ResetStreamsError> {
     let Some(tcb) = state.tcb_mut() else {
-        return ResetStreamsStatus::NotConnected;
+        return Err(ResetStreamsError::NotConnected);
     };
     if !tcb.capabilities.reconfig {
-        return ResetStreamsStatus::NotSupported;
+        return Err(ResetStreamsError::NotSupported);
     }
     for stream_id in outgoing_streams {
         ctx.send_queue.prepare_reset_stream(*stream_id);
@@ -47,7 +47,7 @@ pub(crate) fn do_reset_streams(
     // This will send the SSN reset request control messagae.
     ctx.send_buffered_packets(state, now);
 
-    ResetStreamsStatus::Performed
+    Ok(())
 }
 
 pub(crate) fn handle_reconfig(
