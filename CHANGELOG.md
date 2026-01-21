@@ -8,6 +8,12 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.7 - 2026-01-21
+
+### Fixed
+
+ - Fixed a socket handover bug.
+
 ## 0.1.6 - 2026-01-19
 
 ### Fixed
