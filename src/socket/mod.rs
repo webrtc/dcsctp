@@ -13,15 +13,18 @@
 // limitations under the License.
 
 use crate::EventSink;
+use crate::api::BatchSendError;
 use crate::api::DcSctpSocket;
 use crate::api::ErrorKind;
+use crate::api::HandoverError;
 use crate::api::Message;
 use crate::api::Metrics;
 use crate::api::Options;
-use crate::api::ResetStreamsStatus;
+use crate::api::ResetStreamsError;
+use crate::api::RestoreError;
 use crate::api::SctpImplementation;
+use crate::api::SendError;
 use crate::api::SendOptions;
-use crate::api::SendStatus;
 use crate::api::SocketEvent;
 use crate::api::SocketState;
 use crate::api::SocketTime;
@@ -555,38 +558,40 @@ impl DcSctpSocket for Socket {
         self.ctx.send_queue.get_priority(stream_id)
     }
 
-    fn send(&mut self, message: Message, send_options: &SendOptions) -> SendStatus {
-        let status = validate_send(&mut self.state, &mut self.ctx, &message, send_options);
-        if status != SendStatus::Success {
-            return status;
-        }
+    fn send(&mut self, message: Message, send_options: &SendOptions) -> Result<(), SendError> {
+        validate_send(&mut self.state, &mut self.ctx, &message, send_options)?;
 
         let now = *self.now.borrow();
         self.ctx.tx_messages_count += 1;
         self.ctx.send_queue.add(now, message, send_options);
         self.ctx.send_buffered_packets(&mut self.state, now);
-        SendStatus::Success
+        Ok(())
     }
 
-    fn send_many(&mut self, messages: Vec<Message>, send_options: &SendOptions) -> Vec<SendStatus> {
+    fn send_many(
+        &mut self,
+        messages: Vec<Message>,
+        send_options: &SendOptions,
+    ) -> Result<(), BatchSendError> {
         let now = *self.now.borrow();
-        let statuses = messages
-            .into_iter()
-            .map(|message| {
-                let status = validate_send(&mut self.state, &mut self.ctx, &message, send_options);
-                if status == SendStatus::Success {
+        let mut errors = Vec::new();
+        for (idx, message) in messages.into_iter().enumerate() {
+            match validate_send(&mut self.state, &mut self.ctx, &message, send_options) {
+                Ok(()) => {
                     self.ctx.tx_messages_count += 1;
                     self.ctx.send_queue.add(now, message, send_options);
                 }
-                status
-            })
-            .collect();
+                Err(e) => {
+                    errors.push((idx, e));
+                }
+            }
+        }
 
         self.ctx.send_buffered_packets(&mut self.state, now);
-        statuses
+        if errors.is_empty() { Ok(()) } else { Err(BatchSendError(errors)) }
     }
 
-    fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> ResetStreamsStatus {
+    fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> Result<(), ResetStreamsError> {
         let now = *self.now.borrow();
         do_reset_streams(&mut self.state, &mut self.ctx, now, outgoing_streams)
     }
@@ -642,16 +647,12 @@ impl DcSctpSocket for Socket {
         }
     }
 
-    fn restore_from_state(&mut self, state: &SocketHandoverState) {
+    fn restore_from_state(&mut self, state: &SocketHandoverState) -> Result<(), RestoreError> {
         if !matches!(self.state, State::Closed) {
-            self.ctx.events.borrow_mut().add(SocketEvent::OnError(
-                ErrorKind::NotConnected,
-                "Only closed socket can be restored from state".into(),
-            ));
-            return;
+            return Err(RestoreError::SocketNotClosed);
         } else if matches!(state.socket_state, HandoverSocketState::Closed) {
             // Nothing to do.
-            return;
+            return Ok(());
         }
 
         self.ctx.send_queue.restore_from_state(state);
@@ -683,11 +684,13 @@ impl DcSctpSocket for Socket {
 
         self.state = State::Established(tcb);
         self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
+        Ok(())
     }
 
-    fn get_handover_state_and_close(&mut self) -> Option<SocketHandoverState> {
-        if !self.get_handover_readiness().is_ready() {
-            return None;
+    fn get_handover_state_and_close(&mut self) -> Result<SocketHandoverState, HandoverError> {
+        let readiness = self.get_handover_readiness();
+        if !readiness.is_ready() {
+            return Err(HandoverError::NotReady(readiness));
         }
 
         let mut handover_state = SocketHandoverState::default();
@@ -699,6 +702,6 @@ impl DcSctpSocket for Socket {
             self.ctx.events.borrow_mut().add(SocketEvent::OnClosed());
             self.state = State::Closed;
         }
-        Some(handover_state)
+        Ok(handover_state)
     }
 }

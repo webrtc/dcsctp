@@ -19,6 +19,7 @@ use std::num::NonZeroU64;
 use std::ops::Add;
 use std::ops::Sub;
 use std::time::Duration;
+use thiserror::Error;
 
 pub mod handover;
 
@@ -626,39 +627,49 @@ pub enum SocketState {
     ShuttingDown,
 }
 
-/// The result of a `send` operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SendStatus {
-    /// The message was enqueued successfully. As sending the message is done asynchronously, this
-    /// is no guarantee that the message has been actually sent.
-    Success,
+/// Errors that can occur when attempting to send a message.
+#[derive(Debug, Error, PartialEq)]
+pub enum SendError {
+    #[error("message payload cannot be empty")]
+    EmptyPayload,
 
-    /// The message was rejected as the payload was empty (which is not allowed in SCTP).
-    ErrorMessageEmpty,
+    #[error("message size ({len}) exceeds configured max_message_size ({limit})")]
+    MessageTooLarge { len: usize, limit: usize },
 
-    /// The message was rejected as the payload was larger than what has been set as
-    /// [`Options::max_message_size`].
-    ErrorMessageTooLarge,
+    #[error("send queue is full")]
+    ResourceExhaustion,
 
-    /// The message could not be enqueued as the socket is out of resources. This mainly indicates
-    /// that the send queue is full.
-    ErrorResourceExhaustion,
-
-    /// The message could not be sent as the socket is shutting down.
-    ErrorShuttingDown,
+    #[error("socket is shutting down or closed")]
+    ShuttingDown,
 }
 
-/// The result of a `reset_streams` operation.
-#[derive(Debug, PartialEq)]
-pub enum ResetStreamsStatus {
-    /// If the connection is not yet established, this will be returned.
+/// Errors occurring during batch sending.
+#[derive(Debug, Error)]
+#[error("batch send failed with errors: {0:?}")]
+pub struct BatchSendError(pub Vec<(usize, SendError)>);
+
+/// Errors that can occur when requesting a stream reset.
+#[derive(Debug, Error, PartialEq)]
+pub enum ResetStreamsError {
+    #[error("socket is not connected")]
     NotConnected,
 
-    /// Indicates that ResetStreams operation has been successfully initiated.
-    Performed,
-
-    /// Indicates that ResetStreams has failed as it's not supported by the peer.
+    #[error("peer does not support stream resetting")]
     NotSupported,
+}
+
+/// Errors for [`DcSctpSocket::get_handover_state_and_close`].
+#[derive(Debug, Error, PartialEq)]
+pub enum HandoverError {
+    #[error("socket is not in a ready state for handover")]
+    NotReady(HandoverReadiness),
+}
+
+/// Errors for [`DcSctpSocket::restore_from_state`].
+#[derive(Debug, Error, PartialEq)]
+pub enum RestoreError {
+    #[error("cannot restore state: socket is not closed")]
+    SocketNotClosed,
 }
 
 /// Tracked metrics, which is the return value of GetMetrics. Optional members will be unset when
@@ -775,15 +786,14 @@ pub trait DcSctpSocket {
     fn poll_timeout(&self) -> SocketTime;
 
     /// Connects the socket. This is an asynchronous operation, and [`SocketEvent::OnConnected`]
-    /// will be generated on success.
+    /// will be generated when the connection is established.
     fn connect(&mut self);
 
     /// Puts this socket to the state in which the original socket was when its
     /// [`SocketHandoverState`] was captured by [`Self::get_handover_state_and_close`].
     /// [`Self::restore_from_state`] is allowed only on the closed socket.
     /// [`SocketEvent::OnConnected`] will be called if a connected socket state is restored.
-    /// [`SocketEvent::OnError`] will be called on error.
-    fn restore_from_state(&mut self, state: &SocketHandoverState);
+    fn restore_from_state(&mut self, state: &SocketHandoverState) -> Result<(), RestoreError>;
 
     /// Gracefully shutdowns the socket and sends all outstanding data. This is an asynchronous
     /// operation and an event will be dispatch on success.
@@ -815,12 +825,12 @@ pub trait DcSctpSocket {
 
     /// Sends the message `message` using the provided send options.
     ///
-    /// Sending a message is an asynchronous operation, and the [`SocketEvent::OnError`] event may
-    /// be generated to indicate any errors in sending the message.
+    /// This will perform synchronous validation (size, queue limits). Asynchronous transmission
+    /// errors (timeouts etc) are reported via `SocketEvent::OnError`.
     ///
     /// The association does not have to be established before calling this method. If it's called
     /// before there is an established association, the message will be queued.
-    fn send(&mut self, message: Message, send_options: &SendOptions) -> SendStatus;
+    fn send(&mut self, message: Message, send_options: &SendOptions) -> Result<(), SendError>;
 
     /// Sends the messages `messages` using the provided send options.
     ///
@@ -829,7 +839,17 @@ pub trait DcSctpSocket {
     ///
     /// This has identical semantics to [`DcSctpSocket::send`], except that it may coalesce many
     /// messages into a single SCTP packet if they would fit.
-    fn send_many(&mut self, messages: Vec<Message>, send_options: &SendOptions) -> Vec<SendStatus>;
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(())` if ALL messages were successfully enqueued.
+    /// Returns `Err(BatchSendError)` containing indices and errors of failed messages.
+    /// Note: This does not stop at the first error; it attempts to enqueue all messages.
+    fn send_many(
+        &mut self,
+        messages: Vec<Message>,
+        send_options: &SendOptions,
+    ) -> Result<(), BatchSendError>;
 
     /// Resets outgoing streams.
     ///
@@ -847,7 +867,7 @@ pub trait DcSctpSocket {
     ///
     /// Resetting streams can only be done on an established association that supports stream
     /// resetting.
-    fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> ResetStreamsStatus;
+    fn reset_streams(&mut self, outgoing_streams: &[StreamId]) -> Result<(), ResetStreamsError>;
 
     /// Returns the number of bytes of data currently queued to be sent on a given stream.
     fn buffered_amount(&self, stream_id: StreamId) -> usize;
@@ -878,9 +898,7 @@ pub trait DcSctpSocket {
     ///
     /// On success, this socket object is closed synchronously, and no more events will be emitted
     /// after this method has returned. [`SocketEvent::OnClosed`] will be called on success.
-    ///
-    /// Returns `None` if the socket is not in a state ready for handover.
-    fn get_handover_state_and_close(&mut self) -> Option<SocketHandoverState>;
+    fn get_handover_state_and_close(&mut self) -> Result<SocketHandoverState, HandoverError>;
 }
 
 #[cfg(test)]

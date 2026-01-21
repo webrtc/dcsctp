@@ -14,8 +14,8 @@
 
 use crate::api::ErrorKind;
 use crate::api::Message;
+use crate::api::SendError;
 use crate::api::SendOptions;
-use crate::api::SendStatus;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
 use crate::packet::SkippedStream;
@@ -178,7 +178,7 @@ pub(crate) fn validate_send(
     ctx: &mut Context,
     message: &Message,
     send_options: &SendOptions,
-) -> SendStatus {
+) -> Result<(), SendError> {
     let lifecycle_id = &send_options.lifecycle_id;
     let add_error_events = |kind, msg: &str| {
         if let Some(id) = lifecycle_id {
@@ -189,11 +189,15 @@ pub(crate) fn validate_send(
 
     if message.payload.is_empty() {
         add_error_events(ErrorKind::ProtocolViolation, "Unable to send empty message");
-        return SendStatus::ErrorMessageEmpty;
+        return Err(SendError::EmptyPayload);
     }
-    if message.payload.len() > ctx.options.max_message_size {
+    let payload_len = message.payload.len();
+    if payload_len > ctx.options.max_message_size {
         add_error_events(ErrorKind::ProtocolViolation, "Unable to send too large message");
-        return SendStatus::ErrorMessageTooLarge;
+        return Err(SendError::MessageTooLarge {
+            len: payload_len,
+            limit: ctx.options.max_message_size,
+        });
     }
     if matches!(
         state,
@@ -206,7 +210,7 @@ pub(crate) fn validate_send(
             ErrorKind::WrongSequence,
             "Unable to send message as the socket is shutting down",
         );
-        return SendStatus::ErrorShuttingDown;
+        return Err(SendError::ShuttingDown);
     }
     if ctx.send_queue.total_buffered_amount() >= ctx.options.max_send_buffer_size
         || ctx.send_queue.buffered_amount(message.stream_id)
@@ -216,7 +220,7 @@ pub(crate) fn validate_send(
             ErrorKind::ResourceExhaustion,
             "Unable to send message as the send queue is full",
         );
-        return SendStatus::ErrorResourceExhaustion;
+        return Err(SendError::ResourceExhaustion);
     }
-    SendStatus::Success
+    Ok(())
 }
