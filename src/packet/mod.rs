@@ -92,10 +92,19 @@ macro_rules! write_u64_be {
     };
 }
 
+macro_rules! ensure {
+    ($cond:expr, $err:expr) => {
+        if !($cond) {
+            return Err($err.into());
+        }
+    };
+}
+
 use crate::api::StreamId;
 use crate::types::Mid;
 use crate::types::Ssn;
 use crate::types::StreamKey;
+pub(crate) use ensure;
 pub(crate) use read_u16_be;
 pub(crate) use read_u32_be;
 pub(crate) use read_u64_be;

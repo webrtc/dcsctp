@@ -18,6 +18,7 @@ use crate::packet::SerializableTlv;
 use crate::packet::SkippedStream;
 use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
+use crate::packet::ensure;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
@@ -25,8 +26,6 @@ use crate::packet::write_u32_be;
 use crate::types::Mid;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 194;
@@ -60,9 +59,9 @@ pub struct IForwardTsnChunk {
 }
 
 impl TryFrom<RawChunk<'_>> for IForwardTsnChunk {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
         ensure!(
             raw.value.len() >= 4 && (raw.value.len() - 4).is_multiple_of(8),

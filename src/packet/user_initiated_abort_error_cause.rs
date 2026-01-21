@@ -14,10 +14,9 @@
 
 use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
+use crate::packet::ensure;
 use crate::packet::parameter::RawParameter;
 use crate::packet::parameter::write_parameter_header;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CAUSE_CODE: u16 = 12;
@@ -40,9 +39,9 @@ pub struct UserInitiatedAbortErrorCause {
 }
 
 impl TryFrom<RawParameter<'_>> for UserInitiatedAbortErrorCause {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawParameter<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawParameter<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CAUSE_CODE, ChunkParseError::InvalidType);
 
         let reason = String::from_utf8(raw.value.to_vec())

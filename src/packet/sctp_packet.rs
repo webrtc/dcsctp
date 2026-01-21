@@ -21,12 +21,11 @@ use crate::packet::AsSerializableTlv;
 use crate::packet::ChunkParseError;
 use crate::packet::chunk::Chunk;
 use crate::packet::chunk::RawChunk;
+use crate::packet::ensure;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
-use anyhow::Error;
-use anyhow::ensure;
 use crc_any::CRCu32;
 use thiserror::Error;
 
@@ -83,7 +82,7 @@ impl From<ChunkParseError> for PacketParseError {
 }
 
 impl SctpPacket {
-    pub fn from_bytes(data: &[u8], options: &Options) -> Result<SctpPacket, Error> {
+    pub fn from_bytes(data: &[u8], options: &Options) -> Result<SctpPacket, PacketParseError> {
         ensure!(
             data.len() >= COMMON_HEADER_SIZE + CHUNK_TLV_SIZE && data.len() <= MAX_PACKET_SIZE,
             PacketParseError::InvalidPacketSize

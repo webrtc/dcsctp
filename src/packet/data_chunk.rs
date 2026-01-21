@@ -19,6 +19,7 @@ use crate::packet::SerializableTlv;
 use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
 use crate::packet::data::Data;
+use crate::packet::ensure;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
@@ -26,8 +27,6 @@ use crate::packet::write_u32_be;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use anyhow::Error;
-use anyhow::ensure;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 0;
@@ -65,11 +64,11 @@ const FLAGS_BIT_BEGINNING: i8 = 1;
 const FLAGS_BIT_UNORDERED: i8 = 2;
 
 impl TryFrom<RawChunk<'_>> for DataChunk {
-    type Error = Error;
+    type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, Error> {
+    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
-        ensure!(raw.value.len() > 12, ChunkParseError::InvalidLength);
+        ensure!(raw.value.len() >= 12, ChunkParseError::InvalidLength);
 
         let tsn = Tsn(read_u32_be!(&raw.value[0..4]));
         let is_unordered = raw.flags & (1 << FLAGS_BIT_UNORDERED) != 0;
