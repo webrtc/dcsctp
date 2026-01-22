@@ -62,18 +62,6 @@ impl Sub<SocketTime> for SocketTime {
     }
 }
 
-impl From<Duration> for SocketTime {
-    fn from(value: Duration) -> Self {
-        SocketTime(value)
-    }
-}
-
-impl From<SocketTime> for Duration {
-    fn from(value: SocketTime) -> Self {
-        value.0
-    }
-}
-
 /// An identifier that can be set on sent messages, and picked by the sending client. If set,
 /// lifecycle events will be generated, and eventually [`SocketEvent::OnLifecycleEnd`] will be
 /// generated to indicate that the lifecycle isn't tracked any longer. The value zero (0) is not a

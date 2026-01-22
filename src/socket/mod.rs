@@ -130,7 +130,7 @@ impl EventSink for LoggingEvents {
         match event {
             SocketEvent::SendPacket(ref e) => {
                 let now = *self.now.borrow();
-                log_packet(&self.name, now.into(), true, e);
+                log_packet(&self.name, now, true, e);
             }
             SocketEvent::OnConnected() => info!("OnConnected"),
             SocketEvent::OnError(kind, ref e) => info!("OnError: {:?}, {}", kind, e),
@@ -322,7 +322,7 @@ impl DcSctpSocket for Socket {
     fn handle_input(&mut self, packet: &[u8]) {
         self.ctx.rx_packets_count += 1;
         let now = *self.now.borrow();
-        log_packet(&self.name, now.into(), false, packet);
+        log_packet(&self.name, now, false, packet);
 
         match SctpPacket::from_bytes(packet, &self.ctx.options) {
             Err(_e) => {

@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Connecting);
         assert_eq!(socket_z.state(), SocketState::Connected);
 
-        let expected_timeout = SocketTime::from(options.t1_cookie_timeout);
+        let expected_timeout = SocketTime::zero() + options.t1_cookie_timeout;
         assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO
@@ -393,7 +393,7 @@ mod tests {
         // A -> INIT ->/lost/ Z
         expect_sent_packet!(socket_a.poll_event());
 
-        let expected_timeout = SocketTime::from(options.t1_init_timeout);
+        let expected_timeout = SocketTime::zero() + options.t1_init_timeout;
         assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Connecting);
         assert_eq!(socket_z.state(), SocketState::Closed);
 
-        let expected_timeout = SocketTime::from(options.t1_cookie_timeout);
+        let expected_timeout = SocketTime::zero() + options.t1_cookie_timeout;
         assert_eq!(socket_a.poll_timeout(), expected_timeout);
 
         // This will make A re-send the COOKIE_ECHO.
@@ -712,7 +712,7 @@ mod tests {
             .unwrap();
         // A /lost/ <- DATA <- Z
         expect_sent_packet!(socket_z.poll_event());
-        let expected_timeout = SocketTime::from(options.rto_initial);
+        let expected_timeout = SocketTime::zero() + options.rto_initial;
         assert_eq!(socket_z.poll_timeout(), expected_timeout);
         socket_z.advance_time(expected_timeout);
 
@@ -799,7 +799,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         // There should only be the heartbeat timer running.
-        let expected_timeout = SocketTime::from(options.heartbeat_interval);
+        let expected_timeout = SocketTime::zero() + options.heartbeat_interval;
         assert_eq!(socket_a.poll_timeout(), expected_timeout);
         socket_a.advance_time(expected_timeout);
         let request_packet = expect_sent_packet!(socket_a.poll_event());
@@ -2822,7 +2822,7 @@ mod tests {
                 },
             )
             .unwrap();
-        socket_a.advance_time(SocketTime::from(Duration::from_millis(200)));
+        socket_a.advance_time(SocketTime::zero() + Duration::from_millis(200));
         socket_a.connect();
 
         let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
@@ -2913,7 +2913,7 @@ mod tests {
 
         // Z sent "in progress", which will make A buffer packets until it's sure that the
         // reconfiguration has been applied. A will retry - wait for that.
-        socket_a.advance_time(SocketTime::from(options.rto_initial));
+        socket_a.advance_time(SocketTime::zero() + options.rto_initial);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(

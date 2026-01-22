@@ -28,6 +28,7 @@ use crate::api::SendError;
 use crate::api::SendOptions as DcSctpSendOptions;
 use crate::api::SocketEvent as DcSctpSocketEvent;
 use crate::api::SocketState as DcSctpSocketState;
+use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::api::handover::HandoverCapabilities as DcSctpHandoverCapabilities;
 use crate::api::handover::HandoverOrderedStream as DcSctpHandoverOrderedStream;
@@ -939,11 +940,11 @@ fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
 }
 
 fn advance_time(socket: &mut DcSctpSocket, ns: u64) {
-    socket.0.advance_time(Duration::from_nanos(ns).into());
+    socket.0.advance_time(SocketTime::zero() + Duration::from_nanos(ns));
 }
 
 fn poll_timeout(socket: &DcSctpSocket) -> u64 {
-    Duration::from(socket.0.poll_timeout()).as_nanos().try_into().unwrap_or(u64::MAX)
+    (socket.0.poll_timeout() - SocketTime::zero()).as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 fn message_ready_count(socket: &DcSctpSocket) -> usize {

@@ -54,21 +54,21 @@ pub mod fuzzer;
 pub mod ffi;
 
 pub(crate) mod logging {
+    use crate::api::SocketTime;
     #[cfg(not(test))]
     use log::info;
     use std::fmt::Write;
     #[cfg(test)]
     use std::println as info;
     use std::string::String;
-    use std::time::Duration;
 
-    pub fn log_packet(name: &str, ts: Duration, sent: bool, data: &[u8]) {
+    pub fn log_packet(name: &str, ts: SocketTime, sent: bool, data: &[u8]) {
         let s = data.iter().fold(String::new(), |mut output, c| {
             let _ = write!(output, " {c:02x}");
             output
         });
         let prefix = if sent { "O" } else { "I" };
-        let mut remaining = (ts.as_millis() % (24 * 60 * 60 * 1000)) as u64;
+        let mut remaining = ((ts - SocketTime::zero()).as_millis() % (24 * 60 * 60 * 1000)) as u64;
         let hours = remaining / (60 * 60 * 1000);
         remaining %= 60 * 60 * 1000;
         let minutes = remaining / (60 * 1000);
