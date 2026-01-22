@@ -73,8 +73,8 @@ pub struct RetransmissionQueue {
     /// Congestion Window. Number of bytes that may be in-flight (sent, not acked).
     cwnd: usize,
 
-    /// Receive Window. Number of bytes available in the receiver's RX buffer.
-    rwnd: usize,
+    /// The peer's last "Advertised Receiver Window", as indicated in inbound SACKs.
+    a_rwnd: usize,
 
     /// Slow start threshold. See RFC 9260.
     ssthresh: usize,
@@ -122,7 +122,7 @@ impl RetransmissionQueue {
             data_chunk_header_size,
             use_message_interleaving,
             cwnd: options.cwnd_mtus_initial * options.mtu,
-            rwnd: a_rwnd as usize,
+            a_rwnd: a_rwnd as usize,
             ssthresh: a_rwnd as usize,
             partial_bytes_acked: 0,
             rtx_packets_count: 0,
@@ -192,10 +192,6 @@ impl RetransmissionQueue {
 
     fn is_in_fast_recovery(&self) -> bool {
         self.fast_recovery_exit_tsn.is_some()
-    }
-
-    fn update_receiver_window(&mut self, a_rwnd: usize) {
-        self.rwnd = a_rwnd.saturating_sub(self.outstanding_data.unacked_bytes());
     }
 
     fn phase(&self) -> CongestionAlgorithmPhase {
@@ -335,7 +331,7 @@ impl RetransmissionQueue {
 
         let old_last_cumulative_tsn_ack = self.outstanding_data.last_cumulative_acked_tsn();
         let old_unacked_bytes = self.outstanding_data.unacked_bytes();
-        let old_rwnd = self.rwnd;
+        let old_rwnd = self.rwnd();
 
         let rtt = if sack.gap_ack_blocks.is_empty() {
             self.outstanding_data.measure_rtt(now, sack.cumulative_tsn_ack)
@@ -364,7 +360,7 @@ impl RetransmissionQueue {
         }
 
         // Update of outstanding_data_ is now done. Congestion control remains.
-        self.update_receiver_window(sack.a_rwnd as usize);
+        self.a_rwnd = sack.a_rwnd as usize;
 
         log::debug!(
             "Received SACK, cum_tsn_ack={} ({}), unacked_bytes={} ({}), rwnd={} ({})",
@@ -372,7 +368,7 @@ impl RetransmissionQueue {
             old_last_cumulative_tsn_ack,
             self.outstanding_data.unacked_bytes(),
             old_unacked_bytes,
-            self.rwnd,
+            self.rwnd(),
             old_rwnd
         );
 
@@ -540,7 +536,7 @@ impl RetransmissionQueue {
         debug_assert!(is_divisible_by_4!(bytes_remaining_in_packet));
 
         let old_unacked_bytes = self.unacked_bytes();
-        let old_rwnd = self.rwnd;
+        let old_rwnd = self.rwnd();
 
         let mut max_bytes =
             round_down_to_4!(min(self.max_bytes_to_send(), bytes_remaining_in_packet));
@@ -566,7 +562,7 @@ impl RetransmissionQueue {
                 let chunk_size =
                     round_up_to_4!(self.data_chunk_header_size + chunk.data.payload.len());
                 max_bytes -= chunk_size;
-                self.rwnd -= chunk_size;
+
                 let max_retransmissions = self.chunk_max_retransmissions(&chunk);
                 let expires_at = self.chunk_expires_at(now, &chunk);
                 if let Some(tsn) = self.outstanding_data.insert(
@@ -599,7 +595,7 @@ impl RetransmissionQueue {
                 self.unacked_bytes(),
                 old_unacked_bytes,
                 self.cwnd,
-                self.rwnd,
+                self.rwnd(),
                 old_rwnd
             );
         }
@@ -642,7 +638,7 @@ impl RetransmissionQueue {
 
     /// Returns the current receiver window size.
     pub fn rwnd(&self) -> usize {
-        self.rwnd
+        self.a_rwnd.saturating_sub(self.outstanding_data.unacked_bytes())
     }
 
     pub fn rtx_packets_count(&self) -> usize {
@@ -677,7 +673,7 @@ impl RetransmissionQueue {
             //   cumulatively acknowledged and no DATA chunks are in flight.
             return left;
         }
-        min(self.rwnd, left)
+        min(self.rwnd(), left)
     }
 
     pub fn should_send_forward_tsn(&mut self, now: SocketTime) -> bool {
@@ -713,7 +709,7 @@ impl RetransmissionQueue {
     pub(crate) fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
         state.tx.next_tsn = self.next_tsn().0;
         state.tx.cwnd = self.cwnd as u32;
-        state.tx.rwnd = self.rwnd as u32;
+        state.tx.a_rwnd = self.a_rwnd as u32;
         state.tx.ssthresh = self.ssthresh as u32;
         state.tx.partial_bytes_acked = self.partial_bytes_acked as u32;
     }
@@ -721,7 +717,7 @@ impl RetransmissionQueue {
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
         self.outstanding_data.reset_sequence_numbers(Tsn(state.tx.next_tsn.wrapping_sub(1)));
         self.cwnd = state.tx.cwnd as usize;
-        self.rwnd = state.tx.rwnd as usize;
+        self.a_rwnd = state.tx.a_rwnd as usize;
         self.ssthresh = state.tx.ssthresh as usize;
         self.partial_bytes_acked = state.tx.partial_bytes_acked as usize;
     }
@@ -2528,7 +2524,7 @@ mod tests {
     }
 
     #[test]
-    fn can_always_send_one_packet() {
+    fn can_always_retransmit_one_packet() {
         let mut now = START_TIME;
         let options = Options { mtu: MTU, ..Default::default() };
         let events = Rc::new(RefCell::new(Events::new()));
@@ -2640,5 +2636,31 @@ mod tests {
         let c = rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
         assert_eq!(get_tsns(&c), [Tsn(14)]);
         assert!(rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes)).is_empty());
+    }
+
+    #[test]
+    fn can_always_send_one_more_packet() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+
+        // Start with 0 RWND to force Zero Window Probe.
+        let mut rtx = RetransmissionQueue::new(
+            events,
+            Tsn(10),
+            0, // a_rwnd
+            &Options::default(),
+            false,
+            false,
+        );
+
+        // Add a message
+        sq.add(now, Message::new(StreamId(1), PpId(53), vec![1, 2, 3]), &SendOptions::default());
+
+        // Try to send. Should send one chunk as a probe.
+        let chunks = rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
+
+        assert_eq!(get_tsns(&chunks), vec![Tsn(10)]);
     }
 }
