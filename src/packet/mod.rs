@@ -20,6 +20,7 @@ pub(crate) mod chunk_validators;
 pub(crate) mod cookie_ack_chunk;
 pub(crate) mod cookie_echo_chunk;
 pub(crate) mod cookie_received_while_shutting_down;
+pub(crate) mod crc32c;
 pub(crate) mod data;
 pub(crate) mod data_chunk;
 pub(crate) mod error_causes;

@@ -11,6 +11,7 @@ and this project adheres to
 ### Changed
 
  - Replaced `rng` crate dependency with more lightweight `fastrand`.
+ - Removed dependency on `crc_any` crate.
 
 ## 0.1.7 - 2026-01-21
 
