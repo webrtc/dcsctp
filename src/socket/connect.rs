@@ -58,7 +58,6 @@ use crate::types::Tsn;
 use log::info;
 #[cfg(not(test))]
 use log::warn;
-use rand::Rng;
 use std::cmp::min;
 use std::collections::HashSet;
 #[cfg(test)]
@@ -125,8 +124,8 @@ pub(crate) fn do_connect(state: &mut State, ctx: &mut Context, now: SocketTime) 
         None,
     );
     t1_init.start(now);
-    let initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
-    let verification_tag = rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+    let initial_tsn = Tsn(fastrand::u32(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
+    let verification_tag = fastrand::u32(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
     *state = State::CookieWait(CookieWaitState { t1_init, initial_tsn, verification_tag });
     send_init(state, ctx);
 }
@@ -138,9 +137,8 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
 
     match state {
         State::Closed => {
-            my_initial_tsn = Tsn(rand::rng().random_range(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
-            my_verification_tag =
-                rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+            my_initial_tsn = Tsn(fastrand::u32(MIN_INITIAL_TSN..MAX_INITIAL_TSN));
+            my_verification_tag = fastrand::u32(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
             tie_tag = 0;
         }
         State::CookieWait(CookieWaitState { verification_tag, initial_tsn, .. })
@@ -180,8 +178,7 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
             //   outbound streams) into the INIT ACK chunk and cookie.
             //
             // Create a new verification tag, different from the previous one.
-            my_verification_tag =
-                rand::rng().random_range(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
+            my_verification_tag = fastrand::u32(MIN_VERIFICATION_TAG..MAX_VERIFICATION_TAG);
             my_initial_tsn = tcb.retransmission_queue.next_tsn().add_to(1000000);
             tie_tag = tcb.tie_tag;
         }
@@ -291,7 +288,7 @@ pub(crate) fn handle_init_ack(
     t1_cookie.start(now);
     ctx.peer_implementation = determine_sctp_implementation(&cookie);
     ctx.send_queue.reset();
-    let tie_tag = rand::rng().random::<u64>();
+    let tie_tag = fastrand::u64(..);
     *state = State::CookieEchoed(CookieEchoState {
         t1_cookie,
         cookie_echo_chunk: CookieEchoChunk { cookie },
@@ -462,7 +459,7 @@ fn establish_new_tcb(
         ctx.send_queue.reset();
     }
 
-    let tie_tag = rand::rng().random::<u64>();
+    let tie_tag = fastrand::u64(..);
     let new_tcb = TransmissionControlBlock::new(
         &ctx.options,
         cookie.my_tag,
