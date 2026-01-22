@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Changed
+
+ - Replaced `rng` crate dependency with more lightweight `fastrand`.
+
 ## 0.1.7 - 2026-01-21
 
 ### Fixed
