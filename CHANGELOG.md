@@ -12,6 +12,11 @@ and this project adheres to
 
  - Replaced `rng` crate dependency with more lightweight `fastrand`.
  - Removed dependency on `crc_any` crate.
+ - The `rwnd` member in handover state has been renamed to `a_rwnd`.
+
+### Fixed
+
+ - Fixed a wrapping substraction during zero window probing.
 
 ## 0.1.7 - 2026-01-21
 
