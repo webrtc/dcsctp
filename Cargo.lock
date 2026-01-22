@@ -70,15 +70,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc-any"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a62ec9ff5f7965e4d7280bd5482acd20aadb50d632cf6c1d74493856b011fa73"
-dependencies = [
- "debug-helper",
-]
-
-[[package]]
 name = "cxx"
 version = "1.0.192"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -144,7 +135,6 @@ dependencies = [
 name = "dcsctp"
 version = "0.1.7"
 dependencies = [
- "crc-any",
  "cxx",
  "cxx-build",
  "fastrand",
@@ -160,12 +150,6 @@ dependencies = [
  "dcsctp",
  "libfuzzer-sys",
 ]
-
-[[package]]
-name = "debug-helper"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f578e8e2c440e7297e008bb5486a3a8a194775224bbc23729b0dbdfaeebf162e"
 
 [[package]]
 name = "either"

@@ -8,7 +8,6 @@ license = "Apache-2.0"
 repository = "https://github.com/webrtc/dcsctp"
 
 [workspace.dependencies]
-crc-any = "2.5.0"
 cxx = "1.0.192"
 cxx-build = "1.0.192"
 dcsctp = { path = "." }
@@ -49,7 +48,6 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-crc-any = { workspace = true }
 cxx = { workspace = true, optional = true }
 fastrand = { workspace = true }
 log = { workspace = true }

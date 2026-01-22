@@ -21,12 +21,12 @@ use crate::packet::AsSerializableTlv;
 use crate::packet::ChunkParseError;
 use crate::packet::chunk::Chunk;
 use crate::packet::chunk::RawChunk;
+use crate::packet::crc32c::Crc32c;
 use crate::packet::ensure;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
-use crc_any::CRCu32;
 use thiserror::Error;
 
 pub const COMMON_HEADER_SIZE: usize = 12;
@@ -111,11 +111,11 @@ impl SctpPacket {
         } else {
             const FOUR_ZEROES: &[u8] = &[0, 0, 0, 0];
             // Verify the checksum. The checksum field must be zero when that's done.
-            let mut crc = CRCu32::crc32c();
+            let mut crc = Crc32c::new();
             crc.digest(&data[0..8]);
             crc.digest(FOUR_ZEROES);
             crc.digest(&data[12..]);
-            let checksum = crc.get_crc().to_be();
+            let checksum = crc.value().to_be();
             ensure!(checksum == common_header.checksum, PacketParseError::InvalidChecksum);
         }
 
@@ -202,9 +202,9 @@ impl SctpPacketBuilder {
     pub fn build(&mut self) -> Vec<u8> {
         let mut out = Vec::<u8>::new();
         if self.write_checksum && !self.data.is_empty() {
-            let mut crc = CRCu32::crc32c();
+            let mut crc = Crc32c::new();
             crc.digest(&self.data);
-            let checksum = crc.get_crc().to_be();
+            let checksum = crc.value().to_be();
             write_u32_be!(&mut self.data[8..12], checksum);
         }
         std::mem::swap(&mut self.data, &mut out);
