@@ -388,6 +388,10 @@ impl DataTracker {
     }
 
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
+        debug_assert!(self.additional_tsn_blocks.is_empty());
+        debug_assert!(self.duplicates.is_empty());
+        debug_assert!(!self.seen_packet);
+
         self.last_cumulative_acked_tsn = Tsn(state.rx.last_cumulative_acked_tsn);
         self.seen_packet = state.rx.seen_packet;
     }

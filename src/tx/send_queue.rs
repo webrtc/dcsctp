@@ -32,6 +32,7 @@ use crate::types::Ssn;
 use crate::types::StreamKey;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ops::AddAssign;
 use std::ops::SubAssign;
@@ -182,6 +183,11 @@ impl<'a> OutgoingStream<'a> {
             items: VecDeque::new(),
         }
     }
+
+    fn is_consistent(&self) -> bool {
+        let bytes: usize = self.items.iter().map(|i| i.remaining_size).sum();
+        bytes == self.buffered_amount.value
+    }
 }
 
 pub struct SendQueue {
@@ -220,6 +226,42 @@ impl SendQueue {
             scheduler: StreamScheduler::new(max_payload_bytes),
             events: Rc::clone(&events),
         }
+    }
+
+    fn is_consistent(&self) -> bool {
+        let mut total_buffered_amount = 0;
+        let mut expected_active_streams = HashSet::new();
+
+        for (stream_id, stream) in &self.streams {
+            if !stream.is_consistent() {
+                return false;
+            }
+            total_buffered_amount += stream.buffered_amount.value;
+
+            let bytes_to_send = if stream.pause_state == PauseState::Paused
+                || stream.pause_state == PauseState::Resetting
+            {
+                0
+            } else {
+                stream.items.front().map_or(0, |i| i.remaining_size)
+            };
+
+            if bytes_to_send > 0 {
+                expected_active_streams.insert(*stream_id);
+            }
+        }
+
+        if total_buffered_amount != self.buffered_amount.value {
+            return false;
+        }
+
+        let actual_active_streams: HashSet<StreamId> = self.scheduler.active_streams().collect();
+
+        if expected_active_streams != actual_active_streams {
+            return false;
+        }
+
+        true
     }
 
     pub fn enable_message_interleaving(&mut self, enable: bool) {
@@ -305,6 +347,7 @@ impl SendQueue {
             let priority = self.enable_message_interleaving.then_some(stream.priority);
             self.scheduler.set_bytes_remaining(stream_id, stream.items[0].remaining_size, priority);
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn produce(&mut self, now: SocketTime, max_size: usize) -> Option<DataToSend> {
@@ -375,6 +418,7 @@ impl SendQueue {
             item.remaining_offset += size;
             item.remaining_size -= size;
         }
+        debug_assert!(self.is_consistent());
         Some(data)
     }
 
@@ -404,6 +448,7 @@ impl SendQueue {
                 priority,
             );
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn prepare_reset_stream(&mut self, stream_id: StreamId) {
@@ -454,6 +499,7 @@ impl SendQueue {
         } else {
             stream.pause_state = PauseState::Pending;
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn has_streams_ready_to_be_reset(&self) -> bool {
@@ -484,6 +530,7 @@ impl SendQueue {
                 }
             }
         });
+        debug_assert!(self.is_consistent());
     }
 
     pub fn rollback_reset_streams(&mut self) {
@@ -496,6 +543,7 @@ impl SendQueue {
                 }
             }
         });
+        debug_assert!(self.is_consistent());
     }
 
     pub fn reset(&mut self) {
@@ -514,6 +562,7 @@ impl SendQueue {
                 self.scheduler.set_bytes_remaining(*stream_id, item_size, priority);
             }
         });
+        debug_assert!(self.is_consistent());
     }
 
     pub fn buffered_amount(&self, stream_id: StreamId) -> usize {
@@ -556,6 +605,7 @@ impl SendQueue {
             )
         });
         stream.priority = priority;
+        debug_assert!(self.is_consistent());
     }
 
     pub fn get_priority(&self, stream_id: StreamId) -> u16 {
