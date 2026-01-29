@@ -224,6 +224,10 @@ fn handle_reconfiguration_response(
     if let CurrentResetRequest::Inflight(InflightResetRequest {
         request_sequence_number,
         request,
+    })
+    | CurrentResetRequest::Deferred(InflightResetRequest {
+        request_sequence_number,
+        request,
     }) = &tcb.current_reset_request
     {
         if resp.response_seq_nbr == *request_sequence_number {
@@ -243,7 +247,11 @@ fn handle_reconfiguration_response(
                     tcb.reconfig_timer.set_duration(tcb.rto.rto());
                     tcb.reconfig_timer.start(now);
 
-                    CurrentResetRequest::Prepared(request.clone())
+                    // Force this request to be sent again, but with the same req_seq_nbr.
+                    CurrentResetRequest::Deferred(InflightResetRequest {
+                        request_sequence_number: *request_sequence_number,
+                        request: request.clone(),
+                    })
                 }
                 ReconfigurationResponseResult::Denied
                 | ReconfigurationResponseResult::ErrorWrongSSN
@@ -285,6 +293,14 @@ pub(crate) fn handle_reconfig_timeout(
             // There is an outstanding request, which timed out while waiting for a
             // response.
             ctx.tx_error_counter.increment();
+        }
+        CurrentResetRequest::Deferred(ref req) => {
+            // The request was deferred (received "In Progress"). This is not a
+            // timeout, but just time to retry. Move back to Inflight.
+            tcb.current_reset_request = CurrentResetRequest::Inflight(InflightResetRequest {
+                request_sequence_number: req.request_sequence_number,
+                request: req.request.clone(),
+            });
         }
     }
     if !ctx.tx_error_counter.is_exhausted() {
@@ -661,7 +677,7 @@ mod tests {
             ReConfigChunk {
                 parameters: vec![Parameter::OutgoingSsnResetRequest(
                     OutgoingSsnResetRequestParameter {
-                        request_seq_nbr: 11,
+                        request_seq_nbr: 10,
                         response_seq_nbr: 3,
                         sender_last_assigned_tsn: Tsn(11),
                         streams: vec![StreamId(1)],
@@ -1081,7 +1097,9 @@ mod tests {
         handle_reconfig_timeout(&mut state, &mut ctx, now);
 
         // Should trigger retransmission
-        assert_eq!(expect_sent_reset_request(&events, &ctx.options).streams, vec![StreamId(1)]);
+        let req = expect_sent_reset_request(&events, &ctx.options);
+        assert_eq!(req.streams, vec![StreamId(1)]);
+        assert_eq!(req.request_seq_nbr, req_seq_nbr);
     }
 
     #[test]
@@ -1169,6 +1187,52 @@ mod tests {
         let resp = expect_sent_reconfig_response(&events, &ctx.options);
         assert_eq!(resp.response_seq_nbr, 10);
         assert_eq!(resp.result, ReconfigurationResponseResult::SuccessNothingToDo);
+    }
+
+    #[test]
+    fn send_outgoing_reset_retransmit_on_in_progress_does_not_increment_error_counter() {
+        let my_initial_tsn = Tsn(0);
+        let peer_initial_tsn = Tsn(10);
+        let (mut state, mut ctx, events) = create_test_objects(my_initial_tsn, peer_initial_tsn);
+
+        do_reset_streams(&mut state, &mut ctx, SocketTime::zero(), &[StreamId(42)]).unwrap();
+
+        let req = expect_sent_reset_request(&events, &ctx.options);
+        let req_seq_nbr = req.request_seq_nbr;
+
+        // Simulate that the peer responded "In Progress".
+        // Processing "In Progress" should NOT increment error counter.
+        handle_reconfig(
+            &mut state,
+            &mut ctx,
+            SocketTime::zero(),
+            ReConfigChunk {
+                parameters: vec![Parameter::ReconfigurationResponse(
+                    ReconfigurationResponseParameter {
+                        response_seq_nbr: req_seq_nbr,
+                        result: ReconfigurationResponseResult::InProgress,
+                        sender_next_tsn: None,
+                        receiver_next_tsn: None,
+                    },
+                )],
+            },
+        );
+
+        assert_eq!(ctx.tx_error_counter.value(), 0);
+
+        // Timer expires. Should re-send, but NOT increment error counter.
+        let rto = state.tcb().unwrap().rto.rto();
+        let now = SocketTime::zero() + rto;
+        handle_reconfig_timeout(&mut state, &mut ctx, now);
+
+        assert_eq!(ctx.tx_error_counter.value(), 0);
+        let req = expect_sent_reset_request(&events, &ctx.options);
+        assert_eq!(req.request_seq_nbr, req_seq_nbr);
+
+        // Timer expires AGAIN. Now it SHOULD increment error counter.
+        let now = now + rto;
+        handle_reconfig_timeout(&mut state, &mut ctx, now);
+        assert_eq!(ctx.tx_error_counter.value(), 1);
     }
 
     #[test]
