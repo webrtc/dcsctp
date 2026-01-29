@@ -223,6 +223,10 @@ fn handle_reconfiguration_response(
     if let CurrentResetRequest::Inflight(InflightResetRequest {
         request_sequence_number,
         request,
+    })
+    | CurrentResetRequest::Deferred(InflightResetRequest {
+        request_sequence_number,
+        request,
     }) = &tcb.current_reset_request
     {
         if resp.response_seq_nbr == *request_sequence_number {
@@ -242,7 +246,11 @@ fn handle_reconfiguration_response(
                     tcb.reconfig_timer.set_duration(tcb.rto.rto());
                     tcb.reconfig_timer.start(now);
 
-                    CurrentResetRequest::Prepared(request.clone())
+                    // Force this request to be sent again, but with the same req_seq_nbr.
+                    CurrentResetRequest::Deferred(InflightResetRequest {
+                        request_sequence_number: *request_sequence_number,
+                        request: request.clone(),
+                    })
                 }
                 ReconfigurationResponseResult::Denied
                 | ReconfigurationResponseResult::ErrorWrongSSN
@@ -271,12 +279,19 @@ pub(crate) fn handle_reconfig_timeout(state: &mut State, ctx: &mut Context, now:
                 // retrying the request (but with a new req_seq_nbr) after a while.
             }
             CurrentResetRequest::Inflight(..) => {
-                // There is an outstanding request, which timed out while waiting for a
-                // response.
+                // There is an outstanding request, which timed out while waiting for a response.
                 ctx.tx_error_counter.increment();
                 if ctx.tx_error_counter.is_exhausted() {
                     return;
                 }
+            }
+            CurrentResetRequest::Deferred(ref req) => {
+                // The request was deferred (received "In Progress"). This is not a
+                // timeout, but just time to retry. Move back to Inflight.
+                tcb.current_reset_request = CurrentResetRequest::Inflight(InflightResetRequest {
+                    request_sequence_number: req.request_sequence_number,
+                    request: req.request.clone(),
+                });
             }
         }
         tcb.reconfig_timer.set_duration(tcb.rto.rto());
@@ -980,7 +995,9 @@ mod tests {
         fixture.handle_reconfig_timeout(now);
 
         // Should trigger retransmission
-        assert_eq!(fixture.expect_sent_reset_request().streams, vec![StreamId(1)]);
+        let req = fixture.expect_sent_reset_request();
+        assert_eq!(req.streams, vec![StreamId(1)]);
+        assert_eq!(req.request_seq_nbr, req_seq_nbr);
     }
 
     #[test]
@@ -1047,6 +1064,39 @@ mod tests {
         let resp = fixture.expect_sent_reconfig_response();
         assert_eq!(resp.response_seq_nbr, 10);
         assert_eq!(resp.result, ReconfigurationResponseResult::SuccessNothingToDo);
+    }
+
+    #[test]
+    fn send_outgoing_reset_retransmit_on_in_progress_does_not_increment_error_counter() {
+        let mut fixture = TestFixture::new();
+
+        fixture.do_reset_streams(&[StreamId(42)]);
+
+        let req = fixture.expect_sent_reset_request();
+        let req_seq_nbr = req.request_seq_nbr;
+
+        // Simulate that the peer responded "In Progress".
+        // Processing "In Progress" should NOT increment error counter.
+        fixture.handle_reconfig(
+            fixture
+                .prepare_reconfig_response(req_seq_nbr, ReconfigurationResponseResult::InProgress),
+        );
+
+        assert_eq!(fixture.ctx.tx_error_counter.value(), 0);
+
+        // Timer expires. Should re-send, but NOT increment error counter.
+        let rto = fixture.tcb().rto.rto();
+        let now = SocketTime::zero() + rto;
+        fixture.handle_reconfig_timeout(now);
+
+        assert_eq!(fixture.ctx.tx_error_counter.value(), 0);
+        let req = fixture.expect_sent_reset_request();
+        assert_eq!(req.request_seq_nbr, req_seq_nbr);
+
+        // Timer expires AGAIN. Now it SHOULD increment error counter.
+        let now = now + rto;
+        fixture.handle_reconfig_timeout(now);
+        assert_eq!(fixture.ctx.tx_error_counter.value(), 1);
     }
 
     #[test]

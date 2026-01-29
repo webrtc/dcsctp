@@ -61,6 +61,10 @@ pub(crate) enum CurrentResetRequest {
     /// Like [`Self::Prepared`], but it has been allocated a request sequence number and is
     /// in-flight.
     Inflight(InflightResetRequest),
+
+    /// Like [`Self::Inflight`], but the receiver has responded "In Progress", so the request
+    /// is deferred and will be retried.
+    Deferred(InflightResetRequest),
 }
 
 pub struct TransmissionControlBlock {
@@ -154,7 +158,9 @@ impl TransmissionControlBlock {
     pub fn add_prepared_ssn_reset_request(&mut self, builder: &mut SctpPacketBuilder) {
         debug_assert!(matches!(
             self.current_reset_request,
-            CurrentResetRequest::Prepared(_) | CurrentResetRequest::Inflight(_)
+            CurrentResetRequest::Prepared(_)
+                | CurrentResetRequest::Inflight(_)
+                | CurrentResetRequest::Deferred(_)
         ));
 
         if let CurrentResetRequest::Prepared(request) = &self.current_reset_request {
@@ -166,10 +172,14 @@ impl TransmissionControlBlock {
                 self.next_outgoing_reset_req_seq_nbr.wrapping_add(1);
         }
 
-        let CurrentResetRequest::Inflight(InflightResetRequest {
+        let (CurrentResetRequest::Inflight(InflightResetRequest {
             request_sequence_number,
             request,
-        }) = &self.current_reset_request
+        })
+        | CurrentResetRequest::Deferred(InflightResetRequest {
+            request_sequence_number,
+            request,
+        })) = &self.current_reset_request
         else {
             unreachable!()
         };
