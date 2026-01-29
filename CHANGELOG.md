@@ -18,6 +18,8 @@ and this project adheres to
 
  - Fixed a wrapping substraction during zero window probing.
  - Improved chunk validation
+ - Relax sequence number handling for stream reset requests
+ - Corrected outgoing requests to be compliant with RFC6525.
 
 ## 0.1.7 - 2026-01-21
 
