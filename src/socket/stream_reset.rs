@@ -29,6 +29,13 @@ use crate::socket::state::State;
 use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::socket::transmission_control_block::InflightResetRequest;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReqSeqNbrValidationResult {
+    Valid,
+    Retransmission,
+    BadSequenceNumber,
+}
+
 pub(crate) fn do_reset_streams(
     state: &mut State,
     ctx: &mut Context,
@@ -90,43 +97,24 @@ pub(crate) fn handle_reconfig(
                 }
                 has_seen_outgoing_reset_request = true;
 
-                if validate_req_seq_nbr(
-                    request_seq_nbr,
-                    tcb.last_processed_req_seq_nbr,
-                    tcb.last_processed_req_result,
-                    &mut responses,
-                ) {
-                    tcb.last_processed_req_seq_nbr = request_seq_nbr;
-                    tcb.last_processed_req_result = if sender_last_assigned_tsn
-                        > tcb.data_tracker.last_cumulative_acked_tsn()
-                    {
-                        // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-                        //
-                        //   E2: If the Sender's Last Assigned TSN is greater than the
-                        //   cumulative acknowledgment point, then the endpoint MUST enter
-                        //   "deferred reset processing".
-                        //
-                        //   [...] If the endpoint enters "deferred reset processing", it MUST
-                        //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
-                        //   indicating "In progress" and MUST send the RE-CONFIG chunk.
-                        tcb.reassembly_queue
-                            .enter_deferred_reset(sender_last_assigned_tsn, &streams);
-                        ReconfigurationResponseResult::InProgress
-                    } else {
-                        // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-                        //
-                        //   E3: If no stream numbers are listed in the parameter, then all
-                        //   incoming streams MUST be reset to 0 as the next expected SSN. If
-                        //   specific stream numbers are listed, then only these specific
-                        //   streams MUST be reset to 0, and all other non-listed SSNs remain
-                        //   unchanged.
-                        //
-                        //   E4: Any queued TSNs (queued at step E2) MUST now be released and
-                        //   processed normally."
-                        tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&streams);
-                        ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(streams));
-                        ReconfigurationResponseResult::SuccessPerformed
-                    };
+                let validation_result =
+                    validate_req_seq_nbr(request_seq_nbr, tcb.last_processed_req_seq_nbr);
+
+                if validation_result == ReqSeqNbrValidationResult::BadSequenceNumber {
+                    responses.push(Parameter::ReconfigurationResponse(
+                        ReconfigurationResponseParameter {
+                            response_seq_nbr: request_seq_nbr,
+                            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
+                            sender_next_tsn: None,
+                            receiver_next_tsn: None,
+                        },
+                    ));
+                    continue;
+                }
+
+                if validation_result == ReqSeqNbrValidationResult::Retransmission
+                    && tcb.last_processed_req_result != ReconfigurationResponseResult::InProgress
+                {
                     responses.push(Parameter::ReconfigurationResponse(
                         ReconfigurationResponseParameter {
                             response_seq_nbr: request_seq_nbr,
@@ -135,18 +123,57 @@ pub(crate) fn handle_reconfig(
                             receiver_next_tsn: None,
                         },
                     ));
+                    continue;
                 }
+
+                tcb.last_processed_req_seq_nbr = request_seq_nbr;
+                tcb.last_processed_req_result = if sender_last_assigned_tsn
+                    > tcb.data_tracker.last_cumulative_acked_tsn()
+                {
+                    // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+                    //
+                    //   E2: If the Sender's Last Assigned TSN is greater than the
+                    //   cumulative acknowledgment point, then the endpoint MUST enter
+                    //   "deferred reset processing".
+                    //
+                    //   [...] If the endpoint enters "deferred reset processing", it MUST
+                    //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
+                    //   indicating "In progress" and MUST send the RE-CONFIG chunk.
+                    tcb.reassembly_queue.enter_deferred_reset(sender_last_assigned_tsn, &streams);
+                    ReconfigurationResponseResult::InProgress
+                } else {
+                    // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+                    //
+                    //   E3: If no stream numbers are listed in the parameter, then all
+                    //   incoming streams MUST be reset to 0 as the next expected SSN. If
+                    //   specific stream numbers are listed, then only these specific
+                    //   streams MUST be reset to 0, and all other non-listed SSNs remain
+                    //   unchanged.
+                    //
+                    //   E4: Any queued TSNs (queued at step E2) MUST now be released and
+                    //   processed normally."
+                    tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&streams);
+                    ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(streams));
+                    ReconfigurationResponseResult::SuccessPerformed
+                };
+                responses.push(Parameter::ReconfigurationResponse(
+                    ReconfigurationResponseParameter {
+                        response_seq_nbr: request_seq_nbr,
+                        result: tcb.last_processed_req_result,
+                        sender_next_tsn: None,
+                        receiver_next_tsn: None,
+                    },
+                ));
             }
             Parameter::IncomingSsnResetRequest(IncomingSsnResetRequestParameter {
                 request_seq_nbr,
                 ..
             }) => {
-                if validate_req_seq_nbr(
-                    request_seq_nbr,
-                    tcb.last_processed_req_seq_nbr,
-                    tcb.last_processed_req_result,
-                    &mut responses,
-                ) {
+                let validation_result =
+                    validate_req_seq_nbr(request_seq_nbr, tcb.last_processed_req_seq_nbr);
+                if validation_result == ReqSeqNbrValidationResult::Valid
+                    || validation_result == ReqSeqNbrValidationResult::Retransmission
+                {
                     responses.push(Parameter::ReconfigurationResponse(
                         ReconfigurationResponseParameter {
                             response_seq_nbr: request_seq_nbr,
@@ -156,6 +183,17 @@ pub(crate) fn handle_reconfig(
                         },
                     ));
                     tcb.last_processed_req_seq_nbr = request_seq_nbr;
+                    tcb.last_processed_req_result =
+                        ReconfigurationResponseResult::SuccessNothingToDo;
+                } else {
+                    responses.push(Parameter::ReconfigurationResponse(
+                        ReconfigurationResponseParameter {
+                            response_seq_nbr: request_seq_nbr,
+                            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
+                            sender_next_tsn: None,
+                            receiver_next_tsn: None,
+                        },
+                    ));
                 }
             }
             Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
@@ -250,9 +288,7 @@ pub(crate) fn handle_reconfig_timeout(state: &mut State, ctx: &mut Context, now:
 fn validate_req_seq_nbr(
     req_seq_nbr: u32,
     last_processed_req_seq_nbr: u32,
-    last_processed_req_result: ReconfigurationResponseResult,
-    responses: &mut Vec<Parameter>,
-) -> bool {
+) -> ReqSeqNbrValidationResult {
     if req_seq_nbr == last_processed_req_seq_nbr {
         // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.1>:
         //
@@ -260,24 +296,13 @@ fn validate_req_seq_nbr(
         //   analysis of the Re-configuration Request Sequence Numbers this is the last received
         //   RE-CONFIG chunk (i.e., a retransmission), the same RE-CONFIG chunk MUST to be sent
         //   back in response, as it was earlier.
-        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
-            response_seq_nbr: req_seq_nbr,
-            result: last_processed_req_result,
-            sender_next_tsn: None,
-            receiver_next_tsn: None,
-        }));
-        return false;
+        ReqSeqNbrValidationResult::Retransmission
     } else if req_seq_nbr != last_processed_req_seq_nbr.wrapping_add(1) {
         // Too old, too new, from wrong association etc.
-        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
-            response_seq_nbr: req_seq_nbr,
-            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
-            sender_next_tsn: None,
-            receiver_next_tsn: None,
-        }));
-        return false;
+        ReqSeqNbrValidationResult::BadSequenceNumber
+    } else {
+        ReqSeqNbrValidationResult::Valid
     }
-    true
 }
 
 #[cfg(test)]
@@ -1074,5 +1099,131 @@ mod tests {
             fixture.expect_sent_reconfig_response().result,
             ReconfigurationResponseResult::SuccessPerformed
         );
+    }
+
+    #[test]
+    fn reset_streams_deferred_retransmission_with_same_seq_num_success() {
+        let mut fixture = TestFixture::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // 1. Receive request N -> conditions not met -> respond "In Progress"
+        // 2. Conditions met (TSN received)
+        // 3. Receive request N (retransmission) -> re-evaluate -> respond "Success"
+
+        fixture.receive(Tsn(10), seq.ordered("10", "BE"));
+
+        // Request reset 10, waiting for 12.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(12), vec![StreamId(1)]));
+
+        let response = fixture.expect_sent_reconfig_response();
+        assert_eq!(response.result, ReconfigurationResponseResult::InProgress);
+
+        // Receive 11, 12.
+        fixture.receive(Tsn(11), seq.ordered("11", "BE"));
+        fixture.receive(Tsn(12), seq.ordered("12", "BE"));
+
+        // Drain SACKs
+        while fixture.try_pop_event().is_some() {}
+
+        // Retransmit SAME request (10).
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(12), vec![StreamId(1)]));
+
+        // Expect reset performed event first
+        fixture.expect_incoming_stream_reset_event(vec![StreamId(1)]);
+
+        let response = fixture.expect_sent_reconfig_response();
+        assert_eq!(response.result, ReconfigurationResponseResult::SuccessPerformed);
+    }
+
+    #[test]
+    fn reset_streams_deferred_with_new_seq_num_success() {
+        // Backward compatibility (old behavior):
+        // 1. Receive request N -> conditions not met -> respond "In Progress"
+        // 2. Conditions met
+        // 3. Receive request N+1 -> rreat as new -> respond "Success"
+
+        let mut fixture = TestFixture::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Request reset 10, waiting for 11.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(11), vec![StreamId(1)]));
+
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::InProgress
+        );
+
+        // Receive 10, 11
+        fixture.receive(Tsn(10), seq.ordered("10", "BE"));
+        fixture.receive(Tsn(11), seq.ordered("11", "BE"));
+
+        // Drain SACKs
+        while fixture.try_pop_event().is_some() {}
+
+        // New request 11.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(11, 3, Tsn(11), vec![StreamId(1)]));
+
+        // Expect reset performed event first
+        fixture.expect_incoming_stream_reset_event(vec![StreamId(1)]);
+
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::SuccessPerformed
+        );
+    }
+
+    #[test]
+    fn reset_streams_deferred_retransmission_still_in_progress() {
+        let mut fixture = TestFixture::new();
+
+        // Request reset 10, waiting for 11.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(11), vec![StreamId(1)]));
+
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::InProgress
+        );
+
+        // Retransmit same request 10. Condition still not met.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(11), vec![StreamId(1)]));
+
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::InProgress
+        );
+    }
+
+    #[test]
+    fn reset_streams_success_idempotency() {
+        let mut fixture = TestFixture::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        fixture.receive(Tsn(10), seq.ordered("10", "BE"));
+        fixture.receive(Tsn(11), seq.ordered("11", "BE"));
+
+        // Request reset 10, waiting for 11. Conditions met.
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(11), vec![StreamId(1)]));
+
+        // Expect reset performed event first
+        fixture.expect_incoming_stream_reset_event(vec![StreamId(1)]);
+
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::SuccessPerformed
+        );
+
+        // Retransmit same request 10.
+        // Drain any pending events (SACKs)
+        while fixture.try_pop_event().is_some() {}
+
+        fixture.handle_reconfig(fixture.prepare_outgoing_reset(10, 3, Tsn(11), vec![StreamId(1)]));
+
+        // Should return cached success.
+        assert_eq!(
+            fixture.expect_sent_reconfig_response().result,
+            ReconfigurationResponseResult::SuccessPerformed
+        );
+        // Should NOT trigger event again.
+        fixture.expect_no_incoming_stream_reset_event();
     }
 }
