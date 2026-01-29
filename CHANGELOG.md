@@ -11,6 +11,7 @@ and this project adheres to
 ### Fixed
 
  - Relaxed sequence number handling for stream reset requests.
+ - Corrected outgoing requests to be compliant with RFC6525.
 
 ## 0.1.9 - 2025-02-16
 

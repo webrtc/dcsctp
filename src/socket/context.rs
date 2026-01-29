@@ -55,6 +55,10 @@ impl TxErrorCounter {
     pub fn is_exhausted(&self) -> bool {
         if let Some(limit) = self.limit { self.error_counter > limit } else { false }
     }
+
+    pub fn value(&self) -> u32 {
+        self.error_counter
+    }
 }
 
 pub(crate) struct Context {
