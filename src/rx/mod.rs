@@ -15,5 +15,4 @@
 pub mod data_tracker;
 pub mod interleaved_reassembly_streams;
 pub mod reassembly_queue;
-pub mod reassembly_streams;
 pub mod traditional_reassembly_streams;

@@ -20,7 +20,7 @@ use crate::api::handover::HandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState;
 use crate::packet::SkippedStream;
 use crate::packet::data::Data;
-use crate::rx::reassembly_streams::ReassemblyStreams;
+use crate::rx::reassembly_queue::ReassemblyStreams;
 use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::StreamKey;

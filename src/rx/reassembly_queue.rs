@@ -19,11 +19,12 @@ use crate::api::handover::SocketHandoverState;
 use crate::packet::SkippedStream;
 use crate::packet::data::Data;
 use crate::rx::interleaved_reassembly_streams::InterleavedReassemblyStreams;
-use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::rx::traditional_reassembly_streams::TraditionalReassemblyStreams;
 use crate::types::Tsn;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 pub const HIGH_WATERMARK_LIMIT: f32 = 0.9;
 
@@ -38,11 +39,80 @@ struct DeferredResetStreams {
     deferred_operations: Vec<DeferredOperation>,
 }
 
+/// Implementations of this interface will be called when data is received, when data should be
+/// skipped/forgotten or when sequence number should be reset.
+///
+/// As a result of these operations - mainly when data is received - the implementations of this
+/// interface should notify when a message has been assembled, by calling the provided callback of
+/// type `OnAssembledMessage`. How it assembles messages will depend on e.g. if a message was sent
+/// on an ordered or unordered stream.
+///
+/// Implementations will - for each operation - indicate how much additional memory that has been
+/// used as a result of performing the operation. This is used to limit the maximum amount of memory
+/// used, to prevent out-of-memory situations.
+pub trait ReassemblyStreams {
+    /// Adds a data chunk to a stream as identified in `data`. If it was the last remaining chunk in
+    /// a message, reassemble one (or several, in case of ordered chunks) messages.
+    ///
+    /// Returns the additional number of bytes added to the queue as a result of performing this
+    /// operation. If this addition resulted in messages being assembled and delivered, this may be
+    /// negative.
+    fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize;
+
+    /// Called for incoming FORWARD-TSN/I-FORWARD-TSN chunks - when the sender wishes the received
+    /// to skip/forget about data up until the provided TSN. This is used to implement partial
+    /// reliability, such as limiting the number of retransmissions or the an expiration duration.
+    /// As a result of skipping data, this may result in the implementation being able to assemble
+    /// messages in ordered streams.
+    ///
+    /// Returns the number of bytes removed from the queue as a result of this operation.
+    fn handle_forward_tsn(
+        &mut self,
+        new_cumulative_ack: Tsn,
+        skipped_streams: &[SkippedStream],
+        on_reassembled: &mut dyn FnMut(Message),
+    ) -> usize;
+
+    /// Called for incoming (possibly deferred) RE_CONFIG chunks asking for either a few streams, or
+    /// all streams (when the list is empty) to be reset - to have their next SSN or Message ID to
+    /// be zero.
+    fn reset_streams(&mut self, streams: &[StreamId]);
+
+    fn get_handover_readiness(&self) -> HandoverReadiness;
+    fn add_to_handover_state(&self, state: &mut SocketHandoverState);
+    fn restore_from_state(&mut self, state: &SocketHandoverState);
+}
+
+enum ReassemblyStrategy {
+    Traditional(TraditionalReassemblyStreams),
+    Interleaved(InterleavedReassemblyStreams),
+}
+
+impl Deref for ReassemblyStrategy {
+    type Target = dyn ReassemblyStreams;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            ReassemblyStrategy::Traditional(s) => s,
+            ReassemblyStrategy::Interleaved(s) => s,
+        }
+    }
+}
+
+impl DerefMut for ReassemblyStrategy {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            ReassemblyStrategy::Traditional(s) => s,
+            ReassemblyStrategy::Interleaved(s) => s,
+        }
+    }
+}
+
 pub struct ReassemblyQueue {
     max_size_bytes: usize,
     watermark_bytes: usize,
     queued_bytes: usize,
-    streams: Box<dyn ReassemblyStreams>,
+    streams: ReassemblyStrategy,
     deferred_reset_streams: Option<DeferredResetStreams>,
     rx_messages_count: usize,
     reassembled_messages: VecDeque<Message>,
@@ -50,10 +120,10 @@ pub struct ReassemblyQueue {
 
 impl ReassemblyQueue {
     pub fn new(max_size_bytes: usize, use_message_interleaving: bool) -> Self {
-        let streams: Box<dyn ReassemblyStreams> = if use_message_interleaving {
-            Box::new(InterleavedReassemblyStreams::new())
+        let streams = if use_message_interleaving {
+            ReassemblyStrategy::Interleaved(InterleavedReassemblyStreams::new())
         } else {
-            Box::new(TraditionalReassemblyStreams::new())
+            ReassemblyStrategy::Traditional(TraditionalReassemblyStreams::new())
         };
 
         Self {
