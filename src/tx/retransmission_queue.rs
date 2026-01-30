@@ -571,8 +571,11 @@ impl RetransmissionQueue {
                     now,
                     max_retransmissions,
                     expires_at,
-                    chunk.lifecycle_id,
+                    chunk.lifecycle_id.clone(),
                 ) {
+                    if let Some(lid) = chunk.lifecycle_id {
+                        self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageFullySent(lid));
+                    }
                     to_be_sent.push((tsn, chunk.data));
                 }
             } else {
@@ -726,12 +729,19 @@ impl RetransmissionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::LifecycleId;
     use crate::api::Message;
     use crate::api::PpId;
     use crate::api::SendOptions;
     use crate::events::Events;
     use crate::packet::SkippedStream;
     use crate::packet::sack_chunk::GapAckBlock;
+    use crate::testing::event_helpers::expect_buffered_amount_low;
+    use crate::testing::event_helpers::expect_no_event;
+    use crate::testing::event_helpers::expect_on_lifecycle_end;
+    use crate::testing::event_helpers::expect_on_lifecycle_message_delivered;
+    use crate::testing::event_helpers::expect_on_lifecycle_message_fully_sent;
+    use crate::testing::event_helpers::expect_on_lifecycle_message_maybe_sent;
     use crate::tx::send_queue::SendQueue;
     use crate::types::Mid;
     use crate::types::Ssn;
@@ -2662,5 +2672,109 @@ mod tests {
         let chunks = rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
 
         assert_eq!(get_tsns(&chunks), vec![Tsn(10)]);
+    }
+
+    #[test]
+    fn adds_lifecycle_fully_sent_event() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+        let mut rtx = create_queue(false, false, Rc::clone(&events));
+
+        sq.add(
+            now,
+            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
+        );
+
+        // The message is small and will be produced in full.
+        rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
+
+        expect_buffered_amount_low!(events.borrow_mut().next_event());
+
+        let event = events.borrow_mut().next_event();
+        assert_eq!(expect_on_lifecycle_message_fully_sent!(event), LifecycleId::from(1));
+
+        expect_no_event!(events.borrow_mut().next_event());
+    }
+
+    #[test]
+    fn adds_lifecycle_delivered_event() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+        let mut rtx = create_queue(false, false, Rc::clone(&events));
+
+        // Add a message, produce it in full and drain any event.
+        sq.add(
+            now,
+            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
+        );
+        rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
+        while events.borrow_mut().next_event().is_some() {}
+
+        // Ack the message.
+        handle_sack(&mut rtx, now, Tsn(10));
+
+        assert_eq!(
+            expect_on_lifecycle_message_delivered!(events.borrow_mut().next_event()),
+            LifecycleId::from(1)
+        );
+
+        assert_eq!(
+            expect_on_lifecycle_end!(events.borrow_mut().next_event()),
+            LifecycleId::from(1)
+        );
+
+        expect_no_event!(events.borrow_mut().next_event());
+    }
+
+    #[test]
+    fn adds_lifecycle_expired_event() {
+        let mut now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+        let mut rtx = create_queue(true, false, Rc::clone(&events));
+
+        // Add a message (with expiration), produce it in full and drain any event.
+        sq.add(
+            now,
+            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            &SendOptions {
+                lifecycle_id: LifecycleId::new(1),
+                max_retransmissions: Some(0),
+                ..SendOptions::default()
+            },
+        );
+        rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
+        while events.borrow_mut().next_event().is_some() {}
+
+        // Expire the chunk by retransmission timeout.
+        now = rtx.next_timeout().unwrap();
+        rtx.handle_timeout(now);
+        assert!(rtx.should_send_forward_tsn(now));
+
+        let Chunk::ForwardTsn(fwd) = rtx.create_forward_tsn() else {
+            panic!("Expected Forward TSN");
+        };
+
+        // Ack the Forward TSN, which will result in the chunk being abandoned.
+        handle_sack(&mut rtx, now, fwd.new_cumulative_tsn);
+
+        assert_eq!(
+            expect_on_lifecycle_message_maybe_sent!(events.borrow_mut().next_event()),
+            LifecycleId::from(1)
+        );
+
+        assert_eq!(
+            expect_on_lifecycle_end!(events.borrow_mut().next_event()),
+            LifecycleId::from(1)
+        );
+
+        expect_no_event!(events.borrow_mut().next_event());
     }
 }
