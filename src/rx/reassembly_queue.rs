@@ -24,6 +24,8 @@ use crate::rx::traditional_reassembly_streams::TraditionalReassemblyStreams;
 use crate::types::Tsn;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 pub const HIGH_WATERMARK_LIMIT: f32 = 0.9;
 
@@ -38,11 +40,36 @@ struct DeferredResetStreams {
     deferred_operations: Vec<DeferredOperation>,
 }
 
+enum ReassemblyStrategy {
+    Traditional(TraditionalReassemblyStreams),
+    Interleaved(InterleavedReassemblyStreams),
+}
+
+impl Deref for ReassemblyStrategy {
+    type Target = dyn ReassemblyStreams;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            ReassemblyStrategy::Traditional(s) => s,
+            ReassemblyStrategy::Interleaved(s) => s,
+        }
+    }
+}
+
+impl DerefMut for ReassemblyStrategy {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            ReassemblyStrategy::Traditional(s) => s,
+            ReassemblyStrategy::Interleaved(s) => s,
+        }
+    }
+}
+
 pub struct ReassemblyQueue {
     max_size_bytes: usize,
     watermark_bytes: usize,
     queued_bytes: usize,
-    streams: Box<dyn ReassemblyStreams>,
+    streams: ReassemblyStrategy,
     deferred_reset_streams: Option<DeferredResetStreams>,
     rx_messages_count: usize,
     reassembled_messages: VecDeque<Message>,
@@ -50,10 +77,10 @@ pub struct ReassemblyQueue {
 
 impl ReassemblyQueue {
     pub fn new(max_size_bytes: usize, use_message_interleaving: bool) -> Self {
-        let streams: Box<dyn ReassemblyStreams> = if use_message_interleaving {
-            Box::new(InterleavedReassemblyStreams::new())
+        let streams = if use_message_interleaving {
+            ReassemblyStrategy::Interleaved(InterleavedReassemblyStreams::new())
         } else {
-            Box::new(TraditionalReassemblyStreams::new())
+            ReassemblyStrategy::Traditional(TraditionalReassemblyStreams::new())
         };
 
         Self {
