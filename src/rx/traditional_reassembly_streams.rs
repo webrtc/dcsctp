@@ -61,42 +61,31 @@ fn find_end(chunks: &BTreeMap<Tsn, Data>, tsn: Tsn) -> Option<Tsn> {
     None
 }
 
-trait ReassemblyStream {
-    fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize;
-    fn erase_to(
-        &mut self,
-        new_cumulative_ack: Tsn,
-        skipped: Option<&SkippedStream>,
-        on_reassembled: &mut dyn FnMut(Message),
-    ) -> usize;
-    fn reset(&mut self);
-    fn has_unassembled_chunks(&self) -> bool;
-    fn add_to_handover_state(&self, stream_id: StreamKey, state: &mut SocketHandoverState);
-}
-
 pub struct TraditionalReassemblyStreams {
-    streams: HashMap<StreamKey, Box<dyn ReassemblyStream>>,
+    ordered: HashMap<StreamId, OrderedStream>,
+    unordered: HashMap<StreamId, UnorderedStream>,
 }
 
 impl TraditionalReassemblyStreams {
     pub fn new() -> Self {
-        Self { streams: HashMap::new() }
-    }
-
-    fn get_or_create(&mut self, stream_key: StreamKey) -> &mut dyn ReassemblyStream {
-        self.streams
-            .entry(stream_key)
-            .or_insert_with(|| match stream_key {
-                StreamKey::Ordered(_) => Box::new(OrderedStream::new()),
-                StreamKey::Unordered(_) => Box::new(UnorderedStream::new()),
-            })
-            .as_mut()
+        Self { ordered: HashMap::new(), unordered: HashMap::new() }
     }
 }
 
 impl ReassemblyStreams for TraditionalReassemblyStreams {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
-        self.get_or_create(data.stream_key).add(tsn, data, on_reassembled)
+        match data.stream_key {
+            StreamKey::Ordered(id) => self
+                .ordered
+                .entry(id)
+                .or_insert_with(OrderedStream::new)
+                .add(tsn, data, on_reassembled),
+            StreamKey::Unordered(id) => self
+                .unordered
+                .entry(id)
+                .or_insert_with(UnorderedStream::new)
+                .add(tsn, data, on_reassembled),
+        }
     }
 
     fn handle_forward_tsn(
@@ -106,17 +95,14 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
         on_reassembled: &mut dyn FnMut(Message),
     ) -> usize {
         let mut ret = 0;
-        // The `skipped_streams` only cover ordered messages - need to iterate all unordered streams
-        // manually to remove those chunks.
-        for (stream_key, stream) in &mut self.streams {
-            if stream_key.is_unordered() {
-                ret += stream.erase_to(new_cumulative_ack, None::<&SkippedStream>, on_reassembled);
-            }
+
+        for stream in self.unordered.values_mut() {
+            ret += stream.erase_to(new_cumulative_ack, None::<&SkippedStream>, on_reassembled);
         }
 
         for skipped_stream in skipped_streams {
             if let SkippedStream::ForwardTsn(stream_id, _) = skipped_stream {
-                ret += self.get_or_create(StreamKey::Ordered(*stream_id)).erase_to(
+                ret += self.ordered.entry(*stream_id).or_insert_with(OrderedStream::new).erase_to(
                     new_cumulative_ack,
                     Some(skipped_stream),
                     on_reassembled,
@@ -127,27 +113,32 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
     }
 
     fn reset_streams(&mut self, streams: &[StreamId]) {
-        self.streams
+        self.ordered
             .iter_mut()
-            .filter(|(stream_key, _)| stream_key.is_ordered())
-            .filter(|(stream_key, _)| streams.is_empty() || streams.contains(&stream_key.id()))
+            .filter(|(id, _)| streams.is_empty() || streams.contains(id))
             .for_each(|(_, stream)| stream.reset());
     }
 
     fn get_handover_readiness(&self) -> HandoverReadiness {
-        let has_unassembled_chunks = self.streams.iter().any(|(_, s)| s.has_unassembled_chunks());
+        let ordered_has_unassembled = self.ordered.values().any(|s| s.has_unassembled_chunks());
+        let unordered_has_unassembled = self.unordered.values().any(|s| s.has_unassembled_chunks());
 
-        HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS & has_unassembled_chunks
+        HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS
+            & (ordered_has_unassembled || unordered_has_unassembled)
     }
 
     fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
-        self.streams.iter().for_each(|(stream_id, s)| s.add_to_handover_state(*stream_id, state));
+        self.ordered
+            .iter()
+            .for_each(|(id, s)| s.add_to_handover_state(StreamKey::Ordered(*id), state));
+        self.unordered
+            .iter()
+            .for_each(|(id, s)| s.add_to_handover_state(StreamKey::Unordered(*id), state));
     }
 
     fn restore_from_state(&mut self, state: &SocketHandoverState) {
         state.rx.ordered_streams.iter().for_each(|s| {
-            let stream_id = StreamKey::Ordered(StreamId(s.id));
-            self.streams.insert(stream_id, Box::new(OrderedStream::from_state(s)));
+            self.ordered.insert(StreamId(s.id), OrderedStream::from_state(s));
         });
     }
 }
@@ -189,7 +180,7 @@ impl UnorderedStream {
     }
 }
 
-impl ReassemblyStream for UnorderedStream {
+impl UnorderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         if data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
@@ -272,7 +263,7 @@ impl OrderedStream {
     }
 }
 
-impl ReassemblyStream for OrderedStream {
+impl OrderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         let can_assemble = data.ssn == self.next_ssn;
 
