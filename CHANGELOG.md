@@ -12,6 +12,7 @@ and this project adheres to
 
  - Corrected "Fast Recovery" retransmission logic.
  - Corrected outstanding data calculation.
+ - Added OnLifecycleMessageFullySent lifecycle events when sending message.
 
 ## 0.1.8 - 2026-02-06
 

@@ -56,6 +56,7 @@ mod tests {
     use crate::testing::event_helpers::expect_on_error;
     use crate::testing::event_helpers::expect_on_incoming_stream_reset;
     use crate::testing::event_helpers::expect_on_lifecycle_end;
+    use crate::testing::event_helpers::expect_on_lifecycle_message_fully_sent;
     use crate::testing::event_helpers::expect_on_streams_reset_performed;
     use crate::testing::event_helpers::expect_sent_packet;
     use crate::testing::event_helpers::expect_total_buffered_amount_low;
@@ -2761,8 +2762,10 @@ mod tests {
             .unwrap();
 
         // A -> DATA -> Z
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
         socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> /lost/ Z
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
         expect_sent_packet!(socket_a.poll_event());
 
         let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
