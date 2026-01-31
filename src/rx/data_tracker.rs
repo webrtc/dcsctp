@@ -38,6 +38,9 @@ const MAX_GAP_ACK_BLOCKS_REPORTED: usize = 20;
 
 #[derive(Debug, PartialEq)]
 enum AckState {
+    /// Initial state. No packets have been received yet.
+    Initial,
+
     /// No need to send an ACK.
     Idle,
 
@@ -61,7 +64,6 @@ enum AckState {
 /// loss is detected, it's sent for every packet. When SACKs are not sent directly, a timer is used
 /// to send a SACK delayed (by RTO/2, or 200 ms, whatever is smallest).
 pub struct DataTracker {
-    seen_packet: bool,
     ack_state: AckState,
 
     /// All TSNs up until (and including) this value have been seen.
@@ -79,8 +81,7 @@ pub struct DataTracker {
 impl DataTracker {
     pub fn new(peer_initial_tsn: Tsn, options: &Options) -> DataTracker {
         DataTracker {
-            seen_packet: false,
-            ack_state: AckState::Idle,
+            ack_state: AckState::Initial,
             last_cumulative_acked_tsn: peer_initial_tsn - 1,
             additional_tsn_blocks: vec![],
             duplicates: vec![],
@@ -217,12 +218,11 @@ impl DataTracker {
             self.update_ack_state(now, AckState::Immediate);
         }
 
-        if !self.seen_packet {
+        if self.ack_state == AckState::Initial {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.1-8>:
             //
             //   After the reception of the first DATA chunk in an association, the endpoint MUST
             //   immediately respond with a SACK chunk to acknowledge the DATA chunk.
-            self.seen_packet = true;
             self.update_ack_state(now, AckState::Immediate);
         }
 
@@ -289,7 +289,7 @@ impl DataTracker {
         //   Any time a FORWARD TSN chunk arrives, for the purposes of sending a SACK, the receiver
         //   MUST follow the same rules as if a DATA chunk had been received (i.e., follow the
         //   delayed sack rules specified in [...]
-        if self.ack_state == AckState::Idle {
+        if self.ack_state == AckState::Idle || self.ack_state == AckState::Initial {
             self.update_ack_state(now, AckState::BecomingDelayed);
         } else if self.ack_state == AckState::Delayed {
             self.update_ack_state(now, AckState::Immediate);
@@ -384,12 +384,12 @@ impl DataTracker {
 
     pub(crate) fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
         state.rx.last_cumulative_acked_tsn = self.last_cumulative_acked_tsn.0;
-        state.rx.seen_packet = self.seen_packet;
+        state.rx.seen_packet = self.ack_state != AckState::Initial;
     }
 
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
         self.last_cumulative_acked_tsn = Tsn(state.rx.last_cumulative_acked_tsn);
-        self.seen_packet = state.rx.seen_packet;
+        self.ack_state = if state.rx.seen_packet { AckState::Idle } else { AckState::Initial };
     }
 }
 
