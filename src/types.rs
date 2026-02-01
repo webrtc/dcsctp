@@ -207,6 +207,15 @@ impl std::cmp::Ord for Fsn {
     }
 }
 
+impl std::ops::Add<u32> for Fsn {
+    type Output = Fsn;
+
+    #[inline]
+    fn add(self, rhs: u32) -> Fsn {
+        Fsn(self.0.wrapping_add(rhs))
+    }
+}
+
 impl std::ops::AddAssign<u32> for Fsn {
     fn add_assign(&mut self, rhs: u32) {
         self.0 = self.0.wrapping_add(rhs);
