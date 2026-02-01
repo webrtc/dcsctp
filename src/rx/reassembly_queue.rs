@@ -108,6 +108,8 @@ impl ReassemblyQueue {
         self.rx_messages_count
     }
 
+    /// Adds a fragment of data to the queue. This method expects that the data is deduplicated and
+    /// sanity checked by the caller, e.g. by the DataTracker.
     pub fn add(&mut self, tsn: Tsn, data: Data) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
             if tsn > deferred_stream.sender_last_assigned_tsn

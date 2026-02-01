@@ -20,45 +20,24 @@ use crate::api::handover::HandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState;
 use crate::packet::SkippedStream;
 use crate::packet::data::Data;
+use crate::rx::IntervalList;
+use crate::rx::ReassemblyKey;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-/// Given a chunk map and a tsn that points inside a fragmented message, returns the tsn which has
-/// the `is_beginning` bit set. Will return None if the chunk was not found or if a gap was found
-/// between `tsn` and the expected beginning.
-fn find_beginning(chunks: &BTreeMap<Tsn, Data>, tsn: Tsn) -> Option<Tsn> {
-    let mut expected_next = tsn + 1;
-    for (tsn, data) in chunks.range(..=tsn).rev() {
-        if *tsn + 1 != expected_next {
-            return None;
-        }
-        if data.is_beginning {
-            return Some(*tsn);
-        }
-        expected_next = *tsn;
-    }
-    None
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TraditionalKey {
+    pub ssn: Ssn, // Primary sort key, NOTE: Is always 0 for unordered chunks.
+    pub tsn: Tsn, // Secondary sort key.
 }
 
-/// Given a chunk map and a tsn that points inside a fragmented message, returns the tsn which has
-/// the `is_end` bit set. Will return None if the chunk was not found or if a gap was found between
-/// `tsn` and the expected end.
-fn find_end(chunks: &BTreeMap<Tsn, Data>, tsn: Tsn) -> Option<Tsn> {
-    let mut prev = tsn - 1;
-    for (tsn, data) in chunks.range(tsn..) {
-        if prev + 1 != *tsn {
-            return None;
-        }
-        prev = *tsn;
-        if data.is_end {
-            return Some(*tsn);
-        }
+impl ReassemblyKey for TraditionalKey {
+    fn next(&self) -> Self {
+        TraditionalKey { ssn: self.ssn, tsn: self.tsn + 1 }
     }
-    None
 }
 
 pub struct TraditionalReassemblyStreams {
@@ -78,12 +57,12 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
             StreamKey::Ordered(id) => self
                 .ordered
                 .entry(id)
-                .or_insert_with(OrderedStream::new)
+                .or_insert_with(|| OrderedStream::new(id))
                 .add(tsn, data, on_reassembled),
             StreamKey::Unordered(id) => self
                 .unordered
                 .entry(id)
-                .or_insert_with(UnorderedStream::new)
+                .or_insert_with(|| UnorderedStream::new(id))
                 .add(tsn, data, on_reassembled),
         }
     }
@@ -102,11 +81,11 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
 
         for skipped_stream in skipped_streams {
             if let SkippedStream::ForwardTsn(stream_id, _) = skipped_stream {
-                ret += self.ordered.entry(*stream_id).or_insert_with(OrderedStream::new).erase_to(
-                    new_cumulative_ack,
-                    Some(skipped_stream),
-                    on_reassembled,
-                );
+                ret += self
+                    .ordered
+                    .entry(*stream_id)
+                    .or_insert_with(|| OrderedStream::new(*stream_id))
+                    .erase_to(new_cumulative_ack, Some(skipped_stream), on_reassembled);
             }
         }
         ret
@@ -144,53 +123,36 @@ impl ReassemblyStreams for TraditionalReassemblyStreams {
 }
 
 pub struct UnorderedStream {
-    chunks: BTreeMap<Tsn, Data>,
+    stream_id: StreamId,
+    intervals: IntervalList<TraditionalKey>,
 }
 
 impl UnorderedStream {
-    pub fn new() -> Self {
-        Self { chunks: BTreeMap::<Tsn, Data>::new() }
+    pub fn new(stream_id: StreamId) -> Self {
+        Self { stream_id, intervals: IntervalList::default() }
     }
 
-    fn try_assemble(&mut self, tsn: Tsn, on_reassembled: &mut dyn FnMut(Message)) -> usize {
-        let (Some(start_tsn), Some(end_tsn)) =
-            (find_beginning(&self.chunks, tsn), find_end(&self.chunks, tsn))
-        else {
-            return 0;
-        };
-
-        // This is only called when needing to assemble more than one unordered chunk since the fast
-        // path handles all messages consisting of a single chunk.
-        debug_assert!(start_tsn != end_tsn);
-        let first_chunk = self.chunks.remove(&start_tsn).unwrap();
-        let stream_id = first_chunk.stream_key.id();
-        let ppid = first_chunk.ppid;
-        let mut payload: Vec<u8> = first_chunk.payload;
-
-        let mut tsn = start_tsn + 1;
-        while tsn <= end_tsn {
-            let mut c = self.chunks.remove(&tsn).unwrap();
-            payload.append(&mut c.payload);
-            tsn += 1;
-        }
-
-        let total_size = payload.len();
-        on_reassembled(Message::new(stream_id, ppid, payload));
-        total_size
-    }
-}
-
-impl UnorderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         if data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
             on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload));
             return 0;
         }
+        let key = TraditionalKey { ssn: Ssn(0), tsn };
         let queued_bytes = data.payload.len() as isize;
-        self.chunks.insert(tsn, data);
+        let idx = self.intervals.add(key, data);
 
-        queued_bytes - (self.try_assemble(tsn, on_reassembled) as isize)
+        if let Some(interval) = self.intervals.pop_if_complete(idx) {
+            let stream_id = self.stream_id;
+            let ppid = interval.ppid;
+            let payload = interval.collect_payload();
+            let total_payload_len = payload.len();
+
+            on_reassembled(Message::new(stream_id, ppid, payload));
+            queued_bytes - (total_payload_len as isize)
+        } else {
+            queued_bytes
+        }
     }
 
     fn erase_to(
@@ -199,13 +161,7 @@ impl UnorderedStream {
         _: Option<&SkippedStream>,
         _: &mut dyn FnMut(Message),
     ) -> usize {
-        let removed_bytes = self
-            .chunks
-            .range(..new_cumulative_ack + 1)
-            .fold(0, |acc, (_, data)| acc + data.payload.len());
-
-        self.chunks.retain(|tsn, _| *tsn > new_cumulative_ack);
-        removed_bytes
+        self.intervals.retain(|interval| interval.start.tsn > new_cumulative_ack)
     }
 
     fn reset(&mut self) {
@@ -213,7 +169,7 @@ impl UnorderedStream {
     }
 
     fn has_unassembled_chunks(&self) -> bool {
-        !self.chunks.is_empty()
+        !self.intervals.is_empty()
     }
 
     fn add_to_handover_state(&self, stream_id: StreamKey, state: &mut SocketHandoverState) {
@@ -222,40 +178,36 @@ impl UnorderedStream {
 }
 
 pub struct OrderedStream {
-    chunks_by_ssn: BTreeMap<Ssn, BTreeMap<Tsn, Data>>,
+    stream_id: StreamId,
+    intervals: IntervalList<TraditionalKey>,
     next_ssn: Ssn,
 }
 
 impl OrderedStream {
-    pub fn new() -> Self {
-        Self { chunks_by_ssn: BTreeMap::<Ssn, BTreeMap<Tsn, Data>>::new(), next_ssn: Ssn(0) }
+    pub fn new(stream_id: StreamId) -> Self {
+        Self { stream_id, intervals: IntervalList::default(), next_ssn: Ssn(0) }
     }
 
     fn from_state(s: &HandoverOrderedStream) -> Self {
-        Self { next_ssn: Ssn(s.next_ssn as u16), ..OrderedStream::new() }
+        Self {
+            stream_id: StreamId(s.id),
+            next_ssn: Ssn(s.next_ssn as u16),
+            intervals: IntervalList::default(),
+        }
     }
 
     fn try_to_assemble_messages(&mut self, on_reassembled: &mut dyn FnMut(Message)) -> usize {
         let mut assembled_bytes = 0;
 
-        while let Some(chunks) = self.chunks_by_ssn.get_mut(&self.next_ssn) {
-            let (first_tsn, first_data) = chunks.first_key_value().unwrap();
-            let (last_tsn, last_data) = chunks.last_key_value().unwrap();
-            if !first_data.is_beginning
-                || !last_data.is_end
-                || first_tsn.distance_to(*last_tsn) != (chunks.len() as u32 - 1)
-            {
-                break;
-            }
-            let stream_id = first_data.stream_key.id();
-            let ppid = first_data.ppid;
-            let mut payload: Vec<u8> = vec![];
-            for data in chunks.values_mut() {
-                payload.append(&mut data.payload);
-            }
+        while let Some(interval) =
+            self.intervals.pop_front_if_complete_and(|i| i.start.ssn == self.next_ssn)
+        {
+            let stream_id = self.stream_id;
+            let ppid = interval.ppid;
+            let payload = interval.collect_payload();
+
             assembled_bytes += payload.len();
             on_reassembled(Message::new(stream_id, ppid, payload));
-            self.chunks_by_ssn.remove(&self.next_ssn);
             self.next_ssn += 1;
         }
 
@@ -265,23 +217,24 @@ impl OrderedStream {
 
 impl OrderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
-        let can_assemble = data.ssn == self.next_ssn;
+        if data.ssn < self.next_ssn {
+            // Already delivered or skipped.
+            return 0;
+        }
 
-        let mut queued_bytes = 0;
-        if can_assemble && data.is_beginning && data.is_end {
-            // Fastpath
-            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload));
+        if data.ssn == self.next_ssn && data.is_beginning && data.is_end {
+            // Fastpath for already assembled chunks.
+            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload));
             self.next_ssn += 1;
-        } else {
-            queued_bytes += data.payload.len() as isize;
-            self.chunks_by_ssn.entry(data.ssn).or_default().insert(tsn, data);
+            let assembled = self.try_to_assemble_messages(on_reassembled);
+            return -(assembled as isize);
         }
 
-        if can_assemble {
-            queued_bytes -= self.try_to_assemble_messages(on_reassembled) as isize;
-        }
-
-        queued_bytes
+        let key = TraditionalKey { ssn: data.ssn, tsn };
+        let queued_bytes = data.payload.len() as isize;
+        self.intervals.add(key, data);
+        let assembled = self.try_to_assemble_messages(on_reassembled);
+        queued_bytes - (assembled as isize)
     }
 
     fn erase_to(
@@ -292,16 +245,8 @@ impl OrderedStream {
     ) -> usize {
         match skipped_stream {
             Some(SkippedStream::ForwardTsn(_, ssn)) => {
-                let mut removed_bytes: usize = 0;
-                self.chunks_by_ssn.retain(|cur_ssn, chunks| {
-                    if cur_ssn <= ssn {
-                        removed_bytes +=
-                            chunks.iter().fold(0, |acc, (_, data)| acc + data.payload.len());
-                        false
-                    } else {
-                        true
-                    }
-                });
+                let mut removed_bytes = self.intervals.retain(|interval| interval.start.ssn > *ssn);
+
                 if *ssn >= self.next_ssn {
                     self.next_ssn = *ssn + 1;
                 }
@@ -314,10 +259,11 @@ impl OrderedStream {
 
     fn reset(&mut self) {
         self.next_ssn = Ssn(0);
+        self.intervals = IntervalList::default();
     }
 
     fn has_unassembled_chunks(&self) -> bool {
-        !self.chunks_by_ssn.is_empty()
+        !self.intervals.is_empty()
     }
 
     fn add_to_handover_state(&self, stream_id: StreamKey, state: &mut SocketHandoverState) {

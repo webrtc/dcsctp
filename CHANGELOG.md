@@ -13,6 +13,10 @@ and this project adheres to
  - Relaxed sequence number handling for stream reset requests.
  - Corrected outgoing requests to be compliant with RFC6525.
 
+### Changed
+
+ - Optimized performance of message reassembly.
+
 ## 0.1.9 - 2025-02-16
 
 ### Fixed

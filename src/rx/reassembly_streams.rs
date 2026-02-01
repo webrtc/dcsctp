@@ -35,6 +35,9 @@ pub trait ReassemblyStreams {
     /// Adds a data chunk to a stream as identified in `data`. If it was the last remaining chunk in
     /// a message, reassemble one (or several, in case of ordered chunks) messages.
     ///
+    /// This method expects that the data is deduplicated and sanity checked by the caller, e.g. by
+    /// the DataTracker.
+    ///
     /// Returns the additional number of bytes added to the queue as a result of performing this
     /// operation. If this addition resulted in messages being assembled and delivered, this may be
     /// negative.
