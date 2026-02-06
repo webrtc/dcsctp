@@ -8,14 +8,14 @@ license = "Apache-2.0"
 repository = "https://github.com/webrtc/dcsctp"
 
 [workspace.dependencies]
-cxx = "1.0.192"
-cxx-build = "1.0.192"
+cxx = "1.0"
+cxx-build = "1.0"
 dcsctp = { path = "." }
 fastrand = "2.3"
-itertools = "0.14.0"
-libfuzzer-sys = "0.4.10"
-log = "0.4.29"
-thiserror = "2.0.17"
+itertools = "0.14"
+libfuzzer-sys = "0.4"
+log = "0.4"
+thiserror = "2.0"
 
 [workspace.lints.rust]
 dead-code = "allow"
