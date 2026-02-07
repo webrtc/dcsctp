@@ -117,7 +117,7 @@ struct Item {
 
 impl Item {
     pub fn is_outstanding(&self) -> bool {
-        self.ack_state == AckState::Unacked
+        self.ack_state != AckState::Acked && self.lifecycle == Lifecycle::Active
     }
     pub fn is_acked(&self) -> bool {
         self.ack_state == AckState::Acked
@@ -342,14 +342,17 @@ impl OutstandingData {
     fn nack_chunk(&mut self, tsn: Tsn, retransmit_now: bool, do_fast_retransmit: bool) -> bool {
         let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
         let item = self.outstanding_data.get_mut(index as usize).unwrap();
+        let was_outstanding = item.is_outstanding();
 
-        if item.is_outstanding() {
+        let action = item.nack(retransmit_now);
+
+        if was_outstanding && !item.is_outstanding() {
             self.unacked_bytes -=
                 round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
             self.unacked_items -= 1;
         }
 
-        match item.nack(retransmit_now) {
+        match action {
             NackAction::Nothing => false,
             NackAction::Retransmit => {
                 if do_fast_retransmit {
@@ -583,11 +586,17 @@ impl OutstandingData {
             if other.message_id == message_id {
                 end_found |= other.data.is_end;
                 if !other.is_abandoned() {
+                    let was_outstanding = other.is_outstanding();
                     if other.should_be_retransmitted() {
                         self.to_be_fast_retransmitted.remove(&tsn);
                         self.to_be_retransmitted.remove(&tsn);
                     }
                     other.abandon();
+                    if was_outstanding {
+                        self.unacked_bytes -=
+                            round_up_to_4!(self.data_chunk_header_size + other.data.payload.len());
+                        self.unacked_items -= 1;
+                    }
                 }
             }
         }
@@ -727,10 +736,12 @@ impl OutstandingData {
                 ChunkState::ToBeRetransmitted
             } else if item.is_acked() {
                 ChunkState::Acked
+            } else if item.is_nacked() {
+                ChunkState::Nacked
             } else if item.is_outstanding() {
                 ChunkState::InFlight
             } else {
-                ChunkState::Nacked
+                panic!("Unreachable state");
             };
             states.push((tsn, state));
         }
@@ -916,8 +927,8 @@ mod tests {
         assert_eq!(ack.highest_tsn_acked, Tsn(11));
         assert!(!ack.has_packet_loss);
 
-        assert_eq!(buf.unacked_bytes(), 0);
-        assert_eq!(buf.unacked_items(), 0);
+        assert_eq!(buf.unacked_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(buf.unacked_items(), 1);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
         assert_eq!(buf.highest_outstanding_tsn(), Tsn(11));
