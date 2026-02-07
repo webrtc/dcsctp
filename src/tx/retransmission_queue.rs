@@ -473,8 +473,9 @@ impl RetransmissionQueue {
 
         let old_unacked_bytes = self.unacked_bytes();
 
-        let to_be_sent =
-            self.outstanding_data.get_chunks_to_be_fast_retransmitted(bytes_remaining_in_packet);
+        let to_be_sent = self
+            .outstanding_data
+            .get_chunks_to_be_fast_retransmitted(now, bytes_remaining_in_packet);
         debug_assert!(!to_be_sent.is_empty());
 
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4-5.4.1>:
@@ -542,7 +543,7 @@ impl RetransmissionQueue {
 
         let mut max_bytes =
             round_down_to_4!(min(self.max_bytes_to_send(), bytes_remaining_in_packet));
-        let mut to_be_sent = self.outstanding_data.get_chunks_to_be_retransmitted(max_bytes);
+        let mut to_be_sent = self.outstanding_data.get_chunks_to_be_retransmitted(now, max_bytes);
         let bytes_retransmitted: usize = to_be_sent
             .iter()
             .map(|(_, data)| round_up_to_4!(self.data_chunk_header_size + data.payload.len()))

@@ -32,18 +32,46 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::time::Duration;
 
+/// Represents the state of a sent fragment (DATA chunk).
+///
+/// Fragments typically begin as `InFlight` and ultimately resolve to either `Acked` (successful
+/// delivery) or `Abandoned`.
 #[derive(Debug, PartialEq)]
-enum Lifecycle {
-    Active,
-    ToBeRetransmitted,
+enum ItemState {
+    /// The chunk has been sent and is awaiting a SACK.
+    InFlight { time_sent: SocketTime },
+
+    /// A SACK reported a gap indicating that this chunk hasn't been received yet. If the chunk is
+    /// reported to be missing many times, it will be retransmitted.
+    ReportedMissing { time_sent: SocketTime, nack_count: u8 },
+
+    /// The chunk reached the NACK threshold (or the T3-RTX retransmission timer forced a
+    /// retransmit). It is waiting to be placed into a new outgoing packet, after which it will
+    /// return to `InFlight`.
+    QueuedForRetransmission { time_sent: SocketTime },
+
+    /// The peer has acknowledged it. The chunk remains here until the cumulative TSN ack point
+    /// advances past it, and then it will be removed from the queue.
+    Acked,
+
+    /// The chunk hasn't been received, and it's not eligible for any more retransmissions (due to
+    /// message expiration or reaching the maximum retransmission limit).
     Abandoned,
+
+    /// The chunk was abandoned and the peer has acknowledged it.
+    AbandonedAndAcked,
 }
 
-#[derive(Debug, PartialEq)]
-enum AckState {
-    Unacked,
-    Acked,
-    Nacked,
+impl ItemState {
+    /// Returns the time this chunk was sent, if it is currently tracked.
+    fn time_sent(&self) -> Option<SocketTime> {
+        match self {
+            Self::InFlight { time_sent }
+            | Self::ReportedMissing { time_sent, .. }
+            | Self::QueuedForRetransmission { time_sent } => Some(*time_sent),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -104,78 +132,118 @@ const NUMBER_OF_NACKS_FOR_RETRANSMISSION: u8 = 3;
 #[derive(Debug)]
 struct Item {
     message_id: OutgoingMessageId,
-    time_sent: SocketTime,
     max_retransmissions: u16,
-    lifecycle: Lifecycle,
-    ack_state: AckState,
-    nack_count: u8,
-    num_retransmissions: u16,
     expires_at: SocketTime,
     lifecycle_id: Option<LifecycleId>,
     data: Data,
+    // Mutable state:
+    state: ItemState,
+    num_retransmissions: u16,
 }
 
 impl Item {
+    /// Indicates if this chunk is outstanding, meaning it has been sent, but not yet acknowledged
+    /// or lost (which means it's either abandoned, or queued for retransmission.
     pub fn is_outstanding(&self) -> bool {
-        self.ack_state != AckState::Acked && self.lifecycle == Lifecycle::Active
+        matches!(self.state, ItemState::InFlight { .. } | ItemState::ReportedMissing { .. })
     }
+
+    /// Indicates if this chunk has been acknowledged by the peer.
     pub fn is_acked(&self) -> bool {
-        self.ack_state == AckState::Acked
+        matches!(self.state, ItemState::Acked | ItemState::AbandonedAndAcked)
     }
+
+    /// Indicates if this chunk has been reported missing (NACKed) by the peer.
     pub fn is_nacked(&self) -> bool {
-        self.ack_state == AckState::Nacked
+        matches!(
+            self.state,
+            ItemState::ReportedMissing { .. } | ItemState::QueuedForRetransmission { .. }
+        )
     }
+
+    /// Indicates if this chunk has been abandoned. A chunk is abandoned when it will not be
+    /// retransmitted anymore, due to message expiration or reaching the maximum retransmission
+    /// limit.
     pub fn is_abandoned(&self) -> bool {
-        self.lifecycle == Lifecycle::Abandoned
+        matches!(self.state, ItemState::Abandoned | ItemState::AbandonedAndAcked)
     }
+
     /// Indicates if this chunk should be retransmitted.
     pub fn should_be_retransmitted(&self) -> bool {
-        self.lifecycle == Lifecycle::ToBeRetransmitted
+        matches!(self.state, ItemState::QueuedForRetransmission { .. })
     }
+
     /// Indicates if this chunk has ever been retransmitted.
     pub fn has_been_retransmitted(&self) -> bool {
         self.num_retransmissions > 0
     }
-    /// Given the current time, and the current state of this DATA chunk, it will indicate if it has
-    /// expired (SCTP Partial Reliability Extension).
+
+    /// Indicates if this chunk has expired given the current time (`now`).
     pub fn has_expired(&self, now: SocketTime) -> bool {
         self.expires_at <= now
     }
 
     pub fn ack(&mut self) {
-        if self.lifecycle != Lifecycle::Abandoned {
-            self.lifecycle = Lifecycle::Active;
+        match self.state {
+            ItemState::InFlight { .. }
+            | ItemState::ReportedMissing { .. }
+            | ItemState::QueuedForRetransmission { .. } => {
+                self.state = ItemState::Acked;
+            }
+            ItemState::Abandoned => {
+                self.state = ItemState::AbandonedAndAcked;
+            }
+            ItemState::Acked | ItemState::AbandonedAndAcked => {}
         }
-        self.ack_state = AckState::Acked;
     }
 
     pub fn nack(&mut self, retransmit_now: bool) -> NackAction {
-        self.ack_state = AckState::Nacked;
-        self.nack_count = self.nack_count.saturating_add(1);
-        if !self.should_be_retransmitted()
-            && !self.is_abandoned()
-            && (retransmit_now || self.nack_count >= NUMBER_OF_NACKS_FOR_RETRANSMISSION)
-        {
-            // Nacked enough times - it's considered lost.
+        let (time_sent, nack_count) = match self.state {
+            ItemState::InFlight { time_sent } => (time_sent, 0),
+            ItemState::ReportedMissing { time_sent, nack_count } => (time_sent, nack_count),
+            _ => return NackAction::Nothing,
+        };
+
+        let new_nack_count = nack_count.saturating_add(1);
+
+        if retransmit_now || new_nack_count >= NUMBER_OF_NACKS_FOR_RETRANSMISSION {
             if self.num_retransmissions < self.max_retransmissions {
-                self.lifecycle = Lifecycle::ToBeRetransmitted;
-                return NackAction::Retransmit;
+                self.state = ItemState::QueuedForRetransmission { time_sent };
+                NackAction::Retransmit
+            } else {
+                self.state = ItemState::Abandoned;
+                NackAction::Abandon
             }
-            self.abandon();
-            return NackAction::Abandon;
+        } else {
+            self.state = ItemState::ReportedMissing { time_sent, nack_count: new_nack_count };
+            NackAction::Nothing
         }
-        NackAction::Nothing
     }
 
-    pub fn mark_as_retransmitted(&mut self) {
-        self.lifecycle = Lifecycle::Active;
-        self.ack_state = AckState::Unacked;
-        self.nack_count = 0;
+    pub fn mark_as_retransmitted(&mut self, now: SocketTime) {
+        self.state = ItemState::InFlight { time_sent: now };
         self.num_retransmissions = self.num_retransmissions.saturating_add(1);
     }
 
     pub fn abandon(&mut self) {
-        self.lifecycle = Lifecycle::Abandoned;
+        match self.state {
+            ItemState::InFlight { .. }
+            | ItemState::ReportedMissing { .. }
+            | ItemState::QueuedForRetransmission { .. } => {
+                self.state = ItemState::Abandoned;
+            }
+            ItemState::Acked => {
+                self.state = ItemState::AbandonedAndAcked;
+            }
+            ItemState::Abandoned | ItemState::AbandonedAndAcked => {}
+        }
+    }
+
+    pub fn get_rtt_from(&self, now: SocketTime) -> Option<Duration> {
+        if self.has_been_retransmitted() {
+            return None;
+        }
+        self.state.time_sent().map(|time_sent| now - time_sent)
     }
 }
 
@@ -359,6 +427,7 @@ impl OutstandingData {
         match action {
             NackAction::Nothing => false,
             NackAction::Retransmit => {
+                debug_assert!(matches!(item.state, ItemState::QueuedForRetransmission { .. }));
                 if do_fast_retransmit {
                     self.to_be_fast_retransmitted.insert(tsn);
                 } else {
@@ -402,6 +471,7 @@ impl OutstandingData {
 
     fn extract_chunks_that_can_fit(
         &mut self,
+        now: SocketTime,
         mut max_size: usize,
         tsns: &mut BTreeSet<Tsn>,
     ) -> Vec<(Tsn, Data)> {
@@ -417,7 +487,7 @@ impl OutstandingData {
 
             let size = round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
             if size <= max_size {
-                item.mark_as_retransmitted();
+                item.mark_as_retransmitted(now);
                 result.push((*tsn, item.data.clone()));
                 max_size -= size;
                 self.unacked_bytes += size;
@@ -436,9 +506,13 @@ impl OutstandingData {
     /// Returns as many of the chunks that are eligible for fast retransmissions and that would fit
     /// in a single packet of `max_size`. The eligible chunks that didn't fit will be marked for
     /// (normal) retransmission and will not be returned if this method is called again.
-    pub fn get_chunks_to_be_fast_retransmitted(&mut self, max_size: usize) -> Vec<(Tsn, Data)> {
+    pub fn get_chunks_to_be_fast_retransmitted(
+        &mut self,
+        now: SocketTime,
+        max_size: usize,
+    ) -> Vec<(Tsn, Data)> {
         let mut tsns = std::mem::take(&mut self.to_be_fast_retransmitted);
-        let chunks = self.extract_chunks_that_can_fit(max_size, &mut tsns);
+        let chunks = self.extract_chunks_that_can_fit(now, max_size, &mut tsns);
 
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4-5.5.1>:
         //
@@ -453,9 +527,13 @@ impl OutstandingData {
     /// Given `max_size` of space left in a packet, which chunks can be added to it?
     ///
     /// Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
-    pub fn get_chunks_to_be_retransmitted(&mut self, max_size: usize) -> Vec<(Tsn, Data)> {
+    pub fn get_chunks_to_be_retransmitted(
+        &mut self,
+        now: SocketTime,
+        max_size: usize,
+    ) -> Vec<(Tsn, Data)> {
         let mut tsns = std::mem::take(&mut self.to_be_retransmitted);
-        let chunks = self.extract_chunks_that_can_fit(max_size, &mut tsns);
+        let chunks = self.extract_chunks_that_can_fit(now, max_size, &mut tsns);
         std::mem::swap(&mut self.to_be_retransmitted, &mut tsns);
         chunks
     }
@@ -547,15 +625,12 @@ impl OutstandingData {
         let tsn = self.next_tsn();
         let item = Item {
             message_id,
-            time_sent,
             max_retransmissions,
-            lifecycle: Lifecycle::Active,
-            ack_state: AckState::Unacked,
-            nack_count: 0,
-            num_retransmissions: 0,
             expires_at,
             lifecycle_id,
             data: data.clone(),
+            state: ItemState::InFlight { time_sent },
+            num_retransmissions: 0,
         };
         self.outstanding_data.push_back(item);
         let item = self.outstanding_data.back().unwrap();
@@ -617,15 +692,12 @@ impl OutstandingData {
         let data = Data { stream_key, ssn, mid, is_end: true, ..Default::default() };
         let item = Item {
             message_id,
-            time_sent: SocketTime::zero(),
             max_retransmissions: 0,
-            lifecycle: Lifecycle::Abandoned,
-            ack_state: AckState::Acked,
-            nack_count: 0,
-            num_retransmissions: 0,
             expires_at: SocketTime::zero(),
             lifecycle_id: None,
             data,
+            state: ItemState::AbandonedAndAcked,
+            num_retransmissions: 0,
         };
         self.outstanding_data.push_back(item);
         self.unsent_messages_to_discard.push((stream_key.id(), message_id));
@@ -720,9 +792,7 @@ impl OutstandingData {
         if tsn > self.last_cumulative_tsn_ack && tsn < self.next_tsn() {
             let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
-            if !item.has_been_retransmitted() {
-                return Some(now - item.time_sent);
-            }
+            return item.get_rtt_from(now);
         }
         None
     }
@@ -734,18 +804,12 @@ impl OutstandingData {
         let mut tsn = self.last_cumulative_tsn_ack;
         for item in &self.outstanding_data {
             tsn += 1;
-            let state = if item.is_abandoned() {
-                ChunkState::Abandoned
-            } else if item.should_be_retransmitted() {
-                ChunkState::ToBeRetransmitted
-            } else if item.is_acked() {
-                ChunkState::Acked
-            } else if item.is_nacked() {
-                ChunkState::Nacked
-            } else if item.is_outstanding() {
-                ChunkState::InFlight
-            } else {
-                panic!("Unreachable state");
+            let state = match &item.state {
+                ItemState::Abandoned | ItemState::AbandonedAndAcked => ChunkState::Abandoned,
+                ItemState::QueuedForRetransmission { .. } => ChunkState::ToBeRetransmitted,
+                ItemState::Acked => ChunkState::Acked,
+                ItemState::ReportedMissing { .. } => ChunkState::Nacked,
+                ItemState::InFlight { .. } => ChunkState::InFlight,
             };
             states.push((tsn, state));
         }
@@ -1335,9 +1399,9 @@ mod tests {
         assert!(buf.has_data_to_be_retransmitted());
 
         // Now it's retransmitted.
-        let chunks = buf.get_chunks_to_be_fast_retransmitted(1000);
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(now(), 1000);
         assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
-        assert!(buf.get_chunks_to_be_retransmitted(1000).is_empty());
+        assert!(buf.get_chunks_to_be_retransmitted(now(), 1000).is_empty());
 
         // And obviously lost, as it will get NACKed and abandoned.
         buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 8)], false);
@@ -1664,5 +1728,195 @@ mod tests {
                 (Tsn(16), ChunkState::Acked),
             ]
         );
+    }
+
+    #[test]
+    fn rtt_is_measured_even_if_queued_for_retransmission() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut generator = ChunkGenerator::new();
+
+        // ChunkGenerator uses SocketTime::zero().
+        generator.add(&mut buf, StreamId(1), "a", "BE"); // TSN 10
+        generator.add(&mut buf, StreamId(1), "b", "BE"); // TSN 11
+        generator.add(&mut buf, StreamId(1), "c", "BE"); // TSN 12
+        generator.add(&mut buf, StreamId(1), "d", "BE"); // TSN 13
+        generator.add(&mut buf, StreamId(1), "e", "BE"); // TSN 14
+
+        // Nack three times to trigger fast retransmit.
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 4)], false);
+        assert!(buf.has_data_to_be_retransmitted());
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            &[
+                (Tsn(10), ChunkState::Acked),
+                (Tsn(11), ChunkState::ToBeRetransmitted),
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked)
+            ]
+        );
+
+        // Before TSN 11 is retransmitted, it's acked, and that should work.
+        let t1 = SocketTime::zero() + Duration::from_millis(500);
+        assert_eq!(buf.measure_rtt(t1, Tsn(11)), Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn expires_chunks_queued_for_retransmission() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut generator = DataSequencer::new(StreamId(1));
+
+        // Insert two chunks with short TTLs, and three normal.
+        let now = SocketTime::zero();
+        let expiry = now + Duration::from_millis(100);
+        buf.insert(OutgoingMessageId(1), &generator.ordered("a", "BE"), now, 1, expiry, None); // TSN 10
+        buf.insert(OutgoingMessageId(2), &generator.ordered("b", "BE"), now, 1, expiry, None); // TSN 11
+        buf.insert(OutgoingMessageId(3), &generator.ordered("c", "BE"), now, 1, no_expiry(), None); // TSN 12
+        buf.insert(OutgoingMessageId(4), &generator.ordered("d", "BE"), now, 1, no_expiry(), None); // TSN 13
+        buf.insert(OutgoingMessageId(5), &generator.ordered("e", "BE"), now, 1, no_expiry(), None); // TSN 14
+
+        // Ack 9, 12-14, three times, to trigger retransmission.
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 3)], false);
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 4)], false);
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 5)], false);
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            &[
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::ToBeRetransmitted),
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked)
+            ]
+        );
+
+        // Before chunks were retransmitted, time passed which expired them.
+        buf.expire_outstanding_chunks(now + Duration::from_millis(200));
+
+        // Verify BOTH chunks were abandoned.
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            &[
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked)
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_double_count_bytes_when_abandoned_chunk_is_reacked() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut generator = DataSequencer::new(StreamId(1));
+        let chunk_size = round_up_to_4!(DATA_CHUNK_HEADER_SIZE + 1);
+
+        // Insert first message (TSN 10, 11) with a short expiry.
+        let now = SocketTime::zero();
+        let expiry = now + Duration::from_millis(100);
+        buf.insert(OutgoingMessageId(1), &generator.ordered("a", "B"), now, 0, expiry, None);
+        buf.insert(OutgoingMessageId(1), &generator.ordered("b", "E"), now, 0, expiry, None);
+        // Insert second message (TSN 12, 13) with no expiry.
+        buf.insert(OutgoingMessageId(2), &generator.ordered("c", "B"), now, 1, no_expiry(), None);
+        buf.insert(OutgoingMessageId(2), &generator.ordered("d", "E"), now, 1, no_expiry(), None);
+
+        // Ack TSN=9,11,13 - 11 and 13 are newly acked, reflected in bytes_acked.
+        let ack1 =
+            buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2), GapAckBlock::new(4, 4)], false);
+        assert_eq!(ack1.bytes_acked, chunk_size * 2);
+
+        // Advance time to expire the first message.
+        buf.expire_outstanding_chunks(now + Duration::from_millis(200));
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            &[
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Nacked),
+                (Tsn(13), ChunkState::Acked),
+            ]
+        );
+
+        // Receive a SACK advancing the Cumulative TSN to 13.
+        let ack2 = buf.handle_sack(Tsn(13), &[], false);
+
+        // Only TSN 10 and 12 should be counted as "newly acked" bytes.
+        assert_eq!(ack2.bytes_acked, chunk_size * 2);
+    }
+
+    #[test]
+    fn placeholder_fragment_does_not_contribute_to_bytes_acked() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // TSN=10 is the first fragment of a message that is not finished (missing the 'E' flag).
+        buf.insert(MESSAGE_ID, &seq.ordered("a", "B"), now(), 0, no_expiry(), None);
+
+        // Abandon the message, which adds a placeholder fragment (TSN=11).
+        buf.nack_all();
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::Abandoned),
+            ]
+        );
+
+        // A FORWARD-TSN is sent, which is then acked with TSN=11.
+        let ack = buf.handle_sack(Tsn(11), &[], false);
+
+        // Only the actual data (TSN 10) should contribute to bytes_acked, not TSN=11.
+        let expected_size = round_up_to_4!(DATA_CHUNK_HEADER_SIZE + 1);
+        assert_eq!(ack.bytes_acked, expected_size);
+    }
+
+    #[test]
+    fn rtt_not_measured_for_gap_acked_tsns() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut generator = ChunkGenerator::new();
+        let t0 = now();
+
+        // 1. Send TSN 10..16.
+        generator.add(&mut buf, StreamId(1), "a", "BE"); // TSN 10
+        generator.add(&mut buf, StreamId(1), "b", "BE"); // TSN 11
+        generator.add(&mut buf, StreamId(1), "c", "BE"); // TSN 12
+        generator.add(&mut buf, StreamId(1), "d", "BE"); // TSN 13
+        generator.add(&mut buf, StreamId(1), "e", "BE"); // TSN 14
+
+        // 2. TSN 12 is gap-acked early.
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 2)], false);
+
+        // 3. Trigger Fast Retransmit for TSN 11 by 3 miss indications.
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 4)], false);
+
+        assert!(buf.has_data_to_be_fast_retransmitted());
+
+        // Retransmit TSN 11 at T1.
+        let t1 = t0 + Duration::from_millis(100);
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(t1, 1000);
+        assert_eq!(chunks[0].0, Tsn(11));
+
+        // 4. A SACK finally arrives at T2 that moves the Cumulative TSN Ack to 12.
+        let t2 = t0 + Duration::from_millis(500);
+
+        // For TSN 12: Even though the cumulative ACK just reached it, it was
+        // previously gap-acked and should not be used for RTT measurements.
+        assert_eq!(buf.measure_rtt(t2, Tsn(12)), None);
+
+        // For TSN 11: It was just retransmitted, so num_retransmissions > 0.
+        // It should also return None (Karn's algorithm).
+        assert_eq!(buf.measure_rtt(t2, Tsn(11)), None);
     }
 }
