@@ -219,6 +219,8 @@ impl OutstandingData {
         gap_ack_blocks: &[GapAckBlock],
         is_in_fast_recovery: bool,
     ) -> AckInfo {
+        let cumulative_tsn_ack_advanced = cumulative_tsn_ack > self.last_cumulative_tsn_ack;
+
         let mut ack_info = AckInfo {
             highest_tsn_acked: cumulative_tsn_ack,
             bytes_acked: 0,
@@ -238,6 +240,7 @@ impl OutstandingData {
             cumulative_tsn_ack,
             gap_ack_blocks,
             is_in_fast_recovery,
+            cumulative_tsn_ack_advanced,
             &mut ack_info,
         );
         ack_info
@@ -297,6 +300,7 @@ impl OutstandingData {
         cumulative_tsn_ack: Tsn,
         gap_ack_blocks: &[GapAckBlock],
         is_in_fast_recovery: bool,
+        cumulative_tsn_ack_advanced: bool,
         ack_info: &mut AckInfo,
     ) {
         // Mark everything between the blocks as NACKed or to be transmitted.
@@ -313,7 +317,7 @@ impl OutstandingData {
         // should be nacked. This means that SCTP relies on the T3-RTX-timer to re-send packets
         // otherwise.
         let mut max_tsn_to_nack = ack_info.highest_tsn_acked;
-        if is_in_fast_recovery && cumulative_tsn_ack > self.last_cumulative_tsn_ack {
+        if is_in_fast_recovery && cumulative_tsn_ack_advanced {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4-3>:
             //
             //   If an endpoint is in Fast Recovery and a SACK chunks arrives that advances the
@@ -1604,5 +1608,61 @@ mod tests {
         // Ack 15, nothing more will be skipped.
         buf.handle_sack(Tsn(15), &[], false);
         assert!(!buf.should_send_forward_tsn());
+    }
+
+    #[test]
+    fn fast_recovery_increments_nack_count_when_cumulative_tsn_advances() {
+        // This test verifies that the Fast Recovery retransmission rules are correctly applied when
+        // the Cumulative TSN Ack point advances. RFC 9260 Section 7.2.4: "If an endpoint is in Fast
+        // Recovery and a SACK arrives that advances the Cumulative TSN Ack Point, the miss
+        // indications are incremented for all TSNs reported missing in the SACK."
+
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        for _ in 10..=16 {
+            insert(&mut buf, seq.ordered("abc", "BE"));
+        }
+
+        // SACK 1: Cumulative Ack = 10. Gap blocks for 12, 14, 16.
+        // Missing: 11, 13, 15.
+        // This marks 12, 14, 16 as Acked.
+        // TSNs 11, 13, 15 get their 1st miss indication each.
+        let gab1 = vec![
+            GapAckBlock::new(2, 2), // TSN 12
+            GapAckBlock::new(4, 4), // TSN 14
+            GapAckBlock::new(6, 6), // TSN 16
+        ];
+        buf.handle_sack(Tsn(10), &gab1, /* is_in_fast_recovery= */ false);
+
+        // SACK 2: Cumulative Ack advances to 11. Same gap blocks (12, 14, 16).
+        // Endpoint is now in Fast Recovery (is_in_fast_recovery = true). Because the Cumulative TSN
+        // Ack Point advanced from 10 to 11, 13 and 15 should get their 2nd miss indication.
+        let gab2 = vec![
+            GapAckBlock::new(1, 1), // TSN 12
+            GapAckBlock::new(3, 3), // TSN 14
+            GapAckBlock::new(5, 5), // TSN 16
+        ];
+        buf.handle_sack(Tsn(11), &gab2, /* is_in_fast_recovery= */ true);
+
+        // SACK 3: Cumulative Ack advances to 12.
+        // Note: TSN 12 was already acked via gap block, so this just advances the Cumulative Ack.
+        // 13 and 15 should get their 3rd miss indication and trigger retransmission.
+        let gab3 = vec![
+            GapAckBlock::new(2, 2), // TSN 14
+            GapAckBlock::new(4, 4), // TSN 16
+        ];
+        buf.handle_sack(Tsn(12), &gab3, /* is_in_fast_recovery= */ true);
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::ToBeRetransmitted),
+                (Tsn(14), ChunkState::Acked),
+                (Tsn(15), ChunkState::ToBeRetransmitted),
+                (Tsn(16), ChunkState::Acked),
+            ]
+        );
     }
 }
