@@ -8,6 +8,11 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
+ - Corrected "Fast Recovery" retransmission logic.
+ - Corrected outstanding data calculation.
+
 ## 0.1.8 - 2026-02-06
 
 ### Changed
