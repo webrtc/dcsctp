@@ -1200,11 +1200,9 @@ mod tests {
         let packet = expect_sent_packet!(socket_a.poll_event());
         socket_z.handle_input(&packet);
         expect_on_incoming_stream_reset!(socket_z.poll_event());
-        // A <- RECONFIG <- Z
+        // A <- RECONFIG + SACK (Bundled) <- Z
         socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
         expect_on_streams_reset_performed!(socket_a.poll_event());
-        // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
 
         socket_a
             .send(
@@ -3478,5 +3476,50 @@ mod tests {
         // Z should have received the message
         let msg = socket_z.get_next_message().unwrap();
         assert_eq!(msg.payload, b"hello");
+    }
+
+    #[test]
+    fn advance_time_does_not_trigger_spurious_ack() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Send a message from A to Z. This will be the first packet, which will trigger an
+        // immediate SACK.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        socket_z.handle_input(&packet);
+
+        let packet = expect_sent_packet!(socket_z.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Sack(_))));
+
+        // Send a second message from A to Z. This will be the second packet, which should trigger
+        // a delayed SACK.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+        let packet = expect_sent_packet!(socket_a.poll_event());
+
+        socket_z.handle_input(&packet);
+        expect_no_event!(socket_z.poll_event());
+
+        let next_timeout = socket_z.poll_timeout();
+        assert_eq!(next_timeout, SocketTime::zero() + options.delayed_ack_max_timeout);
+
+        // Advancing time by a small amount should NOT trigger it to send.
+        socket_z.advance_time(SocketTime::zero() + Duration::from_millis(1));
+        expect_no_event!(socket_z.poll_event());
+
+        // Advancing time by the SACK timeout should however trigger it to send.
+        socket_z.advance_time(next_timeout);
+        let packet = expect_sent_packet!(socket_z.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Sack(_))));
     }
 }

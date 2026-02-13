@@ -13,6 +13,7 @@ and this project adheres to
  - Corrected "Fast Recovery" retransmission logic.
  - Corrected outstanding data calculation.
  - Added OnLifecycleMessageFullySent lifecycle events when sending message.
+ - Fixed bug where delayed SACKs would be sent immediately when time advances.
 
 ## 0.1.8 - 2026-02-06
 

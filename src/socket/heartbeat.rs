@@ -71,8 +71,16 @@ pub(crate) fn handle_heartbeat_ack(ctx: &mut Context, now: SocketTime, chunk: He
     }
 }
 
-pub(crate) fn handle_heartbeat_timeouts(state: &mut State, ctx: &mut Context, now: SocketTime) {
-    if ctx.heartbeat_interval.expire(now) {
+/// Handles the heartbeat timers.
+///
+/// Returns `true` if any timer expired.
+pub(crate) fn handle_heartbeat_timeouts(
+    state: &mut State,
+    ctx: &mut Context,
+    now: SocketTime,
+) -> bool {
+    let interval_expired = ctx.heartbeat_interval.expire(now);
+    if interval_expired {
         if let Some(tcb) = state.tcb() {
             ctx.heartbeat_timeout.set_duration(ctx.options.rto_initial);
             ctx.heartbeat_timeout.start(now);
@@ -90,10 +98,14 @@ pub(crate) fn handle_heartbeat_timeouts(state: &mut State, ctx: &mut Context, no
             ctx.tx_packets_count += 1;
         }
     }
-    if ctx.heartbeat_timeout.expire(now) {
+
+    let timeout_expired = ctx.heartbeat_timeout.expire(now);
+    if timeout_expired {
         // Note that the timeout timer is not restarted. It will be started again when the
         // interval timer expires.
         debug_assert!(!ctx.heartbeat_timeout.is_running());
         ctx.tx_error_counter.increment();
     }
+
+    interval_expired || timeout_expired
 }

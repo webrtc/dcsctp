@@ -198,31 +198,40 @@ pub(crate) fn handle_reconfig(
     ctx.send_buffered_packets(state, now);
 }
 
-pub(crate) fn handle_reconfig_timeout(state: &mut State, ctx: &mut Context, now: SocketTime) {
+/// Handles the stream reconfiguration timers.
+///
+/// Returns `true` if any timer expired.
+pub(crate) fn handle_reconfig_timeout(
+    state: &mut State,
+    ctx: &mut Context,
+    now: SocketTime,
+) -> bool {
     let tcb = state.tcb_mut().unwrap();
-    if tcb.reconfig_timer.expire(now) {
-        match tcb.current_reset_request {
-            CurrentResetRequest::None => unreachable!(),
-            CurrentResetRequest::Prepared(..) => {
-                // There is no outstanding request, but there is a prepared one. This means that
-                // the receiver has previously responded "in progress", which resulted in
-                // retrying the request (but with a new req_seq_nbr) after a while.
-            }
-            CurrentResetRequest::Inflight(..) => {
-                // There is an outstanding request, which timed out while waiting for a
-                // response.
-                ctx.tx_error_counter.increment();
-                if ctx.tx_error_counter.is_exhausted() {
-                    return;
-                }
-            }
+    if !tcb.reconfig_timer.expire(now) {
+        return false;
+    }
+
+    match tcb.current_reset_request {
+        CurrentResetRequest::None => unreachable!(),
+        CurrentResetRequest::Prepared(..) => {
+            // There is no outstanding request, but there is a prepared one. This means that
+            // the receiver has previously responded "in progress", which resulted in
+            // retrying the request (but with a new req_seq_nbr) after a while.
         }
+        CurrentResetRequest::Inflight(..) => {
+            // There is an outstanding request, which timed out while waiting for a
+            // response.
+            ctx.tx_error_counter.increment();
+        }
+    }
+    if !ctx.tx_error_counter.is_exhausted() {
         tcb.reconfig_timer.set_duration(tcb.rto.rto());
         let mut builder = tcb.new_packet();
         tcb.add_prepared_ssn_reset_request(&mut builder);
         ctx.events.borrow_mut().add(SocketEvent::SendPacket(builder.build()));
         ctx.tx_packets_count += 1;
     }
+    true
 }
 
 fn validate_req_seq_nbr(

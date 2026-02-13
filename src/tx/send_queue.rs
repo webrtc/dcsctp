@@ -264,6 +264,10 @@ impl SendQueue {
         }
     }
 
+    pub fn has_data_to_send(&self) -> bool {
+        self.scheduler.peek(usize::MAX).is_some()
+    }
+
     fn make_stream(
         stream_id: StreamId,
         priority: u16,
