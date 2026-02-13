@@ -422,26 +422,42 @@ pub(crate) fn handle_cookie_ack(state: &mut State, ctx: &mut Context, now: Socke
     ctx.events.borrow_mut().add(SocketEvent::OnConnected());
 }
 
-pub(crate) fn handle_t1init_timeout(state: &mut State, ctx: &mut Context, now: SocketTime) {
+/// Handles the T1-init timer.
+///
+/// Returns `true` if the timer expired.
+pub(crate) fn handle_t1init_timeout(state: &mut State, ctx: &mut Context, now: SocketTime) -> bool {
     let State::CookieWait(s) = state else { unreachable!() };
-    if s.t1_init.expire(now) {
-        if s.t1_init.is_running() {
-            send_init(state, ctx);
-        } else {
-            ctx.internal_close(state, ErrorKind::TooManyRetries, "No INIT_ACK received".into());
-        }
+    if !s.t1_init.expire(now) {
+        return false;
     }
+
+    if s.t1_init.is_running() {
+        send_init(state, ctx);
+    } else {
+        ctx.internal_close(state, ErrorKind::TooManyRetries, "No INIT_ACK received".into());
+    }
+    true
 }
 
-pub(crate) fn handle_t1cookie_timeout(state: &mut State, ctx: &mut Context, now: SocketTime) {
+/// Handles the T1-cookie timer.
+///
+/// Returns `true` if the timer expired.
+pub(crate) fn handle_t1cookie_timeout(
+    state: &mut State,
+    ctx: &mut Context,
+    now: SocketTime,
+) -> bool {
     let State::CookieEchoed(s) = state else { unreachable!() };
-    if s.t1_cookie.expire(now) {
-        if !s.t1_cookie.is_running() {
-            ctx.internal_close(state, ErrorKind::TooManyRetries, "No COOKIE_ACK received".into());
-        } else {
-            send_cookie_echo(state, ctx, now);
-        }
+    if !s.t1_cookie.expire(now) {
+        return false;
     }
+
+    if !s.t1_cookie.is_running() {
+        ctx.internal_close(state, ErrorKind::TooManyRetries, "No COOKIE_ACK received".into());
+    } else {
+        send_cookie_echo(state, ctx, now);
+    }
+    true
 }
 
 /// Transitions the socket to Established using the data in the Cookie.

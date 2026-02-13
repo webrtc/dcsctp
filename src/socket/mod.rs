@@ -410,31 +410,47 @@ impl DcSctpSocket for Socket {
             return;
         }
         self.now.replace(now);
-        match &mut self.state {
-            State::Closed => {}
+        let expired_timers = match &mut self.state {
+            State::Closed => false,
             &mut State::CookieWait(ref s) => {
                 debug_assert!(s.t1_init.is_running());
-                handle_t1init_timeout(&mut self.state, &mut self.ctx, now);
+                handle_t1init_timeout(&mut self.state, &mut self.ctx, now)
             }
             State::CookieEchoed(s) => {
                 // NOTE: Only let the t1-cookie timer drive retransmissions.
                 debug_assert!(s.t1_cookie.is_running());
-                s.tcb.data_tracker.handle_timeout(now);
-                handle_t1cookie_timeout(&mut self.state, &mut self.ctx, now);
+                let ack_timer_expired = s.tcb.data_tracker.handle_timeout(now);
+                let t1_timer_expired = handle_t1cookie_timeout(&mut self.state, &mut self.ctx, now);
+                ack_timer_expired || t1_timer_expired
             }
             State::Established(tcb)
             | State::ShutdownPending(tcb)
             | State::ShutdownSent(ShutdownSentState { tcb, .. })
             | State::ShutdownReceived(tcb)
             | State::ShutdownAckSent(tcb) => {
-                tcb.data_tracker.handle_timeout(now);
-                if tcb.retransmission_queue.handle_timeout(now) {
+                let ack_timer_expired = tcb.data_tracker.handle_timeout(now);
+
+                let rtx_timer_expired = tcb.retransmission_queue.handle_timeout(now);
+                if rtx_timer_expired {
                     self.ctx.tx_error_counter.increment();
                 }
-                handle_heartbeat_timeouts(&mut self.state, &mut self.ctx, now);
-                handle_reconfig_timeout(&mut self.state, &mut self.ctx, now);
-                handle_t2_shutdown_timeout(&mut self.state, &mut self.ctx, now);
+
+                let heartbeat_timer_expired =
+                    handle_heartbeat_timeouts(&mut self.state, &mut self.ctx, now);
+                let reconfig_timer_expired =
+                    handle_reconfig_timeout(&mut self.state, &mut self.ctx, now);
+                let shutdown_timer_expired =
+                    handle_t2_shutdown_timeout(&mut self.state, &mut self.ctx, now);
+
+                ack_timer_expired
+                    || rtx_timer_expired
+                    || heartbeat_timer_expired
+                    || reconfig_timer_expired
+                    || shutdown_timer_expired
             }
+        };
+        if !expired_timers {
+            return;
         }
         if let Some(tcb) = self.state.tcb_mut() {
             if self.ctx.tx_error_counter.is_exhausted() {

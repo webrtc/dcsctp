@@ -400,7 +400,9 @@ impl RetransmissionQueue {
         HandleSackResult::Valid { rtt, reset_error_counter }
     }
 
-    /// Handles an expired retransmission timer and returns true if it has expired.
+    /// Handles the retransmission timer.
+    ///
+    /// Returns `true` if the timer expired.
     pub fn handle_timeout(&mut self, now: SocketTime) -> bool {
         // TODO: Make the implementation compliant with RFC 9260.
 
@@ -604,6 +606,10 @@ impl RetransmissionQueue {
         }
 
         to_be_sent
+    }
+
+    pub fn can_send_data(&self) -> bool {
+        self.outstanding_data.has_data_to_be_retransmitted()
     }
 
     fn chunk_max_retransmissions(&self, chunk: &DataToSend) -> u16 {

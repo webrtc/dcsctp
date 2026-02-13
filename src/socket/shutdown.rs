@@ -175,29 +175,39 @@ pub(crate) fn handle_shutdown_complete(
     }
 }
 
-pub(crate) fn handle_t2_shutdown_timeout(state: &mut State, ctx: &mut Context, now: SocketTime) {
+/// Handles the T2-shutdown timer.
+///
+/// Returns `true` if the timer expired.
+pub(crate) fn handle_t2_shutdown_timeout(
+    state: &mut State,
+    ctx: &mut Context,
+    now: SocketTime,
+) -> bool {
     let State::ShutdownSent(s) = state else {
-        return;
+        return false;
     };
-    if s.t2_shutdown.expire(now) {
-        if s.t2_shutdown.is_running() {
-            send_shutdown(state, ctx);
-            return;
-        }
-
-        ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            s.tcb
-                .new_packet()
-                .add(&Chunk::Abort(AbortChunk {
-                    error_causes: vec![ErrorCause::UserInitiatedAbort(
-                        UserInitiatedAbortErrorCause { reason: "Too many retransmissions".into() },
-                    )],
-                }))
-                .build(),
-        ));
-        ctx.tx_packets_count += 1;
-        ctx.internal_close(state, ErrorKind::TooManyRetries, "Too many retransmissions".into());
+    if !s.t2_shutdown.expire(now) {
+        return false;
     }
+
+    if s.t2_shutdown.is_running() {
+        send_shutdown(state, ctx);
+        return true;
+    }
+
+    ctx.events.borrow_mut().add(SocketEvent::SendPacket(
+        s.tcb
+            .new_packet()
+            .add(&Chunk::Abort(AbortChunk {
+                error_causes: vec![ErrorCause::UserInitiatedAbort(UserInitiatedAbortErrorCause {
+                    reason: "Too many retransmissions".into(),
+                })],
+            }))
+            .build(),
+    ));
+    ctx.tx_packets_count += 1;
+    ctx.internal_close(state, ErrorKind::TooManyRetries, "Too many retransmissions".into());
+    true
 }
 
 pub(crate) fn maybe_send_shutdown_on_packet_received(

@@ -97,7 +97,10 @@ impl Context {
         for packet_idx in 0..self.options.max_burst {
             if let Some(tcb) = state.tcb_mut() {
                 if packet_idx == 0 {
-                    if tcb.data_tracker.should_send_ack(now, true) {
+                    // Add SACKs if it's likely that a DATA chunk would also be added.
+                    let also_if_delayed = self.send_queue.has_data_to_send()
+                        || tcb.retransmission_queue.can_send_data();
+                    if tcb.data_tracker.should_send_ack(now, also_if_delayed) {
                         builder.add(
                             &Chunk::Sack(tcb.data_tracker.create_selective_ack(
                                 tcb.reassembly_queue.remaining_bytes() as u32,
