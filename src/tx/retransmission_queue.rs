@@ -139,6 +139,10 @@ impl RetransmissionQueue {
         }
     }
 
+    fn is_consistent(&self) -> bool {
+        self.outstanding_data.is_consistent()
+    }
+
     fn start_t3_rtx_if_outstanding_data(&mut self, now: SocketTime) {
         // Note: Can't use `unacked_bytes` as that one doesn't count chunks to be retransmitted.
         if self.outstanding_data.is_empty() {
@@ -396,6 +400,7 @@ impl RetransmissionQueue {
         let reset_error_counter = ack_info.bytes_acked > 0;
 
         self.start_t3_rtx_if_outstanding_data(now);
+        debug_assert!(self.is_consistent());
 
         HandleSackResult::Valid { rtt, reset_error_counter }
     }
@@ -455,6 +460,7 @@ impl RetransmissionQueue {
             self.unacked_bytes(),
             old_unacked_bytes
         );
+        debug_assert!(self.is_consistent());
         true
     }
 
@@ -509,6 +515,8 @@ impl RetransmissionQueue {
             self.unacked_bytes(),
             old_unacked_bytes
         );
+
+        debug_assert!(self.is_consistent());
 
         to_be_sent
     }
@@ -604,6 +612,7 @@ impl RetransmissionQueue {
                 old_rwnd
             );
         }
+        debug_assert!(self.is_consistent());
 
         to_be_sent
     }
@@ -691,7 +700,9 @@ impl RetransmissionQueue {
         }
 
         self.outstanding_data.expire_outstanding_chunks(now);
-        self.outstanding_data.should_send_forward_tsn()
+        let ret = self.outstanding_data.should_send_forward_tsn();
+        debug_assert!(self.is_consistent());
+        ret
     }
 
     pub fn create_forward_tsn(&mut self) -> Chunk {
