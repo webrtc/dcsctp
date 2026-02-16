@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.9 - 2025-02-16
+
 ### Fixed
 
  - Corrected "Fast Recovery" retransmission logic.
