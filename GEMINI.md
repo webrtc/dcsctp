@@ -1,64 +1,55 @@
 # GEMINI.md
 
-This document provides important context about the `dcsctp` project for the Gemini AI assistant.
-
 ## Project Overview
 
-`dcsctp` is a Rust implementation of the Stream Control Transmission Protocol (SCTP) tailored for WebRTC Data Channels. It's a network programming library designed to be used in larger WebRTC applications.
+`dcsctp` is a Rust implementation of the Stream Control Transmission Protocol
+(SCTP, [RFC 9260](https://www.rfc-editor.org/rfc/rfc9260.txt)) designed for 
+WebRTC Data Channels ([RFC 8831](https://www.rfc-editor.org/rfc/rfc8831.txt)). 
+It is a user-space library intended to be embedded in larger systems (like 
+WebRTC  implementations), not a standalone server or in an operating system 
+kernel.
 
-## Directory Structure
+## Architecture
 
-*   `.github/`: Contains GitHub Actions workflows for continuous integration.
-*   `fuzz/`: Contains fuzzing targets and related files for testing the robustness of the parser.
-*   `src/`: The main source code for the `dcsctp` library.
-    *   `api/`: Public API definitions.
-    *   `events.rs`: Event definitions.
-    *   `fuzzer/`: Fuzzing-related utilities.
-    *   `lib.rs`: The main library file.
-    *   `packet/`: SCTP packet and chunk definitions and parsing logic.
-    *   `rx/`: Code related to receiving data.
-    *   `socket/`: The main SCTP socket implementation.
-    *   `testing/`: Testing utilities and data generators.
-    *   `timer.rs`: Timer-related logic.
-    *   `tx/`: Code related to sending data.
-    *   `types.rs`: Core data types used throughout the library.
+- **Core Design**: The library is single-threaded and event-driven. It does not
+  perform I/O directly. The consumer drives the loop by feeding packets/timer
+  events and handling outgoing commands.
+- **Entry Point**: The primary interface is the `DcSctpSocket` trait defined in 
+  `src/api/mod.rs`. Use `dcsctp::new_socket` (in `src/lib.rs`) to instantiate.
+- **Directory Structure**:
+  - `src/api/`: Public API and configuration options.
+  - `src/packet/`: Wire format parsing and serialization (Chunks, Parameters).
+  - `src/socket/`: Main state machine and socket logic.
+  - `src/rx/` & `src/tx/`: Receiver and Transmitter logic (reassembly,
+    congestion control).
+  - `src/timer/`: Timer abstractions (does not use system timers directly).
+  - `fuzz/`: Fuzz targets.
+- **C++ Bindings**: `src/ffi.rs` provides C++ bindings using `cxx`. Any changes
+  to the public API must also be added here.
 
-## Core Commands
+## Development Workflow
 
-When working on this project, please use the following commands to ensure code quality and correctness.
+- **Build**: `cargo build`
+- **Test**: `cargo test` (Runs extensive unit and integration tests).
+- **Lint**: `cargo clippy --all-features --all-targets -- -D warnings`
+- **Format**: `cargo +nightly fmt --all -- --check`
 
-### Building the code
+## Coding Standards
 
-To build the project, run:
-```bash
-cargo build
-```
+- **Safety**: `unsafe` code is strictly prohibited (`deny(unsafe_code)`).
+- **Error Handling**: Use `thiserror` for error types. Return
+  `Result<T, Error>` for fallible operations.
+- **Logging**: Use the `log` crate (`trace!`, `debug!`, `info!`, `warn!`,
+  `error!`). Do not use `println!`.
+- **Async**: The library is synchronous. Do not introduce `async/await` in core
+  logic.
+- **Dependencies**: Keep dependencies minimal. Major ones: `log`, `thiserror`,
+  `fastrand`.
 
-### Running tests
+## Contribution Rules
 
-The project has a comprehensive test suite. To run all tests, use:
-```bash
-cargo test
-```
-
-### Linting and formatting
-
-This project uses `rustfmt` for code formatting and `clippy` for linting.
-
-To check for formatting issues, run:
-```bash
-cargo +nightly fmt --all -- --check
-```
-
-To run the linter, use:
-```bash
-cargo clippy --all-features --all-targets -- -D warnings
-```
-
-## Project Conventions
-
-*   The project follows standard Rust conventions.
-*   All code should be formatted with `rustfmt`.
-*   All code should pass `clippy` checks with no warnings.
-*   New features should be accompanied by unit tests.
-*   Commit messages should be clear and descriptive.
+- **Changelog**: All functional changes must be documented in `CHANGELOG.md`
+  under the *Unreleased* section (categories: Added, Changed, Deprecated,
+  Removed, Fixed, Security).
+- **Commits**: Use clear, descriptive commit messages.
+- **Pull Requests**: One change per PR.
