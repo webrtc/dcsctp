@@ -28,6 +28,7 @@ use crate::socket::context::Context;
 use crate::socket::state::State;
 use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::socket::transmission_control_block::InflightResetRequest;
+use crate::socket::transmission_control_block::TransmissionControlBlock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReqSeqNbrValidationResult {
@@ -81,12 +82,7 @@ pub(crate) fn handle_reconfig(
 
     for parameter in chunk.parameters {
         match parameter {
-            Parameter::OutgoingSsnResetRequest(OutgoingSsnResetRequestParameter {
-                request_seq_nbr,
-                sender_last_assigned_tsn,
-                streams,
-                ..
-            }) => {
+            Parameter::OutgoingSsnResetRequest(req) => {
                 if has_seen_outgoing_reset_request {
                     ctx.events.borrow_mut().add(SocketEvent::OnError(
                         ErrorKind::ProtocolViolation,
@@ -97,148 +93,13 @@ pub(crate) fn handle_reconfig(
                 }
                 has_seen_outgoing_reset_request = true;
 
-                let validation_result =
-                    validate_req_seq_nbr(request_seq_nbr, tcb.last_processed_req_seq_nbr);
-
-                if validation_result == ReqSeqNbrValidationResult::BadSequenceNumber {
-                    responses.push(Parameter::ReconfigurationResponse(
-                        ReconfigurationResponseParameter {
-                            response_seq_nbr: request_seq_nbr,
-                            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
-                            sender_next_tsn: None,
-                            receiver_next_tsn: None,
-                        },
-                    ));
-                    continue;
-                }
-
-                if validation_result == ReqSeqNbrValidationResult::Retransmission
-                    && tcb.last_processed_req_result != ReconfigurationResponseResult::InProgress
-                {
-                    responses.push(Parameter::ReconfigurationResponse(
-                        ReconfigurationResponseParameter {
-                            response_seq_nbr: request_seq_nbr,
-                            result: tcb.last_processed_req_result,
-                            sender_next_tsn: None,
-                            receiver_next_tsn: None,
-                        },
-                    ));
-                    continue;
-                }
-
-                tcb.last_processed_req_seq_nbr = request_seq_nbr;
-                tcb.last_processed_req_result = if sender_last_assigned_tsn
-                    > tcb.data_tracker.last_cumulative_acked_tsn()
-                {
-                    // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-                    //
-                    //   E2: If the Sender's Last Assigned TSN is greater than the
-                    //   cumulative acknowledgment point, then the endpoint MUST enter
-                    //   "deferred reset processing".
-                    //
-                    //   [...] If the endpoint enters "deferred reset processing", it MUST
-                    //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
-                    //   indicating "In progress" and MUST send the RE-CONFIG chunk.
-                    tcb.reassembly_queue.enter_deferred_reset(sender_last_assigned_tsn, &streams);
-                    ReconfigurationResponseResult::InProgress
-                } else {
-                    // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-                    //
-                    //   E3: If no stream numbers are listed in the parameter, then all
-                    //   incoming streams MUST be reset to 0 as the next expected SSN. If
-                    //   specific stream numbers are listed, then only these specific
-                    //   streams MUST be reset to 0, and all other non-listed SSNs remain
-                    //   unchanged.
-                    //
-                    //   E4: Any queued TSNs (queued at step E2) MUST now be released and
-                    //   processed normally."
-                    tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&streams);
-                    ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(streams));
-                    ReconfigurationResponseResult::SuccessPerformed
-                };
-                responses.push(Parameter::ReconfigurationResponse(
-                    ReconfigurationResponseParameter {
-                        response_seq_nbr: request_seq_nbr,
-                        result: tcb.last_processed_req_result,
-                        sender_next_tsn: None,
-                        receiver_next_tsn: None,
-                    },
-                ));
+                handle_outgoing_reset_request(tcb, ctx, req, &mut responses);
             }
-            Parameter::IncomingSsnResetRequest(IncomingSsnResetRequestParameter {
-                request_seq_nbr,
-                ..
-            }) => {
-                let validation_result =
-                    validate_req_seq_nbr(request_seq_nbr, tcb.last_processed_req_seq_nbr);
-                if validation_result == ReqSeqNbrValidationResult::Valid
-                    || validation_result == ReqSeqNbrValidationResult::Retransmission
-                {
-                    responses.push(Parameter::ReconfigurationResponse(
-                        ReconfigurationResponseParameter {
-                            response_seq_nbr: request_seq_nbr,
-                            result: ReconfigurationResponseResult::SuccessNothingToDo,
-                            sender_next_tsn: None,
-                            receiver_next_tsn: None,
-                        },
-                    ));
-                    tcb.last_processed_req_seq_nbr = request_seq_nbr;
-                    tcb.last_processed_req_result =
-                        ReconfigurationResponseResult::SuccessNothingToDo;
-                } else {
-                    responses.push(Parameter::ReconfigurationResponse(
-                        ReconfigurationResponseParameter {
-                            response_seq_nbr: request_seq_nbr,
-                            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
-                            sender_next_tsn: None,
-                            receiver_next_tsn: None,
-                        },
-                    ));
-                }
+            Parameter::IncomingSsnResetRequest(req) => {
+                handle_incoming_reset_request(tcb, req, &mut responses);
             }
-            Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
-                response_seq_nbr,
-                result,
-                ..
-            }) => {
-                if let CurrentResetRequest::Inflight(InflightResetRequest {
-                    request_sequence_number,
-                    request,
-                }) = &tcb.current_reset_request
-                {
-                    if response_seq_nbr == *request_sequence_number {
-                        tcb.reconfig_timer.stop();
-
-                        tcb.current_reset_request = match result {
-                            ReconfigurationResponseResult::SuccessNothingToDo
-                            | ReconfigurationResponseResult::SuccessPerformed => {
-                                ctx.events.borrow_mut().add(SocketEvent::OnStreamsResetPerformed(
-                                    request.streams.clone(),
-                                ));
-                                ctx.send_queue.commit_reset_streams();
-
-                                CurrentResetRequest::None
-                            }
-                            ReconfigurationResponseResult::InProgress => {
-                                tcb.reconfig_timer.set_duration(tcb.rto.rto());
-                                tcb.reconfig_timer.start(now);
-
-                                CurrentResetRequest::Prepared(request.clone())
-                            }
-                            ReconfigurationResponseResult::Denied
-                            | ReconfigurationResponseResult::ErrorWrongSSN
-                            | ReconfigurationResponseResult::ErrorRequestAlreadyInProgress
-                            | ReconfigurationResponseResult::ErrorBadSequenceNumber => {
-                                ctx.events.borrow_mut().add(SocketEvent::OnStreamsResetFailed(
-                                    request.streams.clone(),
-                                ));
-                                ctx.send_queue.rollback_reset_streams();
-
-                                CurrentResetRequest::None
-                            }
-                        }
-                    }
-                }
+            Parameter::ReconfigurationResponse(resp) => {
+                handle_reconfiguration_response(tcb, ctx, now, resp);
             }
             _ => {}
         }
@@ -256,6 +117,148 @@ pub(crate) fn handle_reconfig(
     // this request to finish, continue resetting them. Also, if a response was processed,
     // pending to-be-reset streams may now have become unpaused. Try to send more DATA chunks.
     ctx.send_buffered_packets(state, now);
+}
+
+fn handle_outgoing_reset_request(
+    tcb: &mut TransmissionControlBlock,
+    ctx: &mut Context,
+    req: OutgoingSsnResetRequestParameter,
+    responses: &mut Vec<Parameter>,
+) {
+    let validation_result =
+        validate_req_seq_nbr(req.request_seq_nbr, tcb.last_processed_req_seq_nbr);
+
+    if validation_result == ReqSeqNbrValidationResult::BadSequenceNumber {
+        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
+            response_seq_nbr: req.request_seq_nbr,
+            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
+            sender_next_tsn: None,
+            receiver_next_tsn: None,
+        }));
+        return;
+    }
+
+    if validation_result == ReqSeqNbrValidationResult::Retransmission
+        && tcb.last_processed_req_result != ReconfigurationResponseResult::InProgress
+    {
+        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
+            response_seq_nbr: req.request_seq_nbr,
+            result: tcb.last_processed_req_result,
+            sender_next_tsn: None,
+            receiver_next_tsn: None,
+        }));
+        return;
+    }
+
+    tcb.last_processed_req_seq_nbr = req.request_seq_nbr;
+    tcb.last_processed_req_result =
+        if req.sender_last_assigned_tsn > tcb.data_tracker.last_cumulative_acked_tsn() {
+            // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+            //
+            //   E2: If the Sender's Last Assigned TSN is greater than the
+            //   cumulative acknowledgment point, then the endpoint MUST enter
+            //   "deferred reset processing".
+            //
+            //   [...] If the endpoint enters "deferred reset processing", it MUST
+            //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
+            //   indicating "In progress" and MUST send the RE-CONFIG chunk.
+            tcb.reassembly_queue.enter_deferred_reset(req.sender_last_assigned_tsn, &req.streams);
+            ReconfigurationResponseResult::InProgress
+        } else {
+            // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+            //
+            //   E3: If no stream numbers are listed in the parameter, then all
+            //   incoming streams MUST be reset to 0 as the next expected SSN. If
+            //   specific stream numbers are listed, then only these specific
+            //   streams MUST be reset to 0, and all other non-listed SSNs remain
+            //   unchanged.
+            //
+            //   E4: Any queued TSNs (queued at step E2) MUST now be released and
+            //   processed normally."
+            tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&req.streams);
+            ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(req.streams));
+            ReconfigurationResponseResult::SuccessPerformed
+        };
+    responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
+        response_seq_nbr: req.request_seq_nbr,
+        result: tcb.last_processed_req_result,
+        sender_next_tsn: None,
+        receiver_next_tsn: None,
+    }));
+}
+
+fn handle_incoming_reset_request(
+    tcb: &mut TransmissionControlBlock,
+    req: IncomingSsnResetRequestParameter,
+    responses: &mut Vec<Parameter>,
+) {
+    let validation_result =
+        validate_req_seq_nbr(req.request_seq_nbr, tcb.last_processed_req_seq_nbr);
+    if validation_result == ReqSeqNbrValidationResult::Valid
+        || validation_result == ReqSeqNbrValidationResult::Retransmission
+    {
+        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
+            response_seq_nbr: req.request_seq_nbr,
+            result: ReconfigurationResponseResult::SuccessNothingToDo,
+            sender_next_tsn: None,
+            receiver_next_tsn: None,
+        }));
+        tcb.last_processed_req_seq_nbr = req.request_seq_nbr;
+        tcb.last_processed_req_result = ReconfigurationResponseResult::SuccessNothingToDo;
+    } else {
+        responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
+            response_seq_nbr: req.request_seq_nbr,
+            result: ReconfigurationResponseResult::ErrorBadSequenceNumber,
+            sender_next_tsn: None,
+            receiver_next_tsn: None,
+        }));
+    }
+}
+
+fn handle_reconfiguration_response(
+    tcb: &mut TransmissionControlBlock,
+    ctx: &mut Context,
+    now: SocketTime,
+    resp: ReconfigurationResponseParameter,
+) {
+    if let CurrentResetRequest::Inflight(InflightResetRequest {
+        request_sequence_number,
+        request,
+    }) = &tcb.current_reset_request
+    {
+        if resp.response_seq_nbr == *request_sequence_number {
+            tcb.reconfig_timer.stop();
+
+            tcb.current_reset_request = match resp.result {
+                ReconfigurationResponseResult::SuccessNothingToDo
+                | ReconfigurationResponseResult::SuccessPerformed => {
+                    ctx.events
+                        .borrow_mut()
+                        .add(SocketEvent::OnStreamsResetPerformed(request.streams.clone()));
+                    ctx.send_queue.commit_reset_streams();
+
+                    CurrentResetRequest::None
+                }
+                ReconfigurationResponseResult::InProgress => {
+                    tcb.reconfig_timer.set_duration(tcb.rto.rto());
+                    tcb.reconfig_timer.start(now);
+
+                    CurrentResetRequest::Prepared(request.clone())
+                }
+                ReconfigurationResponseResult::Denied
+                | ReconfigurationResponseResult::ErrorWrongSSN
+                | ReconfigurationResponseResult::ErrorRequestAlreadyInProgress
+                | ReconfigurationResponseResult::ErrorBadSequenceNumber => {
+                    ctx.events
+                        .borrow_mut()
+                        .add(SocketEvent::OnStreamsResetFailed(request.streams.clone()));
+                    ctx.send_queue.rollback_reset_streams();
+
+                    CurrentResetRequest::None
+                }
+            }
+        }
+    }
 }
 
 /// Handles the stream reconfiguration timers.
