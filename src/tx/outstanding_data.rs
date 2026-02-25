@@ -212,6 +212,34 @@ impl OutstandingData {
         }
     }
 
+    pub(crate) fn is_consistent(&self) -> bool {
+        let mut actual_unacked_payload_bytes = 0;
+        let mut actual_unacked_items = 0;
+        let mut actual_combined_to_be_retransmitted = BTreeSet::new();
+
+        let mut tsn = self.last_cumulative_tsn_ack;
+        for item in &self.outstanding_data {
+            tsn += 1;
+            if item.is_outstanding() {
+                actual_unacked_payload_bytes +=
+                    round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
+                actual_unacked_items += 1;
+            }
+
+            if item.should_be_retransmitted() {
+                actual_combined_to_be_retransmitted.insert(tsn);
+            }
+        }
+
+        let mut combined_to_be_retransmitted = BTreeSet::new();
+        combined_to_be_retransmitted.extend(self.to_be_retransmitted.iter());
+        combined_to_be_retransmitted.extend(self.to_be_fast_retransmitted.iter());
+
+        actual_unacked_payload_bytes == self.unacked_bytes
+            && actual_unacked_items == self.unacked_items
+            && actual_combined_to_be_retransmitted == combined_to_be_retransmitted
+    }
+
     // Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
     pub fn handle_sack(
         &mut self,
@@ -243,6 +271,7 @@ impl OutstandingData {
             cumulative_tsn_ack_advanced,
             &mut ack_info,
         );
+        debug_assert!(self.is_consistent());
         ack_info
     }
 
@@ -447,6 +476,7 @@ impl OutstandingData {
         //   subsequent Fast Retransmit. However, as they are marked for retransmission, they will
         //   be retransmitted later on as soon as cwnd allows."
         self.to_be_retransmitted.append(&mut tsns);
+        debug_assert!(self.is_consistent());
         chunks
     }
 
@@ -496,6 +526,7 @@ impl OutstandingData {
         for tsn in tsns_to_expire {
             self.abandon_all_for(tsn);
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn is_empty(&self) -> bool {
@@ -567,9 +598,11 @@ impl OutstandingData {
                 item.data.mid
             );
             self.abandon_all_for(tsn);
+            debug_assert!(self.is_consistent());
             return None;
         }
 
+        debug_assert!(self.is_consistent());
         Some(tsn)
     }
 
@@ -648,6 +681,7 @@ impl OutstandingData {
         for tsn in &tsns_to_nack {
             self.nack_chunk(*tsn, true, false);
         }
+        debug_assert!(self.is_consistent());
     }
 
     /// Creates a FORWARD-TSN chunk.
