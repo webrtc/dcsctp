@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
+ - Possible incorrect RTT calculation on packet loss.
+
 ## 0.1.10 - 2025-02-26
 
 ### Fixed
