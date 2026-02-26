@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.10 - 2025-02-26
+
 ### Fixed
 
  - Relaxed sequence number handling for stream reset requests.
