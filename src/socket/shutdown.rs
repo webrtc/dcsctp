@@ -262,7 +262,7 @@ pub(crate) fn maybe_send_shutdown_on_packet_received(
 
 pub(crate) fn maybe_send_shutdown(state: &mut State, ctx: &mut Context, now: SocketTime) {
     let State::ShutdownPending(tcb) = state else { unreachable!() };
-    if tcb.retransmission_queue.unacked_bytes() != 0 {
+    if tcb.retransmission_queue.unacked_items() != 0 {
         // Not ready to shutdown yet.
         return;
     }
@@ -292,7 +292,7 @@ pub(crate) fn maybe_send_shutdown(state: &mut State, ctx: &mut Context, now: Soc
 
 pub(crate) fn maybe_send_shutdown_ack(state: &mut State, ctx: &mut Context, now: SocketTime) {
     let State::ShutdownReceived(tcb) = state else { unreachable!() };
-    if tcb.retransmission_queue.unacked_bytes() != 0 {
+    if tcb.retransmission_queue.unacked_items() != 0 {
         // Not ready to shutdown yet.
         return;
     }
