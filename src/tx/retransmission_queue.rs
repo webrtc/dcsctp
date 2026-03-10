@@ -204,12 +204,12 @@ impl RetransmissionQueue {
 
     fn handle_increased_cumulative_tsn_ack(
         &mut self,
-        unacked_bytes: usize,
-        total_bytes_acked: usize,
+        unacked_payload_bytes: usize,
+        total_payload_bytes_acked: usize,
     ) {
         // Allow some margin for classifying as fully utilized, due to e.g. that too small packets
         // are not sent + overhead.
-        let is_fully_utilized = unacked_bytes + self.mtu >= self.cwnd;
+        let is_fully_utilized = unacked_payload_bytes + self.mtu >= self.cwnd;
         let old_cwnd = self.cwnd;
 
         // TODO: Make the implementation compliant with RFC 9260.
@@ -229,7 +229,7 @@ impl RetransmissionQueue {
                     //      and
                     //
                     //   2. L times the destination's PMDCS.
-                    self.cwnd += min(total_bytes_acked, self.mtu);
+                    self.cwnd += min(total_payload_bytes_acked, self.mtu);
                     log::debug!("SS increase cwnd={} ({})", self.cwnd, old_cwnd);
                 }
             }
@@ -242,7 +242,7 @@ impl RetransmissionQueue {
                 //   including chunks acknowledged by the new Cumulative TSN Ack, by Gap Ack Blocks,
                 //   and by the number of bytes of duplicated chunks reported in Duplicate TSNs.
                 let old_pba = self.partial_bytes_acked;
-                self.partial_bytes_acked += total_bytes_acked;
+                self.partial_bytes_acked += total_payload_bytes_acked;
                 if self.partial_bytes_acked >= self.cwnd && is_fully_utilized {
                     // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.2>:
                     //
@@ -330,7 +330,7 @@ impl RetransmissionQueue {
         }
 
         let old_last_cumulative_tsn_ack = self.outstanding_data.last_cumulative_acked_tsn();
-        let old_unacked_bytes = self.outstanding_data.unacked_bytes();
+        let old_unacked_bytes = self.outstanding_data.unacked_payload_bytes();
         let old_rwnd = self.rwnd();
 
         let rtt = if sack.gap_ack_blocks.is_empty() {
@@ -366,7 +366,7 @@ impl RetransmissionQueue {
             "Received SACK, cum_tsn_ack={} ({}), unacked_bytes={} ({}), rwnd={} ({})",
             sack.cumulative_tsn_ack,
             old_last_cumulative_tsn_ack,
-            self.outstanding_data.unacked_bytes(),
+            self.outstanding_data.unacked_payload_bytes(),
             old_unacked_bytes,
             self.rwnd(),
             old_rwnd
@@ -382,7 +382,10 @@ impl RetransmissionQueue {
             // Note: It may be started again in a bit further down.
             self.t3_rtx.stop();
 
-            self.handle_increased_cumulative_tsn_ack(old_unacked_bytes, ack_info.bytes_acked);
+            self.handle_increased_cumulative_tsn_ack(
+                old_unacked_bytes,
+                ack_info.payload_bytes_acked,
+            );
         }
 
         if ack_info.has_packet_loss {
@@ -393,7 +396,7 @@ impl RetransmissionQueue {
         //
         //   When an outstanding TSN is acknowledged [...] the endpoint SHOULD clear the error
         //   counter [...].
-        let reset_error_counter = ack_info.bytes_acked > 0;
+        let reset_error_counter = ack_info.payload_bytes_acked > 0;
 
         self.start_t3_rtx_if_outstanding_data(now);
 
@@ -411,7 +414,7 @@ impl RetransmissionQueue {
         }
 
         let old_cwnd = self.cwnd;
-        let old_unacked_bytes = self.unacked_bytes();
+        let old_unacked_payload_bytes = self.unacked_payload_bytes();
 
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.3>:
         //
@@ -448,12 +451,12 @@ impl RetransmissionQueue {
         // This is already done by the timer implementation.
 
         log::debug!(
-            "t3-rtx expired. new cwnd={} ({}), ssthresh={}, unacked_bytes {} ({})",
+            "t3-rtx expired. new cwnd={} ({}), ssthresh={}, unacked_payload_bytes {} ({})",
             self.cwnd,
             old_cwnd,
             self.ssthresh,
-            self.unacked_bytes(),
-            old_unacked_bytes
+            self.unacked_payload_bytes(),
+            old_unacked_payload_bytes
         );
         true
     }
@@ -471,7 +474,7 @@ impl RetransmissionQueue {
     ) -> Vec<(Tsn, Data)> {
         debug_assert!(is_divisible_by_4!(bytes_remaining_in_packet));
 
-        let old_unacked_bytes = self.unacked_bytes();
+        let old_unacked_payload_bytes = self.unacked_payload_bytes();
 
         let to_be_sent = self
             .outstanding_data
@@ -495,20 +498,20 @@ impl RetransmissionQueue {
             self.t3_rtx.start(now);
         }
 
-        let bytes_retransmitted: usize = to_be_sent
+        let packet_bytes_retransmitted: usize = to_be_sent
             .iter()
             .map(|(_, data)| round_up_to_4!(self.data_chunk_header_size + data.payload.len()))
             .sum();
 
         self.rtx_packets_count += 1;
-        self.rtx_bytes_count += bytes_retransmitted as u64;
+        self.rtx_bytes_count += packet_bytes_retransmitted as u64;
 
         log::debug!(
-            "Fast-retransmitting TSN {} - {} bytes. unacked_bytes={} ({})",
+            "Fast-retransmitting TSN {} - {} bytes. unacked_payload_bytes={} ({})",
             to_be_sent.iter().map(|(tsn, _)| tsn.to_string()).collect::<Vec<_>>().join(","),
-            bytes_retransmitted,
-            self.unacked_bytes(),
-            old_unacked_bytes
+            to_be_sent.iter().map(|(_, data)| data.payload.len()).sum::<usize>(),
+            self.unacked_payload_bytes(),
+            old_unacked_payload_bytes
         );
 
         to_be_sent
@@ -538,21 +541,21 @@ impl RetransmissionQueue {
     ) -> Vec<(Tsn, Data)> {
         debug_assert!(is_divisible_by_4!(bytes_remaining_in_packet));
 
-        let old_unacked_bytes = self.unacked_bytes();
+        let old_unacked_payload_bytes = self.unacked_payload_bytes();
         let old_rwnd = self.rwnd();
 
         let mut max_bytes =
             round_down_to_4!(min(self.max_bytes_to_send(), bytes_remaining_in_packet));
         let mut to_be_sent = self.outstanding_data.get_chunks_to_be_retransmitted(now, max_bytes);
-        let bytes_retransmitted: usize = to_be_sent
+        let packet_bytes_retransmitted: usize = to_be_sent
             .iter()
             .map(|(_, data)| round_up_to_4!(self.data_chunk_header_size + data.payload.len()))
             .sum();
-        max_bytes -= bytes_retransmitted;
+        max_bytes -= packet_bytes_retransmitted;
 
         if !to_be_sent.is_empty() {
             self.rtx_packets_count += 1;
-            self.rtx_bytes_count += bytes_retransmitted as u64;
+            self.rtx_bytes_count += packet_bytes_retransmitted as u64;
         }
 
         while max_bytes > self.data_chunk_header_size {
@@ -590,16 +593,12 @@ impl RetransmissionQueue {
             if !self.t3_rtx.is_running() {
                 self.t3_rtx.start(now);
             }
-            let sent_bytes: usize = to_be_sent
-                .iter()
-                .map(|(_, data)| round_up_to_4!(self.data_chunk_header_size + data.payload.len()))
-                .sum();
             log::debug!(
-                "Sending TSN {} - {} bytes. unacked_bytes={} ({}),  cwnd={}, rwnd={} ({})",
+                "Sending TSN {} - {} bytes. unacked_payload_bytes={} ({}),  cwnd={}, rwnd={} ({})",
                 to_be_sent.iter().map(|(tsn, _)| tsn.to_string()).collect::<Vec<_>>().join(","),
-                sent_bytes,
-                self.unacked_bytes(),
-                old_unacked_bytes,
+                to_be_sent.iter().map(|(_, data)| data.payload.len()).sum::<usize>(),
+                self.unacked_payload_bytes(),
+                old_unacked_payload_bytes,
                 self.cwnd,
                 self.rwnd(),
                 old_rwnd
@@ -648,7 +647,7 @@ impl RetransmissionQueue {
 
     /// Returns the current receiver window size.
     pub fn rwnd(&self) -> usize {
-        self.a_rwnd.saturating_sub(self.outstanding_data.unacked_bytes())
+        self.a_rwnd.saturating_sub(self.outstanding_data.unacked_payload_bytes())
     }
 
     pub fn rtx_packets_count(&self) -> usize {
@@ -659,9 +658,9 @@ impl RetransmissionQueue {
         self.rtx_bytes_count
     }
 
-    /// Returns the number of bytes of packets that are in-flight.
-    pub fn unacked_bytes(&self) -> usize {
-        self.outstanding_data.unacked_bytes()
+    /// Returns the number of bytes of payload that are in-flight.
+    pub fn unacked_payload_bytes(&self) -> usize {
+        self.outstanding_data.unacked_payload_bytes()
     }
 
     /// Returns the number of DATA chunks that are in-flight.
@@ -672,8 +671,8 @@ impl RetransmissionQueue {
     /// Returns the number of bytes that may be sent in a single packet according to the congestion
     /// control algorithm.
     fn max_bytes_to_send(&self) -> usize {
-        let left = self.cwnd.saturating_sub(self.unacked_bytes());
-        if self.unacked_bytes() == 0 {
+        let left = self.cwnd.saturating_sub(self.unacked_payload_bytes());
+        if self.unacked_payload_bytes() == 0 {
             // TODO: Make the implementation compliant with RFC 9260.
             //
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.1>:
@@ -1382,7 +1381,7 @@ mod tests {
 
         rtx.set_cwnd(CWND);
         assert_eq!(rtx.cwnd(), CWND);
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
 
         sq.add(
@@ -1399,7 +1398,7 @@ mod tests {
             rtx.get_chunk_states_for_testing(),
             [(Tsn(9), ChunkState::Acked), (Tsn(10), ChunkState::InFlight),]
         );
-        assert_eq!(rtx.unacked_bytes(), 1000 + data_chunk::HEADER_SIZE);
+        assert_eq!(rtx.unacked_payload_bytes(), 1000);
         assert_eq!(rtx.unacked_items(), 1);
 
         // Will force chunks to be retransmitted
@@ -1410,13 +1409,13 @@ mod tests {
             rtx.get_chunk_states_for_testing(),
             [(Tsn(9), ChunkState::Acked), (Tsn(10), ChunkState::ToBeRetransmitted),]
         );
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
         assert_eq!(
             get_tsns(&rtx.get_chunks_to_send(now, 1500, |bytes, _| sq.produce(now, bytes))),
             [Tsn(10)]
         );
-        assert_eq!(rtx.unacked_bytes(), 1000 + data_chunk::HEADER_SIZE);
+        assert_eq!(rtx.unacked_payload_bytes(), 1000);
         assert_eq!(rtx.unacked_items(), 1);
     }
 
@@ -1941,7 +1940,7 @@ mod tests {
                 (Tsn(12), ChunkState::InFlight),
             ]
         );
-        assert_eq!(rtx.unacked_bytes(), (data_chunk::HEADER_SIZE + 4) * 3);
+        assert_eq!(rtx.unacked_payload_bytes(), 4 * 3);
         assert_eq!(rtx.unacked_items(), 3);
 
         // Will force chunks to be retransmitted
@@ -1957,7 +1956,7 @@ mod tests {
                 (Tsn(13), ChunkState::Abandoned),
             ]
         );
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
 
         assert_eq!(
@@ -1973,19 +1972,19 @@ mod tests {
 
         // Now ACK those, one at a time.
         handle_sack(&mut rtx, now, Tsn(10));
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
 
         handle_sack(&mut rtx, now, Tsn(11));
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
 
         handle_sack(&mut rtx, now, Tsn(12));
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
 
         handle_sack(&mut rtx, now, Tsn(13));
-        assert_eq!(rtx.unacked_bytes(), 0);
+        assert_eq!(rtx.unacked_payload_bytes(), 0);
         assert_eq!(rtx.unacked_items(), 0);
     }
 
@@ -2363,11 +2362,11 @@ mod tests {
             get_tsns(&rtx.get_chunks_to_send(now, 1500, |bytes, _| sq.produce(now, bytes))),
             [Tsn(10)]
         );
-        assert_eq!(rtx.unacked_bytes(), 1000 + data_chunk::HEADER_SIZE);
+        assert_eq!(rtx.unacked_payload_bytes(), 1000);
 
         handle_sack(&mut rtx, now, Tsn(10));
 
-        assert_eq!(rtx.cwnd(), CWND + 1000 + data_chunk::HEADER_SIZE);
+        assert_eq!(rtx.cwnd(), CWND + 1000);
     }
 
     #[test]
