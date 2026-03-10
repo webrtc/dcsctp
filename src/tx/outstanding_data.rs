@@ -84,8 +84,13 @@ enum NackAction {
 /// Contains variables scoped to a processing of an incoming SACK.
 #[derive(Debug)]
 pub(crate) struct AckInfo {
-    /// Bytes acked by increasing cumulative_tsn_ack and gap_ack_blocks.
-    pub bytes_acked: usize,
+    /// Bytes acked by increasing cumulative_tsn_ack and gap_ack_blocks, including DATA headers and
+    /// padding.
+    pub packet_bytes_acked: usize,
+
+    /// Payload bytes (excluding headers) acked by increasing cumulative_tsn_ack and
+    /// gap_ack_blocks.
+    pub payload_bytes_acked: usize,
 
     /// Indicates if this SACK indicates that packet loss has occurred. Just because a packet is
     /// missing in the SACK doesn't necessarily mean that there is packet loss as that packet might
@@ -257,7 +262,10 @@ pub(crate) struct OutstandingData {
     data_chunk_header_size: usize,
     last_cumulative_tsn_ack: Tsn,
     outstanding_data: VecDeque<Item>,
-    unacked_bytes: usize,
+    // Only payload, no padding or DATA headers.
+    unacked_payload_bytes: usize,
+    // Payload, padding and DATA headers.
+    unacked_packet_bytes: usize,
     unacked_items: usize,
     to_be_fast_retransmitted: BTreeSet<Tsn>,
     to_be_retransmitted: BTreeSet<Tsn>,
@@ -271,7 +279,8 @@ impl OutstandingData {
             data_chunk_header_size,
             last_cumulative_tsn_ack,
             outstanding_data: VecDeque::new(),
-            unacked_bytes: 0,
+            unacked_payload_bytes: 0,
+            unacked_packet_bytes: 0,
             unacked_items: 0,
             to_be_fast_retransmitted: BTreeSet::new(),
             to_be_retransmitted: BTreeSet::new(),
@@ -291,7 +300,8 @@ impl OutstandingData {
 
         let mut ack_info = AckInfo {
             highest_tsn_acked: cumulative_tsn_ack,
-            bytes_acked: 0,
+            packet_bytes_acked: 0,
+            payload_bytes_acked: 0,
             has_packet_loss: false,
             acked_lifecycle_ids: vec![],
             abandoned_lifecycle_ids: vec![],
@@ -419,7 +429,8 @@ impl OutstandingData {
         let action = item.nack(retransmit_now);
 
         if was_outstanding && !item.is_outstanding() {
-            self.unacked_bytes -=
+            self.unacked_payload_bytes -= item.data.payload.len();
+            self.unacked_packet_bytes -=
                 round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
             self.unacked_items -= 1;
         }
@@ -448,9 +459,11 @@ impl OutstandingData {
         if !item.is_acked() {
             let serialized_size =
                 round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
-            ack_info.bytes_acked += serialized_size;
+            ack_info.packet_bytes_acked += serialized_size;
+            ack_info.payload_bytes_acked += item.data.payload.len();
             if item.is_outstanding() {
-                self.unacked_bytes -= serialized_size;
+                self.unacked_payload_bytes -= item.data.payload.len();
+                self.unacked_packet_bytes -= serialized_size;
                 self.unacked_items -= 1;
             }
             if item.should_be_retransmitted() {
@@ -490,7 +503,8 @@ impl OutstandingData {
                 item.mark_as_retransmitted(now);
                 result.push((*tsn, item.data.clone()));
                 max_size -= size;
-                self.unacked_bytes += size;
+                self.unacked_payload_bytes += item.data.payload.len();
+                self.unacked_packet_bytes += size;
                 self.unacked_items += 1;
             }
             if max_size <= self.data_chunk_header_size {
@@ -538,8 +552,12 @@ impl OutstandingData {
         chunks
     }
 
-    pub fn unacked_bytes(&self) -> usize {
-        self.unacked_bytes
+    pub fn unacked_payload_bytes(&self) -> usize {
+        self.unacked_payload_bytes
+    }
+
+    pub fn unacked_packet_bytes(&self) -> usize {
+        self.unacked_packet_bytes
     }
 
     /// Returns the number of DATA chunks that are in-flight (not acked or nacked).
@@ -618,9 +636,10 @@ impl OutstandingData {
         // isn't a fragment of an already discarded message.
         debug_assert!(self.unsent_messages_to_discard.is_empty());
 
+        self.unacked_payload_bytes += data.payload.len();
         // All chunks are always padded to be even divisible by 4.
         let chunk_size = round_up_to_4!(self.data_chunk_header_size + data.payload.len());
-        self.unacked_bytes += chunk_size;
+        self.unacked_packet_bytes += chunk_size;
         self.unacked_items += 1;
         let tsn = self.next_tsn();
         let item = Item {
@@ -672,7 +691,8 @@ impl OutstandingData {
                     }
                     other.abandon();
                     if was_outstanding {
-                        self.unacked_bytes -=
+                        self.unacked_payload_bytes -= other.data.payload.len();
+                        self.unacked_packet_bytes -=
                             round_up_to_4!(self.data_chunk_header_size + other.data.payload.len());
                         self.unacked_items -= 1;
                     }
@@ -909,7 +929,8 @@ mod tests {
         let buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
 
         assert!(buf.is_empty());
-        assert_eq!(buf.unacked_bytes(), 0);
+        assert_eq!(buf.unacked_payload_bytes(), 0);
+        assert_eq!(buf.unacked_packet_bytes(), 0);
         assert_eq!(buf.unacked_items(), 0);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
@@ -925,7 +946,8 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
         let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
-        assert_eq!(buf.unacked_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(buf.unacked_payload_bytes(), 1);
+        assert_eq!(buf.unacked_packet_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(buf.unacked_items(), 1);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
@@ -945,11 +967,13 @@ mod tests {
         assert_eq!(tsn, Tsn(10));
         let ack = buf.handle_sack(Tsn(10), &[], false);
 
-        assert_eq!(ack.bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.payload_bytes_acked, 1);
+        assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(10));
         assert!(!ack.has_packet_loss);
 
-        assert_eq!(buf.unacked_bytes(), 0);
+        assert_eq!(buf.unacked_payload_bytes(), 0);
+        assert_eq!(buf.unacked_packet_bytes(), 0);
         assert_eq!(buf.unacked_items(), 0);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(10));
@@ -966,11 +990,13 @@ mod tests {
         assert_eq!(tsn, Tsn(10));
         let ack = buf.handle_sack(Tsn(9), &[], false);
 
-        assert_eq!(ack.bytes_acked, 0);
+        assert_eq!(ack.payload_bytes_acked, 0);
+        assert_eq!(ack.packet_bytes_acked, 0);
         assert_eq!(ack.highest_tsn_acked, Tsn(9));
         assert!(!ack.has_packet_loss);
 
-        assert_eq!(buf.unacked_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(buf.unacked_payload_bytes(), 1);
+        assert_eq!(buf.unacked_packet_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(buf.unacked_items(), 1);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
@@ -991,11 +1017,13 @@ mod tests {
 
         let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
 
-        assert_eq!(ack.bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.payload_bytes_acked, 1);
+        assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(11));
         assert!(!ack.has_packet_loss);
 
-        assert_eq!(buf.unacked_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(buf.unacked_payload_bytes(), 1);
+        assert_eq!(buf.unacked_packet_bytes(), DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(buf.unacked_items(), 1);
         assert!(!buf.has_data_to_be_retransmitted());
         assert_eq!(buf.last_cumulative_acked_tsn(), Tsn(9));
@@ -1047,7 +1075,8 @@ mod tests {
         assert!(!buf.has_data_to_be_retransmitted());
 
         let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
-        assert_eq!(ack.bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.payload_bytes_acked, 1);
+        assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
         assert!(ack.has_packet_loss);
 
@@ -1079,7 +1108,8 @@ mod tests {
         assert!(!buf.has_data_to_be_retransmitted());
 
         let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
-        assert_eq!(ack.bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.payload_bytes_acked, 1);
+        assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
         assert!(ack.has_packet_loss);
 
@@ -1128,7 +1158,8 @@ mod tests {
         assert!(!buf.has_data_to_be_retransmitted());
         assert!(!buf.has_unsent_messages_to_discard());
         let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
-        assert_eq!(ack.bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.payload_bytes_acked, 1);
+        assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
         assert!(ack.has_packet_loss);
 
@@ -1830,7 +1861,8 @@ mod tests {
         // Ack TSN=9,11,13 - 11 and 13 are newly acked, reflected in bytes_acked.
         let ack1 =
             buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2), GapAckBlock::new(4, 4)], false);
-        assert_eq!(ack1.bytes_acked, chunk_size * 2);
+        assert_eq!(ack1.payload_bytes_acked, 2);
+        assert_eq!(ack1.packet_bytes_acked, chunk_size * 2);
 
         // Advance time to expire the first message.
         buf.expire_outstanding_chunks(now + Duration::from_millis(200));
@@ -1850,7 +1882,8 @@ mod tests {
         let ack2 = buf.handle_sack(Tsn(13), &[], false);
 
         // Only TSN 10 and 12 should be counted as "newly acked" bytes.
-        assert_eq!(ack2.bytes_acked, chunk_size * 2);
+        assert_eq!(ack2.payload_bytes_acked, 2);
+        assert_eq!(ack2.packet_bytes_acked, chunk_size * 2);
     }
 
     #[test]
@@ -1877,8 +1910,9 @@ mod tests {
         let ack = buf.handle_sack(Tsn(11), &[], false);
 
         // Only the actual data (TSN 10) should contribute to bytes_acked, not TSN=11.
-        let expected_size = round_up_to_4!(DATA_CHUNK_HEADER_SIZE + 1);
-        assert_eq!(ack.bytes_acked, expected_size);
+        assert_eq!(ack.payload_bytes_acked, 1);
+        let expected_size = round_up_to_4!(DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
+        assert_eq!(ack.packet_bytes_acked, expected_size);
     }
 
     #[test]
