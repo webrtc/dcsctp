@@ -8,6 +8,11 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
+ - Align sender and receiver to signal advertised receiver window size as
+   payload bytes, excluding any headers.
+
 ## 0.1.11 - 2026-04-08
 
 ### Fixed
