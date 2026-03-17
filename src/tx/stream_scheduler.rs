@@ -105,6 +105,7 @@ impl StreamScheduler {
             if self.current_stream == Some(stream_id) {
                 self.current_stream = None;
             }
+            debug_assert!(self.is_consistent());
             return;
         }
 
@@ -118,6 +119,7 @@ impl StreamScheduler {
         active_stream.bytes_remaining = bytes_remaining;
         active_stream.next_vt =
             calculate_vt(active_stream, min(active_stream.bytes_remaining, self.max_payload_bytes));
+        debug_assert!(self.is_consistent());
     }
 
     /// Given space for `max_size` bytes, returns which stream that data should be produced from,
@@ -165,6 +167,30 @@ impl StreamScheduler {
                 self.current_stream = None;
             }
         }
+        debug_assert!(self.is_consistent());
+    }
+
+    fn is_consistent(&self) -> bool {
+        for (stream_id, stream) in &self.active_streams {
+            if stream.bytes_remaining == 0 {
+                log::error!("Stream {} is active but has 0 bytes remaining", stream_id);
+                return false;
+            }
+            if stream.next_vt < stream.start_vt {
+                log::error!(
+                    "Stream {} has next_vt {} < start_vt {}",
+                    stream_id,
+                    stream.next_vt,
+                    stream.start_vt
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn active_streams(&self) -> impl Iterator<Item = StreamId> + '_ {
+        self.active_streams.keys().cloned()
     }
 }
 
