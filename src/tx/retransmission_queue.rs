@@ -562,10 +562,11 @@ impl RetransmissionQueue {
         while max_bytes > self.data_chunk_header_size {
             debug_assert!(is_divisible_by_4!(max_bytes));
 
-            if let Some(chunk) = produce(
+            let chunk = produce(
                 max_bytes - self.data_chunk_header_size,
                 &self.outstanding_data.get_unsent_messages_to_discard(),
-            ) {
+            );
+            if let Some(chunk) = chunk {
                 let chunk_size =
                     round_up_to_4!(self.data_chunk_header_size + chunk.data.payload.len());
                 max_bytes -= chunk_size;
