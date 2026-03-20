@@ -44,7 +44,7 @@ impl DataSequencer {
             mid: self.message_id,
             fsn: self.fsn,
             ppid: PpId(53),
-            payload: payload.as_bytes().to_vec(),
+            payload: payload.as_bytes().to_vec().into(),
             is_beginning,
             is_end,
         };
@@ -68,7 +68,7 @@ impl DataSequencer {
             mid: self.message_id,
             fsn: self.fsn,
             ppid: PpId(53),
-            payload: payload.as_bytes().to_vec(),
+            payload: payload.as_bytes().to_vec().into(),
             is_beginning,
             is_end,
         };

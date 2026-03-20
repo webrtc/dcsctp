@@ -127,14 +127,14 @@ impl<K: ReassemblyKey> IntervalList<K> {
 
             left.end = right.end;
             left.has_end = right.has_end;
-            left.payload.push_back(data.payload.into());
+            left.payload.push_back(data.payload);
             left.payload.append(&mut right.payload);
             idx - 1
         } else if extend_left {
             let left = &mut self.intervals[idx - 1];
             left.end = key;
             left.has_end = data.is_end;
-            left.payload.push_back(data.payload.into());
+            left.payload.push_back(data.payload);
             idx - 1
         } else if extend_right {
             let right = &mut self.intervals[idx];
@@ -145,7 +145,7 @@ impl<K: ReassemblyKey> IntervalList<K> {
             if data.is_beginning {
                 right.ppid = data.ppid;
             }
-            right.payload.push_front(data.payload.into());
+            right.payload.push_front(data.payload);
             idx
         } else {
             // No merge possible, insert new isolated interval.
@@ -157,7 +157,7 @@ impl<K: ReassemblyKey> IntervalList<K> {
                     has_beginning: data.is_beginning,
                     has_end: data.is_end,
                     ppid: data.ppid,
-                    payload: VecDeque::from([data.payload.into()]),
+                    payload: VecDeque::from([data.payload]),
                 },
             );
             idx

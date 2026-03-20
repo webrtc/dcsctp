@@ -25,6 +25,7 @@ use crate::types::StreamKey;
 use crate::types::Tsn;
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
+use bytes::Bytes;
 use std::time::Duration;
 
 #[derive(Arbitrary, Debug)]
@@ -101,7 +102,7 @@ pub fn fuzz_outstanding_data(data: &[u8]) {
                     mid: Mid(mid),
                     is_beginning: true,
                     is_end: true,
-                    payload: vec![0; (payload_len % 1500) as usize + 1],
+                    payload: Bytes::from(vec![0; (payload_len % 1500) as usize + 1]),
                     ..Default::default()
                 };
 
