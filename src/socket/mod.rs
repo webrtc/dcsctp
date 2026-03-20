@@ -83,6 +83,7 @@ use crate::timer::BackoffAlgorithm;
 use crate::timer::Timer;
 use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
+use bytes::Bytes;
 #[cfg(not(test))]
 use log::info;
 #[cfg(not(test))]
@@ -319,12 +320,12 @@ impl DcSctpSocket for Socket {
         do_connect(&mut self.state, &mut self.ctx, now);
     }
 
-    fn handle_input(&mut self, packet: &[u8]) {
+    fn handle_input(&mut self, packet: Bytes) {
         self.ctx.rx_packets_count += 1;
         let now = *self.now.borrow();
-        log_packet(&self.name, now, false, packet);
+        log_packet(&self.name, now, false, &packet);
 
-        match SctpPacket::from_bytes(packet, &self.ctx.options) {
+        match SctpPacket::from_bytes(&packet, &self.ctx.options) {
             Err(_e) => {
                 self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                     ErrorKind::ParseFailed,

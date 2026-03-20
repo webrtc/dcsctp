@@ -634,7 +634,11 @@ mod tests {
     }
 
     fn add(q: &mut SendQueue, sid: StreamId, ppid: PpId, payload: Vec<u8>) {
-        q.add(START_TIME, Message::new(sid, ppid, payload), &SendOptions { ..Default::default() });
+        q.add(
+            START_TIME,
+            Message::new(sid, ppid, payload.into()),
+            &SendOptions { ..Default::default() },
+        );
     }
 
     #[test]
@@ -731,7 +735,7 @@ mod tests {
         let now = START_TIME;
         q.add(
             now,
-            Message::new(StreamId(1), PpId(54), vec![0; 100]),
+            Message::new(StreamId(1), PpId(54), vec![0; 100].into()),
             &SendOptions {
                 lifetime: Some(Duration::from_millis(1000)),
                 lifecycle_id: LifecycleId::new(1),
@@ -760,7 +764,7 @@ mod tests {
 
         q.add(
             START_TIME,
-            Message::new(StreamId(1), PpId(54), vec![0; 20]),
+            Message::new(StreamId(1), PpId(54), vec![0; 20].into()),
             &SendOptions { unordered: true, ..Default::default() },
         );
 
@@ -779,7 +783,7 @@ mod tests {
         // Default is no expiry
         q.add(
             now,
-            Message::new(StreamId(1), PpId(50), vec![0; 20]),
+            Message::new(StreamId(1), PpId(50), vec![0; 20].into()),
             &SendOptions { ..Default::default() },
         );
         assert!(q.produce(now, 100).is_some());
@@ -787,7 +791,7 @@ mod tests {
         // Add and consume within lifetime
         q.add(
             now,
-            Message::new(StreamId(1), PpId(50), vec![0; 20]),
+            Message::new(StreamId(1), PpId(50), vec![0; 20].into()),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
         now = now + Duration::from_secs(2);
@@ -796,7 +800,7 @@ mod tests {
         // Add and consume just outside lifetime
         q.add(
             now,
-            Message::new(StreamId(1), PpId(50), vec![0; 20]),
+            Message::new(StreamId(1), PpId(50), vec![0; 20].into()),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
         now = now + Duration::from_millis(2001);
@@ -805,7 +809,7 @@ mod tests {
         // A long time after expiry.
         q.add(
             now,
-            Message::new(StreamId(1), PpId(50), vec![0; 20]),
+            Message::new(StreamId(1), PpId(50), vec![0; 20].into()),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
         now = now + Duration::from_secs(1000);
@@ -814,12 +818,12 @@ mod tests {
         // Expire one message, but produce the second that is not expired.
         q.add(
             now,
-            Message::new(StreamId(1), PpId(50), vec![0; 20]),
+            Message::new(StreamId(1), PpId(50), vec![0; 20].into()),
             &SendOptions { lifetime: Some(Duration::from_secs(2)), ..Default::default() },
         );
         q.add(
             now,
-            Message::new(StreamId(1), PpId(51), vec![0; 20]),
+            Message::new(StreamId(1), PpId(51), vec![0; 20].into()),
             &SendOptions { lifetime: Some(Duration::from_secs(4)), ..Default::default() },
         );
         now = now + Duration::from_millis(2001);
@@ -1468,7 +1472,7 @@ mod tests {
         let now = START_TIME;
         q.add(
             now,
-            Message::new(StreamId(1), PpId(54), vec![0; 20]),
+            Message::new(StreamId(1), PpId(54), vec![0; 20].into()),
             &SendOptions {
                 lifetime: Some(Duration::from_millis(1000)),
                 lifecycle_id: LifecycleId::new(1),
@@ -1494,12 +1498,12 @@ mod tests {
         let now = START_TIME;
         q.add(
             now,
-            Message::new(StreamId(1), PPID, vec![0; 120]),
+            Message::new(StreamId(1), PPID, vec![0; 120].into()),
             &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
         );
         q.add(
             now,
-            Message::new(StreamId(1), PPID, vec![0; 120]),
+            Message::new(StreamId(1), PPID, vec![0; 120].into()),
             &SendOptions { lifecycle_id: LifecycleId::new(2), ..Default::default() },
         );
 
@@ -1526,7 +1530,7 @@ mod tests {
         let now = START_TIME;
         q.add(
             now,
-            Message::new(StreamId(1), PPID, vec![0; 120]),
+            Message::new(StreamId(1), PPID, vec![0; 120].into()),
             &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
         );
 
@@ -1549,7 +1553,7 @@ mod tests {
 
         q.add(
             START_TIME,
-            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            Message::new(StreamId(1), PpId(53), vec![0; 100].into()),
             &SendOptions::default(),
         );
 
@@ -1572,7 +1576,7 @@ mod tests {
         // On the restored queue, consuming a new message should yield the next ssn.
         q2.add(
             START_TIME,
-            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            Message::new(StreamId(1), PpId(53), vec![0; 100].into()),
             &SendOptions::default(),
         );
 

@@ -135,7 +135,7 @@ impl UnorderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         if data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
-            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload));
+            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload.into()));
             return 0;
         }
         let key = TraditionalKey { ssn: Ssn(0), tsn };
@@ -148,7 +148,7 @@ impl UnorderedStream {
             let payload = interval.collect_payload();
             let total_payload_len = payload.len();
 
-            on_reassembled(Message::new(stream_id, ppid, payload));
+            on_reassembled(Message::new(stream_id, ppid, payload.into()));
             queued_bytes - (total_payload_len as isize)
         } else {
             queued_bytes
@@ -207,7 +207,7 @@ impl OrderedStream {
             let payload = interval.collect_payload();
 
             assembled_bytes += payload.len();
-            on_reassembled(Message::new(stream_id, ppid, payload));
+            on_reassembled(Message::new(stream_id, ppid, payload.into()));
             self.next_ssn += 1;
         }
 
@@ -224,7 +224,7 @@ impl OrderedStream {
 
         if data.ssn == self.next_ssn && data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
-            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload));
+            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload.into()));
             self.next_ssn += 1;
             let assembled = self.try_to_assemble_messages(on_reassembled);
             return -(assembled as isize);
