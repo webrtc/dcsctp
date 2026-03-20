@@ -14,6 +14,7 @@
 
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::SocketHandoverState;
+use bytes::Bytes;
 use std::fmt;
 use std::num::NonZeroU64;
 use std::ops::Add;
@@ -175,12 +176,12 @@ pub struct Message {
     pub ppid: PpId,
 
     /// The payload of the message.
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 impl Message {
     /// Creates a new `Message`.
-    pub fn new(stream_id: StreamId, ppid: PpId, payload: Vec<u8>) -> Self {
+    pub fn new(stream_id: StreamId, ppid: PpId, payload: Bytes) -> Self {
         Message { stream_id, ppid, payload }
     }
 }
@@ -490,7 +491,7 @@ impl Default for Options {
 #[derive(Debug)]
 pub enum SocketEvent {
     /// Generated when the library wants a datagram packet to be sent.
-    SendPacket(Vec<u8>),
+    SendPacket(Bytes),
 
     /// Generated when calling [`DcSctpSocket::connect`] succeeds, but also for incoming successful
     /// connection attempts.
@@ -737,7 +738,7 @@ pub trait DcSctpSocket {
     fn get_next_message(&mut self) -> Option<Message>;
 
     /// To be called when an incoming SCTP packet is to be processed.
-    fn handle_input(&mut self, packet: &[u8]);
+    fn handle_input(&mut self, packet: Bytes);
 
     /// Advances the internal clock to a specific point in the socket's lifetime.
     ///

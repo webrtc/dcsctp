@@ -38,6 +38,7 @@ use crate::api::handover::HandoverSocketState as DcSctpHandoverSocketState;
 use crate::api::handover::HandoverTransmission as DcSctpHandoverTransmission;
 use crate::api::handover::HandoverUnorderedStream as DcSctpHandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState as DcSctpSocketHandoverState;
+use bytes::Bytes;
 use std::time::Duration;
 
 const MAX_LIFETIME_MS: u64 = 3600 * 1000;
@@ -551,7 +552,7 @@ impl From<DcSctpSocketEvent> for bridge::Event {
         match event {
             DcSctpSocketEvent::SendPacket(p) => bridge::Event {
                 event_type: bridge::EventType::SendPacket,
-                packet: p,
+                packet: p.to_vec(),
                 ..Default::default()
             },
             DcSctpSocketEvent::OnConnected() => {
@@ -932,7 +933,7 @@ fn set_buffered_amount_low_threshold(socket: &mut DcSctpSocket, stream_id: u16, 
 }
 
 fn handle_input(socket: &mut DcSctpSocket, data: &[u8]) {
-    socket.0.handle_input(data);
+    socket.0.handle_input(Bytes::copy_from_slice(data));
 }
 
 fn poll_event(socket: &mut DcSctpSocket) -> bridge::Event {
@@ -953,9 +954,11 @@ fn message_ready_count(socket: &DcSctpSocket) -> usize {
 
 fn get_next_message(socket: &mut DcSctpSocket) -> bridge::Message {
     match socket.0.get_next_message() {
-        Some(msg) => {
-            bridge::Message { stream_id: msg.stream_id.0, ppid: msg.ppid.0, payload: msg.payload }
-        }
+        Some(msg) => bridge::Message {
+            stream_id: msg.stream_id.0,
+            ppid: msg.ppid.0,
+            payload: msg.payload.to_vec(),
+        },
         None => bridge::Message::default(),
     }
 }
@@ -974,7 +977,8 @@ fn send(
     message: bridge::Message,
     options: &bridge::SendOptions,
 ) -> bridge::SendStatus {
-    let msg = DcSctpMessage::new(StreamId(message.stream_id), PpId(message.ppid), message.payload);
+    let msg =
+        DcSctpMessage::new(StreamId(message.stream_id), PpId(message.ppid), message.payload.into());
     socket.0.send(msg, &options.into()).into()
 }
 
@@ -986,7 +990,7 @@ fn send_many(
     let msg_len = messages.len();
     let messages: Vec<DcSctpMessage> = messages
         .into_iter()
-        .map(|msg| DcSctpMessage::new(StreamId(msg.stream_id), PpId(msg.ppid), msg.payload))
+        .map(|msg| DcSctpMessage::new(StreamId(msg.stream_id), PpId(msg.ppid), msg.payload.into()))
         .collect();
     let options: DcSctpSendOptions = options.into();
 

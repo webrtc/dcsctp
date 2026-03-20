@@ -103,7 +103,7 @@ mod tests {
         loop {
             let mut again = false;
             if let Some(e) = socket_a.poll_event() {
-                if let SocketEvent::SendPacket(ref send) = e {
+                if let SocketEvent::SendPacket(send) = e {
                     socket_z.handle_input(send);
                 } else {
                     events_a.push_back(e);
@@ -111,7 +111,7 @@ mod tests {
                 again = true;
             }
             if let Some(e) = socket_z.poll_event() {
-                if let SocketEvent::SendPacket(ref send) = e {
+                if let SocketEvent::SendPacket(send) = e {
                     socket_a.handle_input(send);
                 } else {
                     events_z.push_back(e);
@@ -136,14 +136,14 @@ mod tests {
     fn connect_sockets(socket_a: &mut Socket, socket_z: &mut Socket) {
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -180,14 +180,14 @@ mod tests {
 
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -205,19 +205,19 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let messages = vec![
-            Message::new(StreamId(1), PpId(1), b"hello".to_vec()),
-            Message::new(StreamId(2), PpId(2), b"world".to_vec()),
+            Message::new(StreamId(1), PpId(1), b"hello".to_vec().into()),
+            Message::new(StreamId(2), PpId(2), b"world".to_vec().into()),
         ];
         socket_a.send_many(messages, &SendOptions::default()).unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
         let msg1 = socket_z.get_next_message().unwrap();
-        assert_eq!(msg1.payload, b"hello");
+        assert_eq!(&msg1.payload[..], b"hello");
         assert_eq!(msg1.stream_id, StreamId(1));
 
         let msg2 = socket_z.get_next_message().unwrap();
-        assert_eq!(msg2.payload, b"world");
+        assert_eq!(&msg2.payload[..], b"world");
         assert_eq!(msg2.stream_id, StreamId(2));
     }
 
@@ -243,11 +243,11 @@ mod tests {
         socket_a.connect();
 
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A /lost/ <- COOKIE_ACK <- Z
         expect_sent_packet!(socket_z.poll_event());
@@ -261,11 +261,11 @@ mod tests {
         socket_a.shutdown();
 
         // A -> SHUTDOWN -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- SHUTDOWN_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> SHUTDOWN_COMPLETE -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         expect_on_closed!(socket_a.poll_event());
         expect_on_closed!(socket_z.poll_event());
@@ -289,16 +289,16 @@ mod tests {
         socket_z.connect();
 
         // A <- INIT <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> INIT_ACK -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- COOKIE_ECHO <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
         assert_eq!(socket_a.state(), SocketState::Connected);
 
         // A -> COOKIE_ACK -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         assert_eq!(socket_z.state(), SocketState::Connected);
 
@@ -313,7 +313,7 @@ mod tests {
         let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
         let packet = &expect_sent_packet!(socket_z.poll_event());
         let Chunk::InitAck(init_ack) =
@@ -336,7 +336,7 @@ mod tests {
         )
         .add(&Chunk::InitAck(InitAckChunk { parameters, ..init_ack }))
         .build();
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
 
         assert!(matches!(
             SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
@@ -355,11 +355,11 @@ mod tests {
 
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A /lost/<- COOKIE_ACK <- Z
         expect_sent_packet!(socket_z.poll_event());
@@ -374,9 +374,9 @@ mod tests {
         socket_a.advance_time(expected_timeout);
 
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
         assert_eq!(socket_a.state(), SocketState::Connected);
 
@@ -401,14 +401,14 @@ mod tests {
         socket_a.advance_time(expected_timeout);
 
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
 
         assert_eq!(socket_a.state(), SocketState::Connected);
@@ -452,9 +452,9 @@ mod tests {
 
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO ->/lost/ Z
         expect_sent_packet!(socket_a.poll_event());
 
@@ -468,10 +468,10 @@ mod tests {
         socket_a.advance_time(expected_timeout);
 
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
 
         assert_eq!(socket_a.state(), SocketState::Connected);
@@ -489,9 +489,9 @@ mod tests {
 
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A -> COOKIE_ECHO ->/lost/ Z
         expect_sent_packet!(socket_a.poll_event());
@@ -523,15 +523,15 @@ mod tests {
         let payload_size = options.mtu + 100;
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; payload_size]),
+                Message::new(StreamId(1), PpId(53), vec![0; payload_size].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A -> COOKIE_ECHO ->/lost/ Z
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -563,10 +563,10 @@ mod tests {
         socket_a.advance_time(now);
 
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -586,11 +586,11 @@ mod tests {
         socket_a.shutdown();
 
         // A -> SHUTDOWN -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- SHUTDOWN_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> SHUTDOWN_COMPLETE -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         expect_on_closed!(socket_a.poll_event());
         expect_on_closed!(socket_z.poll_event());
@@ -654,7 +654,7 @@ mod tests {
         socket_z.shutdown();
 
         // Z -> SHUTDOWN -> A
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A -> SHUTDOWN_ACK -> /lost/ Z
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -686,7 +686,7 @@ mod tests {
 
         // Z -> SHUTDOWN -> A
         let shutdown_packet = expect_sent_packet!(socket_z.poll_event());
-        socket_a.handle_input(&shutdown_packet);
+        socket_a.handle_input(shutdown_packet);
 
         // A -> SHUTDOWN_ACK -> /lost/ Z
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -702,7 +702,7 @@ mod tests {
 
         // Z retransmits SHUTDOWN.
         let resent_shutdown_packet = expect_sent_packet!(socket_z.poll_event());
-        socket_a.handle_input(&resent_shutdown_packet);
+        socket_a.handle_input(resent_shutdown_packet);
 
         // A immediately resends SHUTDOWN_ACK.
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -720,7 +720,7 @@ mod tests {
         socket_z.shutdown();
 
         // Z -> SHUTDOWN -> A
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A produces SHUTDOWN ACK
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -744,7 +744,7 @@ mod tests {
         // Send a message that will remain outstanding (unacknowledged) which
         // transitions the socket to SHUTDOWN-PENDING instead of SHUTDOWN-SENT.
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
         socket_a.shutdown();
 
@@ -767,18 +767,18 @@ mod tests {
 
         socket_a.connect();
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
 
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO + DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
         // A <- COOKIE_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_connected!(socket_a.poll_event());
         assert_eq!(socket_a.state(), SocketState::Connected);
         assert_eq!(socket_z.state(), SocketState::Connected);
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(msg.payload, vec![1, 2]);
 
         // A -> SACK -> Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -802,16 +802,16 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_z
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
         // A <- DATA <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let msg = socket_a.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
         assert_eq!(msg.payload, vec![1, 2]);
 
         // A -> SACK -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -825,7 +825,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_z
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
         // A /lost/ <- DATA <- Z
         expect_sent_packet!(socket_z.poll_event());
@@ -833,13 +833,13 @@ mod tests {
         assert_eq!(socket_z.poll_timeout(), expected_timeout);
         socket_z.advance_time(expected_timeout);
 
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let msg = socket_a.get_next_message().unwrap();
         assert_eq!(msg.stream_id, StreamId(1));
         assert_eq!(msg.payload, vec![1, 2]);
 
         // A -> SACK -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -855,11 +855,14 @@ mod tests {
         let payload: Vec<u8> = vec![0; 20 * options.mtu];
 
         socket_z
-            .send(Message::new(StreamId(1), PpId(53), payload.clone()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), payload.clone().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         // A <- DATA <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A /lost/ <- DATA <- Z
         expect_sent_packet!(socket_z.poll_event());
 
@@ -891,7 +894,7 @@ mod tests {
             })],
         }))
         .build();
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
         let packet =
             SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
         assert_eq!(packet.chunks.len(), 1);
@@ -925,13 +928,13 @@ mod tests {
         assert!(matches!(packet.chunks[0], Chunk::HeartbeatRequest { .. }));
 
         // Feed it to Sock-z and expect a HEARTBEAT_ACK that will be propagated back.
-        socket_z.handle_input(&request_packet);
+        socket_z.handle_input(request_packet);
         let ack_packet = expect_sent_packet!(socket_z.poll_event());
         let packet = SctpPacket::from_bytes(&ack_packet, &options).unwrap();
         assert_eq!(packet.chunks.len(), 1);
         assert!(matches!(packet.chunks[0], Chunk::HeartbeatAck { .. }));
 
-        socket_a.handle_input(&ack_packet);
+        socket_a.handle_input(ack_packet);
     }
 
     #[test]
@@ -953,14 +956,14 @@ mod tests {
         socket_z.advance_time(now);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert!(socket_z.get_next_message().is_some());
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // Verify that the heartbeat timer was restarted by the sent DATA.
         socket_a.advance_time(original_heartbeat_timeout);
@@ -1141,7 +1144,7 @@ mod tests {
         )
         .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: req.parameters }))
         .build();
-        socket_a.handle_input(&ack_packet);
+        socket_a.handle_input(ack_packet);
 
         // Should suffice as exceeding RTO - which will not fire.
         now = now + Duration::from_secs(1);
@@ -1190,7 +1193,7 @@ mod tests {
             panic!();
         };
         socket_a.handle_input(
-            &SctpPacketBuilder::new(
+            SctpPacketBuilder::new(
                 socket_a.verification_tag(),
                 options.local_port,
                 options.remote_port,
@@ -1226,14 +1229,14 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert!(socket_z.get_next_message().is_some());
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // Reset the outgoing stream. This will directly send a RE-CONFIG.
         socket_a.reset_streams(&[StreamId(1)]).unwrap();
@@ -1242,14 +1245,14 @@ mod tests {
         // will also send a RE-CONFIG with a response.
         expect_no_event!(socket_z.poll_event());
         // A -> RECONFIG -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         let streams = expect_on_incoming_stream_reset!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
 
         // Receiving a response will trigger a callback. Streams are now reset.
         expect_no_event!(socket_a.poll_event());
         // A <- RECONFIG <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let streams = expect_on_streams_reset_performed!(socket_a.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
         expect_no_event!(socket_z.poll_event());
@@ -1265,11 +1268,11 @@ mod tests {
 
         let ordered = SendOptions { unordered: false, ..Default::default() };
 
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3000]), &ordered).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3000].into()), &ordered).unwrap();
 
         socket_a.reset_streams(&[StreamId(1)]).unwrap();
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 100]), &ordered).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 100].into()), &ordered).unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -1288,23 +1291,23 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- SACK <- Z
         assert!(socket_z.get_next_message().is_some());
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         assert!(socket_z.get_next_message().is_some());
 
@@ -1314,33 +1317,33 @@ mod tests {
         // TODO: Verify SSNs. Right now verified in Wireshark.
         // A -> RECONFIG -> Z
         let packet = expect_sent_packet!(socket_a.poll_event());
-        socket_z.handle_input(&packet);
+        socket_z.handle_input(packet);
         expect_on_incoming_stream_reset!(socket_z.poll_event());
         // A <- RECONFIG + SACK (Bundled) <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         expect_on_streams_reset_performed!(socket_a.poll_event());
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu - 100].into()),
                 &SendOptions::default(),
             )
             .unwrap();
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert_eq!(socket_z.messages_ready_count(), 2);
 
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1356,14 +1359,14 @@ mod tests {
         // Send two ordered messages on SID 1
         let s = SendOptions::default();
         let payload = vec![0; options.mtu - 100];
-        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone().into()), &s).unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
         // Do the same, for SID 3
-        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone().into()), &s).unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -1374,8 +1377,8 @@ mod tests {
         exchange_packets(&mut socket_a, &mut socket_z);
 
         // Send a message on SID 1 and 3 - SID 1 should not be reset, but 3 should.
-        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone().into()), &s).unwrap();
 
         let packet =
             SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
@@ -1422,12 +1425,12 @@ mod tests {
         // receiving side should get it in full.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(51), vec![0; options.mtu * 10]),
+                Message::new(StreamId(1), PpId(51), vec![0; options.mtu * 10].into()),
                 &SendOptions::default(),
             )
             .unwrap();
 
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         // Create a new association, z2 - and don't use z anymore.
         let mut socket_z2 = Socket::new("Z2", &options);
@@ -1452,24 +1455,24 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
         let s = SendOptions { max_retransmissions: Some(0), ..Default::default() };
         let data = vec![0; options.mtu - 100];
-        socket_a.send(Message::new(StreamId(1), PpId(51), data.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(52), data.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(53), data.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), data.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(52), data.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), data.clone().into()), &s).unwrap();
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(51));
 
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A -> DATA -> /lost/ Z
         expect_sent_packet!(socket_a.poll_event());
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         // A <- SACK <- Z (packet loss detected).
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1485,7 +1488,7 @@ mod tests {
         // FORWARD-TSN to be sent.
 
         // A -> FORWARD-TSN -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
 
         // Delayed SACK
@@ -1493,7 +1496,7 @@ mod tests {
         socket_z.advance_time(now);
 
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
@@ -1509,7 +1512,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
 
         // Dropping first transmission.
@@ -1539,7 +1542,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1575,7 +1578,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1591,7 +1594,7 @@ mod tests {
             SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::Data(_)
         ));
-        socket_z.handle_input(&packet);
+        socket_z.handle_input(packet);
         assert!(socket_z.get_next_message().is_some());
 
         let packet = expect_sent_packet!(socket_z.poll_event());
@@ -1599,11 +1602,11 @@ mod tests {
             SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::Sack(_)
         ));
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
 
         // Send another message
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
 
         // Dropping first transmission of second message. The TX error counter recovered before.
@@ -1648,8 +1651,8 @@ mod tests {
             Chunk::HeartbeatRequest(_)
         ));
 
-        socket_z.handle_input(&packet);
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_z.handle_input(packet);
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         now = now + options_z.heartbeat_interval - options_a.heartbeat_interval;
         socket_a.advance_time(now);
@@ -1673,7 +1676,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1714,7 +1717,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &SendOptions::default())
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -1751,27 +1754,27 @@ mod tests {
         let s =
             SendOptions { unordered: true, max_retransmissions: Some(0), ..SendOptions::default() };
         let p = vec![0; 2 * options.mtu - 100 /* margin */];
-        socket_a.send(Message::new(StreamId(1), PpId(51), p.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(52), p.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(53), p.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(54), p.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), p.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(52), p.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), p.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(54), p.clone().into()), &s).unwrap();
 
         // A -> DATA (msg 1, fragment 1) -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA (msg 1, fragment 2) /lost/ -> Z
         expect_sent_packet!(socket_a.poll_event());
         // A -> DATA (msg 2, fragment 1) -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA (msg 2, fragment 2) /lost/ -> Z
         expect_sent_packet!(socket_a.poll_event());
         // A -> DATA (msg 3, fragment 1) -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA (msg 3, fragment 2) /lost/ -> Z
         expect_sent_packet!(socket_a.poll_event());
         // A -> DATA (msg 4, fragment 1) -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA (msg 4, fragment 2) -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -1794,7 +1797,7 @@ mod tests {
         )
         .add(&Chunk::Unknown(UnknownChunk { typ: 0x49, flags: 0, value: vec![] }))
         .build();
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
 
         assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
     }
@@ -1818,7 +1821,7 @@ mod tests {
             })],
         }))
         .build();
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
 
         assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::PeerReported);
     }
@@ -1839,7 +1842,10 @@ mod tests {
         const ITERATIONS: usize = 100;
         for _ in 0..ITERATIONS {
             socket_a
-                .send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &SendOptions::default())
+                .send(
+                    Message::new(StreamId(1), PpId(51), vec![0; 2].into()),
+                    &SendOptions::default(),
+                )
                 .unwrap();
         }
 
@@ -1864,7 +1870,7 @@ mod tests {
                 lifetime: Some(Duration::from_millis(i as u64 % 3)),
                 ..Default::default()
             };
-            socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &s).unwrap();
+            socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &s).unwrap();
         }
 
         loop {
@@ -1876,13 +1882,13 @@ mod tests {
             let mut again = false;
             if let Some(e) = socket_a.poll_event() {
                 if let SocketEvent::SendPacket(send) = e {
-                    socket_z.handle_input(&send);
+                    socket_z.handle_input(send);
                 }
                 again = true;
             }
             if let Some(e) = socket_z.poll_event() {
                 if let SocketEvent::SendPacket(send) = e {
-                    socket_a.handle_input(&send);
+                    socket_a.handle_input(send);
                 }
                 again = true;
             }
@@ -1904,7 +1910,7 @@ mod tests {
         // Fill up the send buffer with a large message.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(51), vec![0; 20 * options.mtu]),
+                Message::new(StreamId(1), PpId(51), vec![0; 20 * options.mtu].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -1916,9 +1922,9 @@ mod tests {
             lifetime: Some(Duration::from_millis(1)),
             ..Default::default()
         };
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3]), &lifetime_0).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3]), &lifetime_1).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2]), &lifetime_0).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3].into()), &lifetime_0).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 3].into()), &lifetime_1).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 2].into()), &lifetime_0).unwrap();
 
         loop {
             // Mock that the time always goes forward.
@@ -1929,13 +1935,13 @@ mod tests {
             let mut again = false;
             if let Some(e) = socket_a.poll_event() {
                 if let SocketEvent::SendPacket(send) = e {
-                    socket_z.handle_input(&send);
+                    socket_z.handle_input(send);
                 }
                 again = true;
             }
             if let Some(e) = socket_z.poll_event() {
                 if let SocketEvent::SendPacket(send) = e {
-                    socket_a.handle_input(&send);
+                    socket_a.handle_input(send);
                 }
                 again = true;
             }
@@ -1960,20 +1966,20 @@ mod tests {
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
 
-        socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s).unwrap();
-        socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s).unwrap();
+        socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600].into()), &s).unwrap();
+        socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600].into()), &s).unwrap();
         assert_eq!(
-            socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s),
+            socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600].into()), &s),
             Err(SendError::ResourceExhaustion)
         );
         assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
         assert_eq!(expect_on_error!(socket.poll_event()), ErrorKind::ResourceExhaustion);
 
         // The per-stream limit for SID=1 is reached, but not SID=2.
-        socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600]), &s).unwrap();
-        socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600]), &s).unwrap();
+        socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600].into()), &s).unwrap();
+        socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600].into()), &s).unwrap();
         assert_eq!(
-            socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600]), &s),
+            socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600].into()), &s),
             Err(SendError::ResourceExhaustion)
         );
         assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
@@ -1987,7 +1993,7 @@ mod tests {
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
         assert_eq!(
-            socket.send(Message::new(StreamId(1), PpId(53), vec![]), &s),
+            socket.send(Message::new(StreamId(1), PpId(53), vec![].into()), &s),
             Err(SendError::EmptyPayload)
         );
 
@@ -2003,7 +2009,7 @@ mod tests {
         let lifecycle_id = LifecycleId::from(123);
         let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
         assert!(matches!(
-            socket.send(Message::new(StreamId(1), PpId(53), vec![0; 101]), &s),
+            socket.send(Message::new(StreamId(1), PpId(53), vec![0; 101].into()), &s),
             Err(SendError::MessageTooLarge { .. })
         ));
 
@@ -2021,7 +2027,7 @@ mod tests {
         assert_eq!(socket_a.buffered_amount(StreamId(1)), 0);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 100]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![0; 100].into()), &SendOptions::default())
             .unwrap();
 
         // Sending a small message will directly send it as a single packet, so nothing is left in
@@ -2030,7 +2036,7 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; 20 * options.mtu]),
+                Message::new(StreamId(1), PpId(53), vec![0; 20 * options.mtu].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -2058,7 +2064,7 @@ mod tests {
         expect_no_event!(socket_z.poll_event());
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 100]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![0; 100].into()), &SendOptions::default())
             .unwrap();
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -2077,7 +2083,10 @@ mod tests {
         socket_a.set_buffered_amount_low_threshold(StreamId(1), 1001);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![0; 1000].into()),
+                &SendOptions::default(),
+            )
             .unwrap();
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -2087,7 +2096,10 @@ mod tests {
         assert!(socket_z.get_next_message().is_none());
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![0; 1000].into()),
+                &SendOptions::default(),
+            )
             .unwrap();
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
@@ -2109,25 +2121,25 @@ mod tests {
 
         let s = SendOptions::default();
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000].into()), &s).unwrap();
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(1));
         assert!(socket_z.get_next_message().is_some());
         assert!(socket_z.get_next_message().is_none());
 
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000].into()), &s).unwrap();
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(2));
         assert!(socket_z.get_next_message().is_some());
         assert!(socket_z.get_next_message().is_none());
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000].into()), &s).unwrap();
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(1));
         assert!(socket_z.get_next_message().is_some());
         assert!(socket_z.get_next_message().is_none());
 
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 1000].into()), &s).unwrap();
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert_eq!(expect_buffered_amount_low!(events_a.pop_front()), StreamId(2));
         assert!(socket_z.get_next_message().is_some());
@@ -2146,7 +2158,7 @@ mod tests {
         // start to be fully buffered.
         while socket_a.buffered_amount(StreamId(1)) <= 1500 {
             let s = SendOptions::default();
-            socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000]), &s).unwrap();
+            socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 1000].into()), &s).unwrap();
         }
 
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
@@ -2161,7 +2173,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 20000]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 20000].into()), &s).unwrap();
 
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
@@ -2182,7 +2194,7 @@ mod tests {
         // Fill up the send queue completely.
         loop {
             if let Err(SendError::ResourceExhaustion) = socket_a.send(
-                Message::new(StreamId(1), PpId(53), vec![0; 20 * 1000]),
+                Message::new(StreamId(1), PpId(53), vec![0; 20 * 1000].into()),
                 &SendOptions::default(),
             ) {
                 break;
@@ -2246,7 +2258,7 @@ mod tests {
         let payload_size = 2;
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; payload_size]),
+                Message::new(StreamId(1), PpId(53), vec![0; payload_size].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -2255,11 +2267,11 @@ mod tests {
         assert_eq!(metrics.unack_data_count, 1);
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert_eq!(socket_z.messages_ready_count(), 1);
 
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         let metrics = socket_a.get_metrics().unwrap();
         // The reassembled message is still in the socket, and not consumed, so the receiver window
@@ -2277,7 +2289,7 @@ mod tests {
         // Send one more (large - fragmented), and receive the delayed SACK.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 2 + 1]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 2 + 1].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -2285,19 +2297,19 @@ mod tests {
         assert_eq!(metrics.unack_data_count, 3);
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_no_event!(socket_z.poll_event());
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         let metrics = socket_a.get_metrics().unwrap();
         assert_eq!(metrics.unack_data_count, 1);
         assert!(metrics.peer_rwnd_bytes > 0 && metrics.peer_rwnd_bytes < initial_a_rwnd);
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         assert_eq!(socket_z.messages_ready_count(), 2);
         socket_z.get_next_message().unwrap();
         socket_z.get_next_message().unwrap();
@@ -2308,7 +2320,7 @@ mod tests {
         socket_z.advance_time(now);
 
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         let metrics = socket_a.get_metrics().unwrap();
         assert_eq!(metrics.unack_data_count, 0);
@@ -2327,14 +2339,14 @@ mod tests {
         // Enough to trigger fast retransmit of the missing second packet.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 5]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 5].into()),
                 &SendOptions::default(),
             )
             .unwrap();
 
         // Receive first packet, drop second, receive and retransmit the remaining.
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_sent_packet!(socket_a.poll_event());
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -2354,7 +2366,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 12]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![0; 12].into()), &SendOptions::default())
             .unwrap();
 
         expect_sent_packet!(socket_a.poll_event());
@@ -2375,7 +2387,7 @@ mod tests {
         let message_bytes = options.mtu * 10;
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; message_bytes]),
+                Message::new(StreamId(1), PpId(53), vec![0; message_bytes].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -2401,7 +2413,7 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -2445,7 +2457,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 100]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 100].into()), &s).unwrap();
 
         // Send message before handover to move socket to a not initial state
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2453,9 +2465,9 @@ mod tests {
         let mut new_socket_z = Socket::new("Z2", &default_options());
         handover_socket(&mut socket_z, &mut new_socket_z);
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
 
         exchange_packets(&mut socket_a, &mut new_socket_z);
         let msg = new_socket_z.get_next_message().unwrap();
@@ -2523,7 +2535,10 @@ mod tests {
 
         // Send a first message (SID=1, SSN=0)
         socket_a
-            .send(Message::new(StreamId(1), PpId(51), vec![0; options.mtu - 100]), &send_options)
+            .send(
+                Message::new(StreamId(1), PpId(51), vec![0; options.mtu - 100].into()),
+                &send_options,
+            )
             .unwrap();
 
         // First DATA is lost, and retransmission timer will delete it.
@@ -2533,7 +2548,10 @@ mod tests {
 
         // Send a second message (SID=0, SSN=1).
         socket_a
-            .send(Message::new(StreamId(1), PpId(52), vec![0; options.mtu - 100]), &send_options)
+            .send(
+                Message::new(StreamId(1), PpId(52), vec![0; options.mtu - 100].into()),
+                &send_options,
+            )
             .unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2549,8 +2567,8 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2].into()), &s).unwrap();
 
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
@@ -2576,9 +2594,9 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2].into()), &s).unwrap();
 
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
@@ -2612,9 +2630,9 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         let s = SendOptions { unordered: false, ..Default::default() };
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2].into()), &s).unwrap();
 
         let (mut events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         expect_no_event!(events_a.pop_front());
@@ -2629,9 +2647,9 @@ mod tests {
         socket_z.get_next_message();
         socket_z.get_next_message();
 
-        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(53), vec![0; 2].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(53), vec![0; 2].into()), &s).unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
         let msg = socket_z.get_next_message().unwrap();
@@ -2660,7 +2678,10 @@ mod tests {
 
         socket_a.set_stream_priority(StreamId(1), 0);
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2, 3]), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![1, 2, 3].into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2693,7 +2714,7 @@ mod tests {
 
         socket_a.set_stream_priority(StreamId(1), 43);
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 100]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(51), vec![0; 100].into()), &s).unwrap();
         socket_a.set_stream_priority(StreamId(2), 34);
 
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2740,11 +2761,11 @@ mod tests {
         // Enqueue messages before connecting the socket, to ensure they aren't sent as soon as
         // `send` is called.
         let s = SendOptions::default();
-        socket_a.send(Message::new(StreamId(3), PpId(301), vec![0; 10]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(101), vec![0; 10]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(201), vec![0; 10]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(102), vec![0; 10]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(103), vec![0; 10]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(301), vec![0; 10].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(101), vec![0; 10].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(201), vec![0; 10].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(102), vec![0; 10].into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(103), vec![0; 10].into()), &s).unwrap();
 
         socket_a.connect();
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2772,11 +2793,11 @@ mod tests {
         // `send` is called.
         let s = SendOptions::default();
         let payload = vec![0; options.mtu * 2];
-        socket_a.send(Message::new(StreamId(3), PpId(301), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(101), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(2), PpId(201), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(102), payload.clone()), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(103), payload.clone()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(3), PpId(301), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(101), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(2), PpId(201), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(102), payload.clone().into()), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(103), payload.clone().into()), &s).unwrap();
 
         socket_a.connect();
         exchange_packets(&mut socket_a, &mut socket_z);
@@ -2799,7 +2820,9 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a.set_stream_priority(StreamId(2), 128);
-        socket_a.send(Message::new(StreamId(2), PpId(201), vec![0; 20 * options.mtu]), &s).unwrap();
+        socket_a
+            .send(Message::new(StreamId(2), PpId(201), vec![0; 20 * options.mtu].into()), &s)
+            .unwrap();
 
         // Due to a non-zero initial congestion window, the message will already start to send, but
         // will not succeed to be sent completely before filling the congestion window or stopping
@@ -2809,8 +2832,10 @@ mod tests {
         // Now enqueue two messages; one small and one large higher priority message.
 
         socket_a.set_stream_priority(StreamId(1), 512);
-        socket_a.send(Message::new(StreamId(1), PpId(101), vec![0; 10]), &s).unwrap();
-        socket_a.send(Message::new(StreamId(1), PpId(102), vec![0; 20 * options.mtu]), &s).unwrap();
+        socket_a.send(Message::new(StreamId(1), PpId(101), vec![0; 10].into()), &s).unwrap();
+        socket_a
+            .send(Message::new(StreamId(1), PpId(102), vec![0; 20 * options.mtu].into()), &s)
+            .unwrap();
 
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -2830,19 +2855,19 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(101), vec![0; options.mtu]),
+                Message::new(StreamId(1), PpId(101), vec![0; options.mtu].into()),
                 &SendOptions { lifecycle_id: LifecycleId::new(41), ..Default::default() },
             )
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(102), vec![0; options.mtu]),
+                Message::new(StreamId(1), PpId(102), vec![0; options.mtu].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(103), vec![0; options.mtu]),
+                Message::new(StreamId(1), PpId(103), vec![0; options.mtu].into()),
                 &SendOptions { lifecycle_id: LifecycleId::new(42), ..Default::default() },
             )
             .unwrap();
@@ -2864,7 +2889,7 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(101), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(101), vec![0; options.mtu - 100].into()),
                 &SendOptions {
                     max_retransmissions: Some(0),
                     lifecycle_id: LifecycleId::new(41),
@@ -2874,7 +2899,7 @@ mod tests {
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(102), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(102), vec![0; options.mtu - 100].into()),
                 &SendOptions {
                     max_retransmissions: Some(0),
                     lifecycle_id: LifecycleId::new(42),
@@ -2884,7 +2909,7 @@ mod tests {
             .unwrap();
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(103), vec![0; options.mtu - 100]),
+                Message::new(StreamId(1), PpId(103), vec![0; options.mtu - 100].into()),
                 &SendOptions {
                     max_retransmissions: Some(0),
                     lifecycle_id: LifecycleId::new(43),
@@ -2895,7 +2920,7 @@ mod tests {
 
         // A -> DATA -> Z
         expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> /lost/ Z
         expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
         expect_sent_packet!(socket_a.poll_event());
@@ -2919,7 +2944,7 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu]),
+                Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu].into()),
                 &SendOptions {
                     max_retransmissions: Some(0),
                     lifecycle_id: LifecycleId::new(41),
@@ -2929,7 +2954,7 @@ mod tests {
             .unwrap();
 
         // A -> DATA -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A -> DATA -> /lost/ Z
         expect_sent_packet!(socket_a.poll_event());
 
@@ -2949,7 +2974,7 @@ mod tests {
         // idea is that it should be expired before even attempting to send it in full.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu]),
+                Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu].into()),
                 &SendOptions {
                     lifetime: Some(Duration::from_millis(100)),
                     lifecycle_id: LifecycleId::new(41),
@@ -3001,12 +3026,12 @@ mod tests {
         // Guaranteed to be fragmented into two fragments.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu + 100]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu + 100].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_a
-            .send(Message::new(StreamId(1), PpId(54), vec![0; 100]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(54), vec![0; 100].into()), &SendOptions::default())
             .unwrap();
 
         socket_a.reset_streams(&[StreamId(1)]).unwrap();
@@ -3033,18 +3058,18 @@ mod tests {
         ));
 
         // Receive them slightly out of order to make stream resetting deferred.
-        socket_z.handle_input(&reconfig);
+        socket_z.handle_input(reconfig);
         // A <- RECONFIG RESPONSE(in progress) <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
-        socket_z.handle_input(&data1);
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
+        socket_z.handle_input(data1);
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
-        socket_z.handle_input(&data2);
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
+        socket_z.handle_input(data2);
         assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(53));
-        socket_z.handle_input(&data3);
+        socket_z.handle_input(data3);
         assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(54));
         // A <- SACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // Z sent "in progress", which will make A buffer packets until it's sure that the
         // reconfiguration has been applied. A will retry - wait for that.
@@ -3055,7 +3080,7 @@ mod tests {
             SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
-        socket_z.handle_input(&packet);
+        socket_z.handle_input(packet);
 
         expect_on_incoming_stream_reset!(socket_z.poll_event());
 
@@ -3064,13 +3089,13 @@ mod tests {
             SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
-        socket_a.handle_input(&packet);
+        socket_a.handle_input(packet);
 
         expect_on_streams_reset_performed!(socket_a.poll_event());
 
         // Send a new message after the stream has been reset.
         socket_a
-            .send(Message::new(StreamId(1), PpId(55), vec![0; 100]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(55), vec![0; 100].into()), &SendOptions::default())
             .unwrap();
         exchange_packets(&mut socket_a, &mut socket_z);
 
@@ -3088,7 +3113,7 @@ mod tests {
         // Guaranteed to be fragmented into two fragments.
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(51), vec![0; options.mtu + 10]),
+                Message::new(StreamId(1), PpId(51), vec![0; options.mtu + 10].into()),
                 &SendOptions::default(),
             )
             .unwrap();
@@ -3096,7 +3121,7 @@ mod tests {
 
         // Will be queued, as the stream has an outstanding reset operation.
         socket_a
-            .send(Message::new(StreamId(1), PpId(52), vec![0; 10]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(52), vec![0; 10].into()), &SendOptions::default())
             .unwrap();
 
         let (mut events_a, mut events_z) = exchange_packets(&mut socket_a, &mut socket_z);
@@ -3163,7 +3188,7 @@ mod tests {
         let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
 
         // A <- INIT_ACK <- Z
         let packet = expect_sent_packet!(socket_z.poll_event());
@@ -3182,9 +3207,9 @@ mod tests {
         let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
 
         // A -> COOKIE_ECHO -> Z
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -3203,11 +3228,11 @@ mod tests {
         let mut socket_z = Socket::new("Z", &options);
         socket_a.connect();
         // A -> INIT -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a.handle_input(expect_sent_packet!(socket_z.poll_event()));
         // A -> COOKIE_ECHO -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a.poll_event()));
         expect_on_connected!(socket_z.poll_event());
 
         // A <- COOOKIE_ACK <- Z
@@ -3228,7 +3253,7 @@ mod tests {
         connect_sockets(&mut socket_a, &mut socket_z);
 
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2].into()), &SendOptions::default())
             .unwrap();
 
         let packet = expect_sent_packet!(socket_a.poll_event());
@@ -3249,29 +3274,29 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10].into()),
                 &SendOptions::default(),
             )
             .unwrap();
         socket_z
             .send(
-                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10]),
+                Message::new(StreamId(1), PpId(53), vec![0; options.mtu * 10].into()),
                 &SendOptions::default(),
             )
             .unwrap();
 
         loop {
             if let Some(e) = socket_a.poll_event() {
-                if let SocketEvent::SendPacket(ref send) = e {
-                    let packet = SctpPacket::from_bytes(send, &options).unwrap();
+                if let SocketEvent::SendPacket(send) = e {
+                    let packet = SctpPacket::from_bytes(&send, &options).unwrap();
                     assert_eq!(packet.common_header.checksum, 0);
                     socket_z.handle_input(send);
                 }
                 continue;
             }
             if let Some(e) = socket_z.poll_event() {
-                if let SocketEvent::SendPacket(ref send) = e {
-                    let packet = SctpPacket::from_bytes(send, &options).unwrap();
+                if let SocketEvent::SendPacket(send) = e {
+                    let packet = SctpPacket::from_bytes(&send, &options).unwrap();
                     assert_eq!(packet.common_header.checksum, 0);
                     socket_a.handle_input(send);
                 }
@@ -3291,7 +3316,7 @@ mod tests {
 
         socket_a
             .send(
-                Message::new(StreamId(1), PpId(51), vec![0; 10]),
+                Message::new(StreamId(1), PpId(51), vec![0; 10].into()),
                 &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
             )
             .unwrap();
@@ -3318,20 +3343,20 @@ mod tests {
         ));
 
         // These two packets are received in the wrong order.
-        socket_z.handle_input(&reconfig_packet);
-        socket_z.handle_input(&fwd_tsn_packet);
+        socket_z.handle_input(reconfig_packet);
+        socket_z.handle_input(fwd_tsn_packet);
         exchange_packets(&mut socket_a, &mut socket_z);
 
         // Send two more messages.
         socket_a
-            .send(Message::new(StreamId(1), PpId(52), vec![0; 10]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(52), vec![0; 10].into()), &SendOptions::default())
             .unwrap();
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), vec![0; 10]), &SendOptions::default())
+            .send(Message::new(StreamId(1), PpId(53), vec![0; 10].into()), &SendOptions::default())
             .unwrap();
 
         let data_packet = expect_sent_packet!(socket_a.poll_event());
-        socket_z.handle_input(&data_packet);
+        socket_z.handle_input(data_packet.clone());
         let data_packet = SctpPacket::from_bytes(&data_packet, &options).unwrap();
         let Chunk::Data(c) = &data_packet.chunks[0] else {
             panic!();
@@ -3340,7 +3365,7 @@ mod tests {
         assert_eq!(c.data.ppid, PpId(52));
 
         let data_packet = expect_sent_packet!(socket_a.poll_event());
-        socket_z.handle_input(&data_packet);
+        socket_z.handle_input(data_packet.clone());
         let data_packet = SctpPacket::from_bytes(&data_packet, &options).unwrap();
         let Chunk::Data(c) = &data_packet.chunks[0] else {
             panic!();
@@ -3390,13 +3415,13 @@ mod tests {
         socket_a.connect();
         // A -> INIT -> Z
         let first_packet = expect_sent_packet!(socket_a.poll_event());
-        socket_z.handle_input(&first_packet);
+        socket_z.handle_input(first_packet.clone());
         // A <- INIT_ACK <- Z
         let init_ack_packet1 = expect_sent_packet!(socket_z.poll_event());
         expect_no_event!(socket_z.poll_event());
 
         // Get another INIT_ACK;
-        socket_z.handle_input(&first_packet);
+        socket_z.handle_input(first_packet);
         let init_ack_packet2 = expect_sent_packet!(socket_z.poll_event());
         expect_no_event!(socket_z.poll_event());
 
@@ -3418,21 +3443,24 @@ mod tests {
 
         let payload: Vec<u8> = vec![0; options.mtu + 20];
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), payload.clone()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), payload.clone().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         socket_a.connect();
         // A -> INIT -> Z
         let init_packet = expect_sent_packet!(socket_a.poll_event());
         // Extract two INIT-ACKs.
-        socket_z.handle_input(&init_packet);
+        socket_z.handle_input(init_packet.clone());
         let init_ack_packet1 = expect_sent_packet!(socket_z.poll_event());
-        socket_z.handle_input(&init_packet);
+        socket_z.handle_input(init_packet);
         let init_ack_packet2 = expect_sent_packet!(socket_z.poll_event());
         assert_ne!(init_ack_packet1, init_ack_packet2);
 
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&init_ack_packet1);
+        socket_a.handle_input(init_ack_packet1);
 
         let (events_a, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
         assert!(events_a.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
@@ -3452,21 +3480,24 @@ mod tests {
 
         let payload: Vec<u8> = vec![0; options.mtu + 20];
         socket_a
-            .send(Message::new(StreamId(1), PpId(53), payload.clone()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(53), payload.clone().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         socket_a.connect();
         // A -> INIT -> Z
         let init_packet = expect_sent_packet!(socket_a.poll_event());
         // Extract two INIT-ACKs.
-        socket_z.handle_input(&init_packet);
+        socket_z.handle_input(init_packet.clone());
         let init_ack_packet1 = expect_sent_packet!(socket_z.poll_event());
-        socket_z.handle_input(&init_packet);
+        socket_z.handle_input(init_packet);
         let init_ack_packet2 = expect_sent_packet!(socket_z.poll_event());
         assert_ne!(init_ack_packet1, init_ack_packet2);
 
         // A <- INIT_ACK <- Z
-        socket_a.handle_input(&init_ack_packet2);
+        socket_a.handle_input(init_ack_packet2);
 
         let (events_a, events_z) = exchange_packets(&mut socket_a, &mut socket_z);
         assert!(events_a.iter().any(|e| matches!(e, SocketEvent::OnConnected(..))));
@@ -3488,22 +3519,22 @@ mod tests {
         // 1. Z resets stream 1. A1 processes it.
         socket_z.reset_streams(&[StreamId(1)]).unwrap();
         // Z -> RECONFIG -> A1
-        socket_a1.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a1.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let streams = expect_on_incoming_stream_reset!(socket_a1.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
         // Z <- RECONFIG (Response) <- A1
-        socket_z.handle_input(&expect_sent_packet!(socket_a1.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a1.poll_event()));
         let streams = expect_on_streams_reset_performed!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
 
         // 2. A1 resets stream 1. Z processes it.
         socket_a1.reset_streams(&[StreamId(1)]).unwrap();
         // A1 -> RECONFIG -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a1.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a1.poll_event()));
         let streams = expect_on_incoming_stream_reset!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
         // A1 <- RECONFIG (Response) <- Z
-        socket_a1.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a1.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let streams = expect_on_streams_reset_performed!(socket_a1.poll_event());
         assert_eq!(streams, &[StreamId(1)]);
 
@@ -3517,11 +3548,11 @@ mod tests {
         // retransmission (and thus NOT trigger on_incoming_stream_reset).
         socket_a2.reset_streams(&[StreamId(2)]).unwrap();
         // A2 -> RECONFIG -> Z
-        socket_z.handle_input(&expect_sent_packet!(socket_a2.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a2.poll_event()));
         let streams = expect_on_incoming_stream_reset!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(2)]);
         // A2 <- RECONFIG (Response) <- Z
-        socket_a2.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a2.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let streams = expect_on_streams_reset_performed!(socket_a2.poll_event());
         assert_eq!(streams, &[StreamId(2)]);
 
@@ -3531,11 +3562,11 @@ mod tests {
         // initial+1), and would return an error.
         socket_z.reset_streams(&[StreamId(2)]).unwrap();
         // Z -> RECONFIG -> A2
-        socket_a2.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        socket_a2.handle_input(expect_sent_packet!(socket_z.poll_event()));
         let streams = expect_on_incoming_stream_reset!(socket_a2.poll_event());
         assert_eq!(streams, &[StreamId(2)]);
         // Z <- RECONFIG (Response) <- A2
-        socket_z.handle_input(&expect_sent_packet!(socket_a2.poll_event()));
+        socket_z.handle_input(expect_sent_packet!(socket_a2.poll_event()));
         let streams = expect_on_streams_reset_performed!(socket_z.poll_event());
         assert_eq!(streams, &[StreamId(2)]);
     }
@@ -3548,7 +3579,10 @@ mod tests {
 
         // Queue data on A
         socket_a
-            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(1), b"hello".to_vec().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         socket_a.connect();
@@ -3560,17 +3594,17 @@ mod tests {
         let packet_z_init = expect_sent_packet!(socket_z.poll_event());
 
         // A <- INIT
-        socket_a.handle_input(&packet_z_init);
+        socket_a.handle_input(packet_z_init);
         // A -> INIT_ACK
         let packet_a_init_ack = expect_sent_packet!(socket_a.poll_event());
 
         // Z <- INIT
-        socket_z.handle_input(&packet_a_init);
+        socket_z.handle_input(packet_a_init);
         // Z -> INIT_ACK
         let packet_z_init_ack = expect_sent_packet!(socket_z.poll_event());
 
         // A <- INIT_ACK
-        socket_a.handle_input(&packet_z_init_ack);
+        socket_a.handle_input(packet_z_init_ack);
         // A -> COOKIE_ECHO + DATA.
         let packet_a_cookie_echo = expect_sent_packet!(socket_a.poll_event());
         // Verify it contains DATA
@@ -3580,18 +3614,18 @@ mod tests {
         // DROP packet_a_cookie_echo. Z does not receive it.
 
         // Z <- INIT_ACK
-        socket_z.handle_input(&packet_a_init_ack);
+        socket_z.handle_input(packet_a_init_ack);
         // Z -> COOKIE_ECHO
         let packet_z_cookie_echo = expect_sent_packet!(socket_z.poll_event());
 
         // A <- COOKIE_ECHO. A should enter Established.
-        socket_a.handle_input(&packet_z_cookie_echo);
+        socket_a.handle_input(packet_z_cookie_echo);
         expect_on_connected!(socket_a.poll_event());
         // A -> COOKIE_ACK
         let packet_a_cookie_ack = expect_sent_packet!(socket_a.poll_event());
 
         // Z <- COOKIE_ACK. Z should enter Established.
-        socket_z.handle_input(&packet_a_cookie_ack);
+        socket_z.handle_input(packet_a_cookie_ack);
         expect_on_connected!(socket_z.poll_event());
 
         // Now A should retransmit the lost DATA after RTO.
@@ -3605,11 +3639,11 @@ mod tests {
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Data(_))));
 
         // Z <- DATA
-        socket_z.handle_input(&packet_retransmit);
+        socket_z.handle_input(packet_retransmit);
 
         // Z should have received the message
         let msg = socket_z.get_next_message().unwrap();
-        assert_eq!(msg.payload, b"hello");
+        assert_eq!(&msg.payload[..], b"hello");
     }
 
     #[test]
@@ -3623,11 +3657,14 @@ mod tests {
         // Send a message from A to Z. This will be the first packet, which will trigger an
         // immediate SACK.
         socket_a
-            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(1), b"hello".to_vec().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        socket_z.handle_input(&packet);
+        socket_z.handle_input(packet);
 
         let packet = expect_sent_packet!(socket_z.poll_event());
         let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
@@ -3636,11 +3673,14 @@ mod tests {
         // Send a second message from A to Z. This will be the second packet, which should trigger
         // a delayed SACK.
         socket_a
-            .send(Message::new(StreamId(1), PpId(1), b"hello".to_vec()), &SendOptions::default())
+            .send(
+                Message::new(StreamId(1), PpId(1), b"hello".to_vec().into()),
+                &SendOptions::default(),
+            )
             .unwrap();
         let packet = expect_sent_packet!(socket_a.poll_event());
 
-        socket_z.handle_input(&packet);
+        socket_z.handle_input(packet);
         expect_no_event!(socket_z.poll_event());
 
         let next_timeout = socket_z.poll_timeout();

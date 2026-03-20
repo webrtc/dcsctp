@@ -27,6 +27,7 @@ use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
 use crate::packet::write_u32_be;
+use bytes::Bytes;
 use thiserror::Error;
 
 pub const COMMON_HEADER_SIZE: usize = 12;
@@ -199,7 +200,7 @@ impl SctpPacketBuilder {
         self.data.is_empty()
     }
 
-    pub fn build(&mut self) -> Vec<u8> {
+    pub fn build(&mut self) -> Bytes {
         let mut out = Vec::<u8>::new();
         if self.write_checksum && !self.data.is_empty() {
             let mut crc = Crc32c::new();
@@ -208,7 +209,7 @@ impl SctpPacketBuilder {
             write_u32_be!(&mut self.data[8..12], checksum);
         }
         std::mem::swap(&mut self.data, &mut out);
-        out
+        out.into()
     }
 }
 
