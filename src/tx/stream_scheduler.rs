@@ -14,7 +14,6 @@
 
 use crate::api::StreamId;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
 enum SchedulingParameters {
@@ -96,7 +95,7 @@ pub struct StreamScheduler {
     max_payload_bytes: usize,
     current_stream: Option<StreamId>,
     system_virtual_time: u64,
-    active_streams: HashMap<StreamId, ActiveStreamInfo>,
+    active_streams: Vec<ActiveStreamInfo>,
 }
 
 /// Keeps track of all active streams and decides which stream that the next data chunk can be sent
@@ -107,7 +106,7 @@ impl StreamScheduler {
             max_payload_bytes,
             current_stream: None,
             system_virtual_time: 0,
-            active_streams: HashMap::new(),
+            active_streams: Vec::new(),
         }
     }
 
@@ -125,10 +124,15 @@ impl StreamScheduler {
             return;
         }
 
-        let active_stream = self
-            .active_streams
-            .entry(stream_id)
-            .or_insert_with(|| ActiveStreamInfo::new(stream_id, self.system_virtual_time));
+        let pos = self.active_streams.iter().position(|s| s.stream_id == stream_id);
+        let active_stream = match pos {
+            Some(idx) => &mut self.active_streams[idx],
+            None => {
+                self.active_streams
+                    .push(ActiveStreamInfo::new(stream_id, self.system_virtual_time));
+                self.active_streams.last_mut().unwrap()
+            }
+        };
         active_stream.parameters = priority.map_or(SchedulingParameters::RoundRobin, |weight| {
             SchedulingParameters::WeightedFairQueuing { weight }
         });
@@ -145,8 +149,8 @@ impl StreamScheduler {
     pub fn peek(&self, max_size: usize) -> Option<(StreamId, usize)> {
         let active_stream = self
             .current_stream
-            .and_then(|stream_id| self.active_streams.get(&stream_id))
-            .or_else(|| self.active_streams.values().min())?;
+            .and_then(|stream_id| self.active_streams.iter().find(|s| s.stream_id == stream_id))
+            .or_else(|| self.active_streams.iter().min())?;
 
         Some((active_stream.stream_id, active_stream.bytes_remaining.min(max_size)))
     }
@@ -156,8 +160,11 @@ impl StreamScheduler {
     /// This must be called after having called [`Self::peek`], which guarantees that `stream_id`
     /// and `bytes` are valid.
     pub fn accept(&mut self, stream_id: StreamId, bytes: usize) {
-        let active_stream =
-            self.active_streams.get_mut(&stream_id).expect("accept called on untracked stream_id");
+        let active_stream = self
+            .active_streams
+            .iter_mut()
+            .find(|s| s.stream_id == stream_id)
+            .expect("accept called on untracked stream_id");
         self.current_stream = Some(stream_id);
 
         self.system_virtual_time = active_stream.consume_bytes(bytes, self.max_payload_bytes);
@@ -177,7 +184,9 @@ impl StreamScheduler {
     }
 
     fn remove_stream(&mut self, stream_id: StreamId) {
-        self.active_streams.remove(&stream_id);
+        if let Some(pos) = self.active_streams.iter().position(|s| s.stream_id == stream_id) {
+            self.active_streams.swap_remove(pos);
+        }
         if self.current_stream == Some(stream_id) {
             self.current_stream = None;
         }
