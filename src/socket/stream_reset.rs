@@ -417,7 +417,7 @@ mod tests {
             let event = events.borrow_mut().next_event().expect("expected event");
             match event {
                 SocketEvent::SendPacket(packet) => {
-                    return SctpPacket::from_bytes(&packet, options).expect("valid packet");
+                    return SctpPacket::try_from_bytes(&packet, options).expect("valid packet");
                 }
                 SocketEvent::OnBufferedAmountLow(_) => {
                     // Ignore these - handling them explicitly in the tests just create noise.
@@ -960,7 +960,7 @@ mod tests {
         // Should NOT send a request yet because stream is pending (has partially sent data).
         while let Some(event) = events.borrow_mut().next_event() {
             if let SocketEvent::SendPacket(packet) = event {
-                let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
+                let packet = SctpPacket::try_from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
                     panic!("Unexpected ReConfig chunk - should be deferred");
                 }
@@ -1083,7 +1083,7 @@ mod tests {
         // Should NOT trigger any new reconfig packet immediately. Drain events to be sure.
         while let Some(event) = events.borrow_mut().next_event() {
             if let SocketEvent::SendPacket(packet) = event {
-                let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
+                let packet = SctpPacket::try_from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
                     panic!("Unexpected ReConfig chunk");
                 }
@@ -1124,7 +1124,7 @@ mod tests {
         ctx.send_buffered_packets(&mut state, SocketTime::zero());
         while let Some(event) = events.borrow_mut().next_event() {
             if let SocketEvent::SendPacket(packet) = event {
-                let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
+                let packet = SctpPacket::try_from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
                     panic!("Unexpected ReConfig chunk");
                 }

@@ -84,7 +84,7 @@ mod tests {
         cause.serialize_to(&mut serialized);
 
         let error = ZeroChecksumAcceptableParameter::try_from(
-            RawParameter::from_bytes(&serialized).unwrap().0,
+            RawParameter::try_from_bytes(&serialized).unwrap().0,
         )
         .unwrap();
         assert_eq!(error.method, ZeroChecksumAlternateErrorDetectionMethod(42));

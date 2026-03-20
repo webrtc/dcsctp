@@ -102,7 +102,7 @@ mod tests {
         cause.serialize_to(&mut serialized);
 
         let param = IncomingSsnResetRequestParameter::try_from(
-            RawParameter::from_bytes(&serialized).unwrap().0,
+            RawParameter::try_from_bytes(&serialized).unwrap().0,
         )
         .unwrap();
         assert_eq!(param.request_seq_nbr, 1);

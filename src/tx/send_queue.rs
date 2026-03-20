@@ -734,7 +734,7 @@ mod tests {
             Message::new(StreamId(1), PpId(54), vec![0; 100]),
             &SendOptions {
                 lifetime: Some(Duration::from_millis(1000)),
-                lifecycle_id: LifecycleId::new(1),
+                lifecycle_id: LifecycleId::try_new(1),
                 ..Default::default()
             },
         );
@@ -1471,7 +1471,7 @@ mod tests {
             Message::new(StreamId(1), PpId(54), vec![0; 20]),
             &SendOptions {
                 lifetime: Some(Duration::from_millis(1000)),
-                lifecycle_id: LifecycleId::new(1),
+                lifecycle_id: LifecycleId::try_new(1),
                 ..Default::default()
             },
         );
@@ -1495,12 +1495,12 @@ mod tests {
         q.add(
             now,
             Message::new(StreamId(1), PPID, vec![0; 120]),
-            &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
+            &SendOptions { lifecycle_id: LifecycleId::try_new(1), ..Default::default() },
         );
         q.add(
             now,
             Message::new(StreamId(1), PPID, vec![0; 120]),
-            &SendOptions { lifecycle_id: LifecycleId::new(2), ..Default::default() },
+            &SendOptions { lifecycle_id: LifecycleId::try_new(2), ..Default::default() },
         );
 
         let chunk_one = q.produce(START_TIME, 50).unwrap();
@@ -1527,7 +1527,7 @@ mod tests {
         q.add(
             now,
             Message::new(StreamId(1), PPID, vec![0; 120]),
-            &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
+            &SendOptions { lifecycle_id: LifecycleId::try_new(1), ..Default::default() },
         );
 
         let chunk_one = q.produce(START_TIME, 50).unwrap();

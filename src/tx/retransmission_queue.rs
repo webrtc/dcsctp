@@ -2692,7 +2692,7 @@ mod tests {
         sq.add(
             now,
             Message::new(StreamId(1), PpId(53), vec![0; 100]),
-            &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
+            &SendOptions { lifecycle_id: LifecycleId::try_new(1), ..SendOptions::default() },
         );
 
         // The message is small and will be produced in full.
@@ -2718,7 +2718,7 @@ mod tests {
         sq.add(
             now,
             Message::new(StreamId(1), PpId(53), vec![0; 100]),
-            &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
+            &SendOptions { lifecycle_id: LifecycleId::try_new(1), ..SendOptions::default() },
         );
         rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
         while events.borrow_mut().next_event().is_some() {}
@@ -2752,7 +2752,7 @@ mod tests {
             now,
             Message::new(StreamId(1), PpId(53), vec![0; 100]),
             &SendOptions {
-                lifecycle_id: LifecycleId::new(1),
+                lifecycle_id: LifecycleId::try_new(1),
                 max_retransmissions: Some(0),
                 ..SendOptions::default()
             },

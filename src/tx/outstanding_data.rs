@@ -1424,7 +1424,7 @@ mod tests {
             now(),
             u16::MAX,
             no_expiry(),
-            LifecycleId::new(42),
+            LifecycleId::try_new(42),
         );
         buf.insert(
             OutgoingMessageId(2),
@@ -1432,7 +1432,7 @@ mod tests {
             now(),
             u16::MAX,
             no_expiry(),
-            LifecycleId::new(43),
+            LifecycleId::try_new(43),
         );
         buf.insert(
             OutgoingMessageId(3),
@@ -1440,7 +1440,7 @@ mod tests {
             now(),
             u16::MAX,
             no_expiry(),
-            LifecycleId::new(44),
+            LifecycleId::try_new(44),
         );
 
         let ack = buf.handle_sack(Tsn(11), &[], false);
@@ -1485,7 +1485,7 @@ mod tests {
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
-            LifecycleId::new(42),
+            LifecycleId::try_new(42),
         );
 
         buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
@@ -1542,7 +1542,7 @@ mod tests {
             now(),
             /* max_retransmissions */ 0,
             no_expiry(),
-            LifecycleId::new(42),
+            LifecycleId::try_new(42),
         );
 
         assert_eq!(
