@@ -55,6 +55,7 @@ use crate::packet::shutdown_complete_chunk;
 use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
 use crate::packet::unknown_chunk::UnknownChunk;
 use crate::packet::write_u16_be;
+use bytes::Bytes;
 use std::cmp;
 
 /// Intermediate representation of a chunk for which the type hasn't been fully discriminated, see
@@ -74,12 +75,20 @@ pub(crate) struct RawChunk<'a> {
     pub(crate) typ: u8,
     pub(crate) flags: u8,
     pub(crate) value: &'a [u8],
+    // The backing buffer for the entire packet.
+    pub(crate) packet: &'a Bytes,
+    // The offset where the chunk's value starts within `packet`.
+    pub(crate) value_offset: usize,
 }
 
 impl<'a> RawChunk<'a> {
-    /// Reads a chunk from `bytes` and returns a raw representation of the frame and the remaining
-    /// data that was not consumed when reading this chunk.
-    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
+    /// Reads a chunk from `packet` at the given `offset`.
+    /// Returns the parsed chunk and the next offset to continue parsing from.
+    pub(crate) fn from_bytes(
+        packet: &'a Bytes,
+        offset: usize,
+    ) -> Result<(Self, usize), ChunkParseError> {
+        let bytes = &packet[offset..];
         ensure!(bytes.len() >= TLV_HEADER_SIZE, ChunkParseError::InvalidLength);
 
         let length = read_u16_be!(&bytes[2..4]) as usize;
@@ -87,10 +96,16 @@ impl<'a> RawChunk<'a> {
 
         let padded_length = round_up_to_4!(length);
         let end_offset = cmp::min(padded_length, bytes.len());
-
+        let next_offset = offset + end_offset;
         Ok((
-            Self { typ: bytes[0], flags: bytes[1], value: &bytes[TLV_HEADER_SIZE..length] },
-            &bytes[end_offset..],
+            Self {
+                typ: bytes[0],
+                flags: bytes[1],
+                value: &bytes[TLV_HEADER_SIZE..length],
+                packet,
+                value_offset: offset + TLV_HEADER_SIZE,
+            },
+            next_offset,
         ))
     }
 }
@@ -197,6 +212,7 @@ mod tests {
     use super::*;
     use crate::packet::read_u32_be;
     use crate::packet::write_u32_be;
+    use bytes::Bytes;
 
     // A test chunk that has a single u32 in its header, following the common chunk header.
     #[derive(Debug)]
@@ -230,7 +246,8 @@ mod tests {
     #[test]
     fn parse_success() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00, 0x08, 0x01, 0x02, 0x03, 0x04];
-        let desc = RawChunk::from_bytes(BYTES).unwrap().0;
+        let bytes = Bytes::from_static(BYTES);
+        let desc = RawChunk::from_bytes(&bytes, 0).unwrap().0;
         let parsed = TestChunk::try_from(desc).unwrap();
         assert_eq!(parsed.additional_data, 0x01020304);
     }
@@ -248,14 +265,16 @@ mod tests {
     #[test]
     fn parse_insufficient_size() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00];
-        assert_eq!(RawChunk::from_bytes(BYTES).unwrap_err(), ChunkParseError::InvalidLength);
+        let bytes = Bytes::from_static(BYTES);
+        assert_eq!(RawChunk::from_bytes(&bytes, 0).unwrap_err(), ChunkParseError::InvalidLength);
     }
 
     #[test]
     fn parse_invalid_type() {
         const BYTES: &[u8] = &[0x41, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00];
+        let bytes = Bytes::from_static(BYTES);
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            TestChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap_err(),
             ChunkParseError::InvalidType,
         );
     }
@@ -263,8 +282,9 @@ mod tests {
     #[test]
     fn parse_invalid_length() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00];
+        let bytes = Bytes::from_static(BYTES);
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            TestChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap_err(),
             ChunkParseError::InvalidLength,
         );
     }
@@ -298,15 +318,16 @@ mod tests {
             0x61, 0x6e, 0x6e, 0x65, 0x6c, 0x00, 0x00, 0x00,
         ];
         const DATA_HEADER_SIZE: usize = 16;
-        let (chunk, remaining) = RawChunk::from_bytes(BYTES).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let (chunk, offset) = RawChunk::from_bytes(&bytes, 0).unwrap();
         assert_eq!(chunk.typ, 0x0b);
         assert!(chunk.value.is_empty());
-        assert_eq!(remaining.len(), round_up_to_4!(DATA_HEADER_SIZE + 41));
+        assert_eq!(bytes.len() - offset, round_up_to_4!(DATA_HEADER_SIZE + 41));
 
-        let (chunk, remaining) = RawChunk::from_bytes(remaining).unwrap();
+        let (chunk, offset) = RawChunk::from_bytes(&bytes, offset).unwrap();
         assert_eq!(chunk.typ, 0x00);
         assert_eq!(chunk.value.len(), DATA_HEADER_SIZE - TLV_HEADER_SIZE + 41);
-        assert!(remaining.is_empty());
+        assert_eq!(offset, bytes.len());
     }
 
     #[test]
@@ -338,7 +359,8 @@ mod tests {
             0x61, 0x6e, 0x6e, 0x65, 0x6c, 0x00, 0x00, 0x00,
         ];
         const DATA_HEADER_SIZE: usize = 16;
-        let (raw_chunk, remaining) = RawChunk::from_bytes(BYTES).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let (raw_chunk, offset) = RawChunk::from_bytes(&bytes, 0).unwrap();
         let chunk = Chunk::try_from(raw_chunk).unwrap();
         assert!(matches!(chunk, Chunk::CookieAck { .. }));
         assert_eq!(chunk.as_serializable().serialized_size(), 4);
@@ -346,7 +368,7 @@ mod tests {
         chunk.as_serializable().serialize_to(&mut data1);
         assert_eq!(data1, BYTES[0..4]);
 
-        let (raw_chunk, _remaining) = RawChunk::from_bytes(remaining).unwrap();
+        let (raw_chunk, _offset) = RawChunk::from_bytes(&bytes, offset).unwrap();
         let chunk = Chunk::try_from(raw_chunk).unwrap();
         assert!(matches!(chunk, Chunk::Data { .. }));
         assert_eq!(chunk.as_serializable().serialized_size(), 57);

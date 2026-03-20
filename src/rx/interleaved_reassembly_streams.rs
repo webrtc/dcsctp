@@ -78,7 +78,7 @@ impl OrderedStream {
 
         if data.mid == self.next_mid && data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
-            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload.into()));
+            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload));
             self.next_mid += 1;
             let assembled = self.try_assemble_next(on_reassembled);
             return -(assembled as isize);
@@ -105,7 +105,7 @@ impl UnorderedStream {
     fn add(&mut self, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         if data.is_beginning && data.is_end {
             // Fast path - reassemble directly.
-            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload.into()));
+            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload));
             return 0;
         }
 

@@ -18,6 +18,7 @@ use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::Ssn;
 use crate::types::StreamKey;
+use bytes::Bytes;
 
 /// Represents data that is either received and extracted from a DATA/I-DATA chunk, or data that is
 /// supposed to be sent, and wrapped in a DATA/I-DATA chunk (depending on peer capabilities).
@@ -34,7 +35,7 @@ pub(crate) struct Data {
     pub mid: Mid,
     pub fsn: Fsn,
     pub ppid: PpId,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
     pub is_beginning: bool,
     pub is_end: bool,
 }

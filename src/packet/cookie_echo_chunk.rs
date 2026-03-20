@@ -70,11 +70,13 @@ impl fmt::Display for CookieEchoChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn init_from_capture() {
         const BYTES: &[u8] = &[0x0a, 0x00, 0x00, 0x08, 0x12, 0x34, 0x56, 0x78];
-        let c = CookieEchoChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let c = CookieEchoChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(c.cookie, vec![0x12, 0x34, 0x56, 0x78]);
     }
@@ -86,8 +88,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            CookieEchoChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            CookieEchoChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.cookie, vec![1, 2, 3, 4, 5]);
     }

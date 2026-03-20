@@ -120,6 +120,7 @@ impl fmt::Display for IForwardTsnChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -135,7 +136,8 @@ mod tests {
             0xc2, 0x00, 0x00, 0x10, 0xb8, 0x74, 0x52, 0xec, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x02,
         ];
-        let c = IForwardTsnChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let c = IForwardTsnChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.new_cumulative_tsn, Tsn(3094631148));
         assert_eq!(
             c.skipped_streams,
@@ -156,8 +158,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            IForwardTsnChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            IForwardTsnChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.new_cumulative_tsn, Tsn(123));
         assert_eq!(deserialized.skipped_streams.len(), 2);
