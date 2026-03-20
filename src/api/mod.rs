@@ -88,22 +88,24 @@ impl fmt::Display for LifecycleId {
     }
 }
 
+impl From<u64> for LifecycleId {
+    /// Creates a new `LifecycleId` from a non-zero value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is zero.
+    fn from(n: u64) -> Self {
+        debug_assert!(n != 0);
+        Self(NonZeroU64::new(n).expect("LifecycleId cannot be zero"))
+    }
+}
+
 impl LifecycleId {
     /// Creates a new `LifecycleId`.
     ///
     /// Returns `None` if the value is zero, as zero is not a valid lifecycle identifier.
     pub fn new(n: u64) -> Option<LifecycleId> {
         NonZeroU64::new(n).map(LifecycleId)
-    }
-
-    /// Creates a new `LifecycleId` from a non-zero value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `n` is zero.
-    pub fn from(n: u64) -> LifecycleId {
-        debug_assert!(n != 0);
-        LifecycleId(NonZeroU64::new(n).unwrap())
     }
 
     /// Returns the underlying value.
