@@ -249,7 +249,7 @@ impl SendQueue {
                 let priority = self.enable_message_interleaving.then_some(stream.priority);
                 self.scheduler.set_bytes_remaining(
                     stream_id,
-                    stream.items.front().map(|i| i.remaining_size).unwrap_or(0),
+                    stream.items.front().map_or(0, |i| i.remaining_size),
                     priority,
                 );
                 continue;
@@ -318,12 +318,8 @@ impl SendQueue {
         let fsn = item.current_fsn;
         let lifecycle_id = if is_end { item.attributes.lifecycle_id.clone() } else { None };
         item.current_fsn += 1;
-        let payload = item
-            .message
-            .payload
-            .get(item.remaining_offset..size + item.remaining_offset)
-            .unwrap()
-            .to_vec();
+        let payload =
+            item.message.payload[item.remaining_offset..item.remaining_offset + size].to_vec();
         if self.buffered_amount.sub(payload.len()) {
             self.events.borrow_mut().add(SocketEvent::OnTotalBufferedAmountLow());
         }
@@ -398,7 +394,7 @@ impl SendQueue {
         } else {
             self.scheduler.set_bytes_remaining(
                 stream_id,
-                stream.items.front().map(|i| i.remaining_size).unwrap_or(0),
+                stream.items.front().map_or(0, |i| i.remaining_size),
                 priority,
             );
         }
@@ -461,19 +457,21 @@ impl SendQueue {
     }
 
     pub fn get_streams_ready_to_reset(&mut self) -> Vec<StreamId> {
-        let mut ready: Vec<StreamId> = Vec::new();
-        self.streams.iter_mut().for_each(|(stream_id, stream)| {
-            if stream.pause_state == PauseState::Paused {
+        self.streams
+            .iter_mut()
+            .filter(|(_, stream)| stream.pause_state == PauseState::Paused)
+            .map(|(stream_id, stream)| {
                 stream.pause_state = PauseState::Resetting;
-                ready.push(*stream_id);
-            }
-        });
-        ready
+                *stream_id
+            })
+            .collect()
     }
 
     pub fn commit_reset_streams(&mut self) {
-        self.streams.iter_mut().for_each(|(stream_id, stream)| {
-            if stream.pause_state == PauseState::Resetting {
+        self.streams
+            .iter_mut()
+            .filter(|(_, stream)| stream.pause_state == PauseState::Resetting)
+            .for_each(|(stream_id, stream)| {
                 stream.pause_state = PauseState::NotPaused;
                 stream.next_ordered_mid = Mid(0);
                 stream.next_unordered_mid = Mid(0);
@@ -482,20 +480,20 @@ impl SendQueue {
                     let priority = self.enable_message_interleaving.then_some(stream.priority);
                     self.scheduler.set_bytes_remaining(*stream_id, item.remaining_size, priority);
                 }
-            }
-        });
+            });
     }
 
     pub fn rollback_reset_streams(&mut self) {
-        self.streams.iter_mut().for_each(|(stream_id, stream)| {
-            if stream.pause_state == PauseState::Resetting {
+        self.streams
+            .iter_mut()
+            .filter(|(_, stream)| stream.pause_state == PauseState::Resetting)
+            .for_each(|(stream_id, stream)| {
                 stream.pause_state = PauseState::NotPaused;
                 if let Some(item) = &stream.items.front() {
                     let priority = self.enable_message_interleaving.then_some(stream.priority);
                     self.scheduler.set_bytes_remaining(*stream_id, item.remaining_size, priority);
                 }
-            }
-        });
+            });
     }
 
     pub fn reset(&mut self) {
@@ -517,10 +515,7 @@ impl SendQueue {
     }
 
     pub fn buffered_amount(&self, stream_id: StreamId) -> usize {
-        match self.streams.get(&stream_id) {
-            Some(stream) => stream.buffered_amount.value,
-            None => 0,
-        }
+        self.streams.get(&stream_id).map_or(0, |s| s.buffered_amount.value)
     }
 
     pub fn total_buffered_amount(&self) -> usize {
@@ -528,10 +523,9 @@ impl SendQueue {
     }
 
     pub fn buffered_amount_low_threshold(&self, stream_id: StreamId) -> usize {
-        match self.streams.get(&stream_id) {
-            Some(stream) => stream.buffered_amount.low_threshold,
-            None => self.default_low_buffered_amount_low_threshold,
-        }
+        self.streams.get(&stream_id).map_or(self.default_low_buffered_amount_low_threshold, |s| {
+            s.buffered_amount.low_threshold
+        })
     }
 
     pub fn set_buffered_amount_low_threshold(&mut self, stream_id: StreamId, threshold: usize) {
@@ -557,10 +551,7 @@ impl SendQueue {
     }
 
     pub fn get_priority(&self, stream_id: StreamId) -> u16 {
-        match self.streams.get(&stream_id) {
-            Some(stream) => stream.priority,
-            None => self.default_priority,
-        }
+        self.streams.get(&stream_id).map_or(self.default_priority, |s| s.priority)
     }
 
     pub fn get_handover_readiness(&self) -> HandoverReadiness {
@@ -586,15 +577,15 @@ impl SendQueue {
     }
 
     pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
-        state.tx.streams.iter().for_each(|s| {
+        self.streams.extend(state.tx.streams.iter().map(|s| {
             let stream_id = StreamId(s.id);
             let mut stream =
                 SendQueue::make_stream(s.priority, self.default_low_buffered_amount_low_threshold);
             stream.next_ssn = Ssn(s.next_ssn);
             stream.next_unordered_mid = Mid(s.next_unordered_mid);
             stream.next_ordered_mid = Mid(s.next_ordered_mid);
-            self.streams.insert(stream_id, stream);
-        });
+            (stream_id, stream)
+        }));
     }
 }
 
