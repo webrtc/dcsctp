@@ -112,6 +112,7 @@ impl fmt::Display for ForwardTsnChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -121,7 +122,8 @@ mod tests {
         //     Chunk length: 8
         //     New cumulative TSN: 1905748778
         const BYTES: &[u8] = &[0xc0, 0x00, 0x00, 0x08, 0x71, 0x97, 0x6b, 0x2a];
-        let c = ForwardTsnChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(BYTES);
+        let c = ForwardTsnChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.new_cumulative_tsn, Tsn(1905748778));
     }
 
@@ -138,8 +140,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            ForwardTsnChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ForwardTsnChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.new_cumulative_tsn, Tsn(123));
         assert_eq!(deserialized.skipped_streams.len(), 2);

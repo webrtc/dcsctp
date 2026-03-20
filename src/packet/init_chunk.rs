@@ -113,6 +113,7 @@ mod tests {
     use super::*;
     use crate::packet::forward_tsn_supported_parameter::ForwardTsnSupportedParameter;
     use crate::packet::supported_extensions_parameter::SupportedExtensionsParameter;
+    use bytes::Bytes;
 
     #[test]
     fn init_from_capture() {
@@ -125,7 +126,8 @@ mod tests {
             0xa6, 0x44, 0xce, 0x4d, 0xd2, 0xad, 0x80, 0x04, 0x00, 0x06, 0x00, 0x01, 0x00, 0x00,
             0x80, 0x03, 0x00, 0x06, 0x80, 0xc1, 0x00, 0x00,
         ];
-        let c = InitChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(BYTES);
+        let c = InitChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(c.initiate_tag, 0xde7a1690);
         assert_eq!(c.a_rwnd, 131072);
@@ -158,8 +160,8 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
-        let deserialized =
-            InitChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(&serialized);
+        let deserialized = InitChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.initiate_tag, 123);
         assert_eq!(deserialized.a_rwnd, 456);

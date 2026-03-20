@@ -80,6 +80,7 @@ mod tests {
     use crate::api::StreamId;
     use crate::packet::outgoing_ssn_reset_request_parameter::OutgoingSsnResetRequestParameter;
     use crate::types::Tsn;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -99,7 +100,8 @@ mod tests {
             0x82, 0x00, 0x00, 0x16, 0x00, 0x0d, 0x00, 0x12, 0x87, 0x55, 0xd8, 0x23, 0x71, 0x97,
             0x6a, 0x9e, 0x87, 0x55, 0xd8, 0x32, 0x00, 0x06, 0x00, 0x00,
         ];
-        let chunk = ReConfigChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(BYTES);
+        let chunk = ReConfigChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(chunk.parameters.len(), 1);
         match chunk.parameters[0] {
             Parameter::OutgoingSsnResetRequest(ref i) => {
@@ -128,8 +130,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            ReConfigChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ReConfigChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         match deserialized.parameters[0] {
             Parameter::OutgoingSsnResetRequest(ref i) => {
                 assert_eq!(i.request_seq_nbr, 123);
