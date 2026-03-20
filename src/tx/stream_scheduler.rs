@@ -19,7 +19,7 @@ use std::collections::HashMap;
 #[derive(Debug, PartialEq)]
 enum SchedulingParameters {
     RoundRobin,
-    WeightedFairQueuing { inverse_weight: f64 },
+    WeightedFairQueuing { weight: u16 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,15 +27,17 @@ struct ActiveStreamInfo {
     stream_id: StreamId,
     parameters: SchedulingParameters,
     /// The virtual time at which the stream started its current chunk.
-    virtual_start_time: f64,
+    virtual_start_time: u64,
     /// The projected virtual time at which the current chunk will finish.
-    virtual_finish_time: f64,
+    virtual_finish_time: u64,
     bytes_remaining: usize,
 }
 
 impl Ord for ActiveStreamInfo {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.virtual_finish_time.total_cmp(&other.virtual_finish_time).then_with(|| self.stream_id.cmp(&other.stream_id))
+        self.virtual_finish_time
+            .cmp(&other.virtual_finish_time)
+            .then_with(|| self.stream_id.cmp(&other.stream_id))
     }
 }
 
@@ -48,23 +50,23 @@ impl PartialOrd for ActiveStreamInfo {
 impl Eq for ActiveStreamInfo {}
 
 impl ActiveStreamInfo {
-    fn new(stream_id: StreamId, system_virtual_time: f64) -> Self {
+    fn new(stream_id: StreamId, system_virtual_time: u64) -> Self {
         Self {
             stream_id,
             parameters: SchedulingParameters::RoundRobin,
             virtual_start_time: system_virtual_time,
-            virtual_finish_time: 0.0,
+            virtual_finish_time: 0,
             bytes_remaining: 0,
         }
     }
 
     /// Calculates the virtual time cost of sending `bytes` given the stream's weight.
-    fn calculate_vt(&self, bytes: usize) -> f64 {
+    fn calculate_vt(&self, bytes: usize) -> u64 {
         let increment = match self.parameters {
-            SchedulingParameters::WeightedFairQueuing { inverse_weight } => {
-                bytes as f64 * inverse_weight
+            SchedulingParameters::WeightedFairQueuing { weight } => {
+                (bytes as u64 * 1_000_000) / (weight as u64).max(1)
             }
-            SchedulingParameters::RoundRobin => 1.0,
+            SchedulingParameters::RoundRobin => 1,
         };
         self.virtual_start_time + increment
     }
@@ -76,7 +78,7 @@ impl ActiveStreamInfo {
 
     /// Consumes the actual number of bytes sent, returns the exact virtual time for that payload,
     /// and schedules the next chunk if there is data remaining.
-    fn consume_bytes(&mut self, bytes: usize, max_payload_bytes: usize) -> f64 {
+    fn consume_bytes(&mut self, bytes: usize, max_payload_bytes: usize) -> u64 {
         let new_current_vt = self.calculate_vt(bytes);
 
         self.bytes_remaining = self.bytes_remaining.saturating_sub(bytes);
@@ -93,7 +95,7 @@ impl ActiveStreamInfo {
 pub struct StreamScheduler {
     max_payload_bytes: usize,
     current_stream: Option<StreamId>,
-    system_virtual_time: f64,
+    system_virtual_time: u64,
     active_streams: HashMap<StreamId, ActiveStreamInfo>,
 }
 
@@ -104,7 +106,7 @@ impl StreamScheduler {
         Self {
             max_payload_bytes,
             current_stream: None,
-            system_virtual_time: 0.0,
+            system_virtual_time: 0,
             active_streams: HashMap::new(),
         }
     }
@@ -119,10 +121,7 @@ impl StreamScheduler {
         priority: Option<u16>,
     ) {
         if bytes_remaining == 0 {
-            self.active_streams.remove(&stream_id);
-            if self.current_stream == Some(stream_id) {
-                self.current_stream = None;
-            }
+            self.remove_stream(stream_id);
             return;
         }
 
@@ -130,11 +129,12 @@ impl StreamScheduler {
             .active_streams
             .entry(stream_id)
             .or_insert_with(|| ActiveStreamInfo::new(stream_id, self.system_virtual_time));
-        active_stream.parameters = priority.map_or(SchedulingParameters::RoundRobin, |v| {
-            SchedulingParameters::WeightedFairQueuing { inverse_weight: 1.0 / v as f64 }
+        active_stream.parameters = priority.map_or(SchedulingParameters::RoundRobin, |weight| {
+            SchedulingParameters::WeightedFairQueuing { weight }
         });
         active_stream.bytes_remaining = bytes_remaining;
-        active_stream.schedule_next_chunk(active_stream.bytes_remaining.min(self.max_payload_bytes));
+        active_stream
+            .schedule_next_chunk(active_stream.bytes_remaining.min(self.max_payload_bytes));
     }
 
     /// Given space for `max_size` bytes, returns which stream that data should be produced from,
@@ -164,8 +164,7 @@ impl StreamScheduler {
 
         if active_stream.bytes_remaining == 0 {
             // Consumed entire message - reschedule.
-            self.current_stream = None;
-            self.active_streams.remove(&stream_id);
+            self.remove_stream(stream_id);
         } else {
             if matches!(active_stream.parameters, SchedulingParameters::WeightedFairQueuing { .. })
             {
@@ -174,6 +173,16 @@ impl StreamScheduler {
                 // I-DATA chunk sent.
                 self.current_stream = None;
             }
+        }
+    }
+
+    fn remove_stream(&mut self, stream_id: StreamId) {
+        self.active_streams.remove(&stream_id);
+        if self.current_stream == Some(stream_id) {
+            self.current_stream = None;
+        }
+        if self.active_streams.is_empty() {
+            self.system_virtual_time = 0;
         }
     }
 }
