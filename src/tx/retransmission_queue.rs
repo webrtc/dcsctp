@@ -822,7 +822,7 @@ mod tests {
     fn add_message(sq: &mut SendQueue, now: SocketTime) {
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
+            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6].into()),
             &SendOptions::default(),
         );
     }
@@ -1285,7 +1285,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
+            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -1319,7 +1319,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
+            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -1354,7 +1354,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6]),
+            Message::new(StreamId(1), PpId(53), vec![1, 2, 4, 5, 6].into()),
             &SendOptions { max_retransmissions: Some(3), ..SendOptions::default() },
         );
 
@@ -1420,7 +1420,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 1000]),
+            Message::new(StreamId(1), PpId(53), vec![0; 1000].into()),
             &SendOptions { max_retransmissions: Some(3), ..SendOptions::default() },
         );
 
@@ -1463,7 +1463,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 4 * 4]),
+            Message::new(StreamId(1), PpId(53), vec![0; 4 * 4].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -1523,7 +1523,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 3 * 4]),
+            Message::new(StreamId(1), PpId(53), vec![0; 3 * 4].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -1589,10 +1589,10 @@ mod tests {
         sq.set_priority(StreamId(2), 1);
         sq.set_priority(StreamId(3), 1);
         sq.set_priority(StreamId(4), 1);
-        sq.add(now, Message::new(StreamId(1), PpId(53), vec![0; 2 * MTU]), &s);
-        sq.add(now, Message::new(StreamId(2), PpId(53), vec![0; 2 * MTU]), &s);
-        sq.add(now, Message::new(StreamId(3), PpId(53), vec![0; 2 * MTU]), &s);
-        sq.add(now, Message::new(StreamId(4), PpId(53), vec![0; 2 * MTU]), &s);
+        sq.add(now, Message::new(StreamId(1), PpId(53), vec![0; 2 * MTU].into()), &s);
+        sq.add(now, Message::new(StreamId(2), PpId(53), vec![0; 2 * MTU].into()), &s);
+        sq.add(now, Message::new(StreamId(3), PpId(53), vec![0; 2 * MTU].into()), &s);
+        sq.add(now, Message::new(StreamId(4), PpId(53), vec![0; 2 * MTU].into()), &s);
 
         let bytes = MTU;
         assert_eq!(
@@ -1754,7 +1754,11 @@ mod tests {
         let mut sq = SendQueue::new(MTU, &Options::default(), events.clone());
         let mut rtx = create_queue(/* supports_partial_reliability */ true, false, events);
 
-        sq.add(now, Message::new(StreamId(1), PpId(53), vec![0; 4 * 8]), &SendOptions::default());
+        sq.add(
+            now,
+            Message::new(StreamId(1), PpId(53), vec![0; 4 * 8].into()),
+            &SendOptions::default(),
+        );
 
         for _ in 0..8 {
             rtx.get_chunks_to_send(now, data_chunk::HEADER_SIZE + 4, |bytes, _| {
@@ -1906,12 +1910,12 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; FIRST_DATA_PAYLOAD_SIZE]),
+            Message::new(StreamId(1), PpId(53), vec![0; FIRST_DATA_PAYLOAD_SIZE].into()),
             &SendOptions::default(),
         );
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; SECOND_DATA_PAYLOAD_SIZE]),
+            Message::new(StreamId(1), PpId(53), vec![0; SECOND_DATA_PAYLOAD_SIZE].into()),
             &SendOptions::default(),
         );
 
@@ -1941,7 +1945,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 16]),
+            Message::new(StreamId(1), PpId(53), vec![0; 16].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -2034,7 +2038,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 16]),
+            Message::new(StreamId(1), PpId(53), vec![0; 16].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -2099,12 +2103,12 @@ mod tests {
         sq.set_priority(StreamId(2), 1);
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT * 2]),
+            Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT * 2].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
         sq.add(
             now,
-            Message::new(StreamId(2), PpId(54), vec![0; MAX_SIZE_IN_FRAGMENT * 2]),
+            Message::new(StreamId(2), PpId(54), vec![0; MAX_SIZE_IN_FRAGMENT * 2].into()),
             &SendOptions::default(),
         );
 
@@ -2169,12 +2173,12 @@ mod tests {
         sq.set_priority(StreamId(2), 1);
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT * 2]),
+            Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT * 2].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
         sq.add(
             now,
-            Message::new(StreamId(2), PpId(54), vec![0; MAX_SIZE_IN_FRAGMENT * 2]),
+            Message::new(StreamId(2), PpId(54), vec![0; MAX_SIZE_IN_FRAGMENT * 2].into()),
             &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
         );
 
@@ -2235,7 +2239,7 @@ mod tests {
         for _ in 0..8 {
             sq.add(
                 now,
-                Message::new(StreamId(1), PpId(53), vec![0; 4]),
+                Message::new(StreamId(1), PpId(53), vec![0; 4].into()),
                 &SendOptions { max_retransmissions: Some(0), ..SendOptions::default() },
             );
         }
@@ -2319,7 +2323,7 @@ mod tests {
             for _ in 0..count {
                 sq.add(
                     now,
-                    Message::new(StreamId(1), PpId(53), vec![0; 4]),
+                    Message::new(StreamId(1), PpId(53), vec![0; 4].into()),
                     &SendOptions { max_retransmissions: Some(2), ..SendOptions::default() },
                 );
             }
@@ -2474,7 +2478,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 1000]),
+            Message::new(StreamId(1), PpId(53), vec![0; 1000].into()),
             &SendOptions { max_retransmissions: Some(3), ..SendOptions::default() },
         );
 
@@ -2776,7 +2780,7 @@ mod tests {
         for tsn in 10..=14 {
             sq.add(
                 now,
-                Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT]),
+                Message::new(StreamId(1), PpId(53), vec![0; MAX_SIZE_IN_FRAGMENT].into()),
                 &SendOptions::default(),
             );
             assert_eq!(
@@ -2896,7 +2900,11 @@ mod tests {
         );
 
         // Add a message
-        sq.add(now, Message::new(StreamId(1), PpId(53), vec![1, 2, 3]), &SendOptions::default());
+        sq.add(
+            now,
+            Message::new(StreamId(1), PpId(53), vec![1, 2, 3].into()),
+            &SendOptions::default(),
+        );
 
         // Try to send. Should send one chunk as a probe.
         let chunks = rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
@@ -2914,7 +2922,7 @@ mod tests {
 
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            Message::new(StreamId(1), PpId(53), vec![0; 100].into()),
             &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
         );
 
@@ -2940,7 +2948,7 @@ mod tests {
         // Add a message, produce it in full and drain any event.
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            Message::new(StreamId(1), PpId(53), vec![0; 100].into()),
             &SendOptions { lifecycle_id: LifecycleId::new(1), ..SendOptions::default() },
         );
         rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
@@ -2973,7 +2981,7 @@ mod tests {
         // Add a message (with expiration), produce it in full and drain any event.
         sq.add(
             now,
-            Message::new(StreamId(1), PpId(53), vec![0; 100]),
+            Message::new(StreamId(1), PpId(53), vec![0; 100].into()),
             &SendOptions {
                 lifecycle_id: LifecycleId::new(1),
                 max_retransmissions: Some(0),

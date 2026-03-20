@@ -125,7 +125,7 @@ impl OrderedStream {
             let payload = interval.collect_payload();
 
             assembled_bytes += payload.len();
-            on_reassembled(Message::new(stream_id, ppid, payload));
+            on_reassembled(Message::new(stream_id, ppid, payload.into()));
             self.next_mid += 1;
         }
 
@@ -140,7 +140,7 @@ impl OrderedStream {
 
         if data.mid == self.next_mid && data.is_beginning && data.is_end {
             // Fastpath for already assembled chunks.
-            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload));
+            on_reassembled(Message::new(self.stream_id, data.ppid, data.payload.into()));
             self.next_mid += 1;
             let assembled = self.try_assemble_next(on_reassembled);
             return -(assembled as isize);
@@ -167,7 +167,7 @@ impl UnorderedStream {
     fn add(&mut self, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
         if data.is_beginning && data.is_end {
             // Fast path - reassemble directly.
-            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload));
+            on_reassembled(Message::new(data.stream_key.id(), data.ppid, data.payload.into()));
             return 0;
         }
 
@@ -181,7 +181,7 @@ impl UnorderedStream {
             let payload = interval.collect_payload();
             let total_payload_len = payload.len();
 
-            on_reassembled(Message::new(stream_id, ppid, payload));
+            on_reassembled(Message::new(stream_id, ppid, payload.into()));
             queued_bytes - (total_payload_len as isize)
         } else {
             queued_bytes
@@ -647,7 +647,7 @@ mod tests {
         streams2.add(Tsn(3), data, &mut |m| messages.push(m));
         assert_eq!(streams2.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].payload, b"efgh");
+        assert_eq!(&messages[0].payload[..], b"efgh");
     }
 
     #[test]
@@ -680,7 +680,7 @@ mod tests {
         streams2.add(Tsn(3), data, &mut |m| messages.push(m));
         assert_eq!(streams2.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].payload, b"efgh");
+        assert_eq!(&messages[0].payload[..], b"efgh");
     }
 
     #[test]
