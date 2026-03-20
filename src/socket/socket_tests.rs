@@ -2536,6 +2536,24 @@ mod tests {
     }
 
     #[test]
+    fn send_zero_priority_message() {
+        let options = Options { enable_message_interleaving: true, ..default_options() };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a.set_stream_priority(StreamId(1), 0);
+        socket_a
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2, 3]), &SendOptions::default())
+            .unwrap();
+
+        exchange_packets(&mut socket_a, &mut socket_z);
+        let msg = socket_z.get_next_message().unwrap();
+        assert_eq!(msg.stream_id, StreamId(1));
+        assert_eq!(msg.payload, vec![1, 2, 3]);
+    }
+
+    #[test]
     fn can_change_stream_priority() {
         let mut socket_a = Socket::new("A", &default_options());
 
