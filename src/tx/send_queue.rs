@@ -456,14 +456,14 @@ impl SendQueue {
     }
 
     pub fn get_streams_ready_to_reset(&mut self) -> Vec<StreamId> {
-        let mut ready: Vec<StreamId> = Vec::new();
-        self.streams.iter_mut().for_each(|(stream_id, stream)| {
-            if stream.pause_state == PauseState::Paused {
+        self.streams
+            .iter_mut()
+            .filter(|(_, stream)| stream.pause_state == PauseState::Paused)
+            .map(|(stream_id, stream)| {
                 stream.pause_state = PauseState::Resetting;
-                ready.push(*stream_id);
-            }
-        });
-        ready
+                *stream_id
+            })
+            .collect()
     }
 
     pub fn commit_reset_streams(&mut self) {
@@ -512,10 +512,7 @@ impl SendQueue {
     }
 
     pub fn buffered_amount(&self, stream_id: StreamId) -> usize {
-        match self.streams.get(&stream_id) {
-            Some(stream) => stream.buffered_amount.value,
-            None => 0,
-        }
+        self.streams.get(&stream_id).map_or(0, |s| s.buffered_amount.value)
     }
 
     pub fn total_buffered_amount(&self) -> usize {
