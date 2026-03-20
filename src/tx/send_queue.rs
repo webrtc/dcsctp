@@ -334,12 +334,8 @@ impl SendQueue {
         let fsn = item.current_fsn;
         let lifecycle_id = if is_end { item.attributes.lifecycle_id } else { None };
         item.current_fsn += 1;
-        let payload = item
-            .message
-            .payload
-            .get(item.remaining_offset..size + item.remaining_offset)
-            .unwrap()
-            .to_vec();
+        let payload =
+            item.message.payload.slice(item.remaining_offset..size + item.remaining_offset);
         self.buffered_amount -= payload.len();
         stream.buffered_amount -= payload.len();
 
@@ -349,7 +345,7 @@ impl SendQueue {
             mid: item.mid.unwrap(),
             fsn,
             ppid: item.message.ppid,
-            payload,
+            payload: payload.to_vec(),
             is_beginning,
             is_end,
         };
