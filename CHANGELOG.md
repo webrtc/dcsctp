@@ -11,6 +11,8 @@ and this project adheres to
 ### Fixed
 
  - Possible incorrect RTT calculation on packet loss.
+ - Align sender and receiver to signal advertised receiver window size as
+   payload bytes, excluding any headers.
 
 ## 0.1.10 - 2025-02-26
 
