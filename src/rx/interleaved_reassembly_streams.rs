@@ -63,7 +63,7 @@ impl OrderedStream {
             let payload = interval.collect_payload();
 
             assembled_bytes += payload.len();
-            on_reassembled(Message::new(stream_id, ppid, payload.into()));
+            on_reassembled(Message::new(stream_id, ppid, payload));
             self.next_mid += 1;
         }
 
@@ -113,13 +113,14 @@ impl UnorderedStream {
         let queued_bytes = data.payload.len() as isize;
         let idx = self.intervals.add(key, data);
 
-        if let Some(interval) = self.intervals.pop_if_complete(idx) {
+        let complete_interval = self.intervals.pop_if_complete(idx);
+        if let Some(interval) = complete_interval {
             let stream_id = self.stream_id;
             let ppid = interval.ppid;
             let payload = interval.collect_payload();
             let total_payload_len = payload.len();
 
-            on_reassembled(Message::new(stream_id, ppid, payload.into()));
+            on_reassembled(Message::new(stream_id, ppid, payload));
             queued_bytes - (total_payload_len as isize)
         } else {
             queued_bytes
