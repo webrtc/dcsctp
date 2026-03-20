@@ -92,7 +92,7 @@ impl LifecycleId {
     /// Creates a new `LifecycleId`.
     ///
     /// Returns `None` if the value is zero, as zero is not a valid lifecycle identifier.
-    pub fn new(n: u64) -> Option<LifecycleId> {
+    pub fn try_new(n: u64) -> Option<LifecycleId> {
         NonZeroU64::new(n).map(LifecycleId)
     }
 

@@ -70,7 +70,7 @@ mod tests {
         //  Chunk flags: 0x00
         //  Chunk length: 4
         const BYTES: &[u8] = &[0x08, 0x00, 0x00, 0x04];
-        ShutdownAckChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        ShutdownAckChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
     }
 
     #[test]
@@ -79,7 +79,7 @@ mod tests {
 
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
-        ShutdownAckChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        ShutdownAckChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
     }
 
     #[test]

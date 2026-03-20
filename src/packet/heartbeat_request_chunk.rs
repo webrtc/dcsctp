@@ -18,9 +18,9 @@ use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
 use crate::packet::ensure;
 use crate::packet::parameter::Parameter;
-use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::parameter::parameters_serialize_to;
 use crate::packet::parameter::parameters_serialized_size;
+use crate::packet::parameter::try_parameters_from_bytes;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 4;
@@ -49,7 +49,7 @@ impl TryFrom<RawChunk<'_>> for HeartbeatRequestChunk {
     fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
-        let parameters = parameters_from_bytes(raw.value)?;
+        let parameters = try_parameters_from_bytes(raw.value)?;
         Ok(Self { parameters })
     }
 }
@@ -93,7 +93,7 @@ mod tests {
             0x00, 0x00,
         ];
         let chunk =
-            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+            HeartbeatRequestChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
         assert_eq!(chunk.parameters.len(), 1);
 
         const HEARTBEAT_INFO_BYTES: &[u8] = &[
@@ -121,7 +121,8 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
         let deserialized =
-            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            HeartbeatRequestChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0)
+                .unwrap();
 
         match deserialized.parameters[0] {
             Parameter::HeartbeatInfo(ref i) if i.info == info => {}

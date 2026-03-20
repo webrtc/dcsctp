@@ -157,7 +157,7 @@ mod tests {
             0x03, 0x00, 0x00, 0x1c, 0x36, 0x9d, 0xd0, 0x0b, 0x00, 0x01, 0xed, 0x73, 0x00, 0x02,
             0x00, 0x01, 0x00, 0x02, 0x00, 0x06, 0x00, 0x08, 0x00, 0x08, 0x36, 0x9d, 0xd0, 0x11,
         ];
-        let c = SackChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = SackChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
 
         let cum_ack_tsn = 916312075;
         assert_eq!(c.cumulative_tsn_ack, Tsn(cum_ack_tsn));
@@ -184,7 +184,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            SackChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            SackChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
 
         assert_eq!(deserialized.cumulative_tsn_ack, Tsn(123));
         assert_eq!(deserialized.a_rwnd, 456);

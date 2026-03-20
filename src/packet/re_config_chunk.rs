@@ -18,9 +18,9 @@ use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
 use crate::packet::ensure;
 use crate::packet::parameter::Parameter;
-use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::parameter::parameters_serialize_to;
 use crate::packet::parameter::parameters_serialized_size;
+use crate::packet::parameter::try_parameters_from_bytes;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 130;
@@ -52,7 +52,7 @@ impl TryFrom<RawChunk<'_>> for ReConfigChunk {
 
     fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
-        let parameters = parameters_from_bytes(raw.value)?;
+        let parameters = try_parameters_from_bytes(raw.value)?;
         Ok(Self { parameters })
     }
 }
@@ -99,7 +99,7 @@ mod tests {
             0x82, 0x00, 0x00, 0x16, 0x00, 0x0d, 0x00, 0x12, 0x87, 0x55, 0xd8, 0x23, 0x71, 0x97,
             0x6a, 0x9e, 0x87, 0x55, 0xd8, 0x32, 0x00, 0x06, 0x00, 0x00,
         ];
-        let chunk = ReConfigChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let chunk = ReConfigChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
         assert_eq!(chunk.parameters.len(), 1);
         match chunk.parameters[0] {
             Parameter::OutgoingSsnResetRequest(ref i) => {
@@ -129,7 +129,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            ReConfigChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ReConfigChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
         match deserialized.parameters[0] {
             Parameter::OutgoingSsnResetRequest(ref i) => {
                 assert_eq!(i.request_seq_nbr, 123);

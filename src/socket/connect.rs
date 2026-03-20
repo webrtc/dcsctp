@@ -318,13 +318,13 @@ pub(crate) fn handle_cookie_echo(
     header: &CommonHeader,
     chunk: CookieEchoChunk,
 ) {
-    let cookie = match StateCookie::from_bytes(&chunk.cookie) {
+    let cookie = match StateCookie::try_from_bytes(&chunk.cookie) {
         Ok(c) => c,
         Err(s) => {
             return ctx
                 .events
                 .borrow_mut()
-                .add(SocketEvent::OnError(ErrorKind::ParseFailed, s.into()));
+                .add(SocketEvent::OnError(ErrorKind::ParseFailed, s.to_string()));
         }
     };
 
