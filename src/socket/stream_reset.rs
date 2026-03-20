@@ -562,8 +562,8 @@ mod tests {
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(11), false);
         tcb.reassembly_queue.add(Tsn(11), seq.ordered("2345", "BE"));
 
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1234");
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2345");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1234");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2345");
         assert!(tcb.reassembly_queue.get_next_message().is_none());
 
         // Simulate sender resetting the stream (SSN reset to 0) but receiver NOT processing it.
@@ -590,8 +590,8 @@ mod tests {
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(11), false);
         tcb.reassembly_queue.add(Tsn(11), seq.ordered("2345", "BE"));
 
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1234");
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2345");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1234");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2345");
         assert!(tcb.reassembly_queue.get_next_message().is_none());
 
         // Reset, SID=1, TSN=11 (fulfilled).
@@ -623,7 +623,7 @@ mod tests {
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(12), false);
         tcb.reassembly_queue.add(Tsn(12), seq.ordered("3456", "BE"));
 
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"3456");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"3456");
     }
 
     #[test]
@@ -659,7 +659,7 @@ mod tests {
         let response = expect_sent_reconfig_response(&events, &ctx.options);
         assert_eq!(response.result, ReconfigurationResponseResult::InProgress);
 
-        while let Some(event) = events.borrow_mut().next_event() {
+        for event in std::iter::from_fn(|| events.borrow_mut().next_event()) {
             if let SocketEvent::OnIncomingStreamReset(_) = event {
                 panic!("Unexpected OnIncomingStreamReset event: {:?}", event);
             }
@@ -702,9 +702,9 @@ mod tests {
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(12), false);
         tcb.reassembly_queue.add(Tsn(12), seq.ordered("3456", "BE"));
 
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1234"); // TSN=10
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2345"); // TSN=11
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"3456");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1234"); // TSN=10
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2345"); // TSN=11
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"3456");
     }
 
     #[test]
@@ -744,17 +744,17 @@ mod tests {
         // TSN 10, SID 1 - before TSN 12 -> deliver
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(10), false);
         tcb.reassembly_queue.add(Tsn(10), seq1.ordered("1111", "BE"));
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1111");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1111");
 
         // TSN 11, SID 2 - before TSN 12 -> deliver
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(11), false);
         tcb.reassembly_queue.add(Tsn(11), seq2.ordered("2222", "BE"));
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2222");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2222");
 
         // TSN 12, SID 3 - at TSN 12 -> deliver
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(12), false);
         tcb.reassembly_queue.add(Tsn(12), seq3.ordered("3333", "BE"));
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"3333");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"3333");
 
         // TSN 13, SID 1 - after TSN 12 and SID=1 -> defer
         let mut seq1 = DataSequencer::new(StreamId(1));
@@ -771,7 +771,7 @@ mod tests {
         // TSN 15, SID 3 - after TSN 12, but SID 3 is not reset -> deliver
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(15), false);
         tcb.reassembly_queue.add(Tsn(15), seq3.ordered("4444", "BE"));
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"4444");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"4444");
 
         // Process request again (TSN=12 is received, this can be performed.)
         handle_reconfig(
@@ -797,8 +797,8 @@ mod tests {
 
         // The deferred messages from SID=1 and SID=2 can now be delivered.
         let tcb = state.tcb_mut().unwrap();
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1-new");
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2-new");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1-new");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2-new");
         assert!(tcb.reassembly_queue.get_next_message().is_none());
     }
 
@@ -815,7 +815,7 @@ mod tests {
         let tcb = state.tcb_mut().unwrap();
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(10), false);
         tcb.reassembly_queue.add(Tsn(10), seq1.ordered("1111", "BE"));
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1111");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1111");
 
         // TSN 11 (SSN 1) is sent before the reset, but delayed in the network.
         let delayed_tsn11 = seq1.ordered("2222", "BE");
@@ -852,7 +852,7 @@ mod tests {
         // Now the delayed pre-reset TSN 11 (SSN 1) arrives and is delivered.
         tcb.data_tracker.observe(SocketTime::zero(), Tsn(11), false);
         tcb.reassembly_queue.add(Tsn(11), delayed_tsn11);
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2222");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"2222");
 
         // Drain any SACK events emitted earlier.
         while events.borrow_mut().next_event().is_some() {}
@@ -880,7 +880,7 @@ mod tests {
 
         // The deferred post-reset message (TSN 12, SSN 0) should now be reassembled and delivered.
         let tcb = state.tcb_mut().unwrap();
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1-new");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"1-new");
         assert!(tcb.reassembly_queue.get_next_message().is_none());
     }
 
@@ -985,7 +985,7 @@ mod tests {
         let tcb = state.tcb_mut().unwrap();
         // Expect TSN 15 (SSN 1) to be delivered.
         // TSN 13+14 (SSN 0) was skipped via ForwardTSN.
-        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"next");
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload.as_ref(), b"next");
         assert!(tcb.reassembly_queue.get_next_message().is_none());
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
         let large_payload = vec![0u8; 2000];
         ctx.send_queue.add(
             SocketTime::zero(),
-            Message::new(StreamId(42), PpId(53), large_payload),
+            Message::new(StreamId(42), PpId(53), large_payload.into()),
             &SendOptions::default(),
         );
 
@@ -1041,7 +1041,7 @@ mod tests {
         do_reset_streams(&mut state, &mut ctx, SocketTime::zero(), &[StreamId(42)]).unwrap();
 
         // Should NOT send a request yet because stream is pending (has partially sent data).
-        while let Some(event) = events.borrow_mut().next_event() {
+        for event in std::iter::from_fn(|| events.borrow_mut().next_event()) {
             if let SocketEvent::SendPacket(packet) = event {
                 let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
@@ -1164,7 +1164,7 @@ mod tests {
         );
 
         // Should NOT trigger any new reconfig packet immediately. Drain events to be sure.
-        while let Some(event) = events.borrow_mut().next_event() {
+        for event in std::iter::from_fn(|| events.borrow_mut().next_event()) {
             if let SocketEvent::SendPacket(packet) = event {
                 let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
@@ -1205,7 +1205,7 @@ mod tests {
 
         // Try to send packets. Should NOT produce new ReConfig (because one is in flight).
         ctx.send_buffered_packets(&mut state, SocketTime::zero());
-        while let Some(event) = events.borrow_mut().next_event() {
+        for event in std::iter::from_fn(|| events.borrow_mut().next_event()) {
             if let SocketEvent::SendPacket(packet) = event {
                 let packet = SctpPacket::from_bytes(&packet, &ctx.options).unwrap();
                 if packet.chunks.iter().any(|c| matches!(c, Chunk::ReConfig(_))) {
@@ -1665,7 +1665,7 @@ mod tests {
             ReconfigurationResponseResult::SuccessPerformed
         );
         // Should NOT trigger event again.
-        while let Some(event) = events.borrow_mut().next_event() {
+        for event in std::iter::from_fn(|| events.borrow_mut().next_event()) {
             if let SocketEvent::OnIncomingStreamReset(_) = event {
                 panic!("Unexpected OnIncomingStreamReset event: {:?}", event);
             }
