@@ -11,6 +11,7 @@ and this project adheres to
 ### Fixed
 
  - Possible incorrect RTT calculation on packet loss.
+ - Possible debug assertion when acknowledging fast retransmit chunks.
 
 ## 0.1.10 - 2025-02-26
 

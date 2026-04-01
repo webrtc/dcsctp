@@ -455,6 +455,7 @@ impl OutstandingData {
             }
             if item.should_be_retransmitted() {
                 self.to_be_retransmitted.remove(&tsn);
+                self.to_be_fast_retransmitted.remove(&tsn);
             }
             item.ack();
             ack_info.highest_tsn_acked = max(ack_info.highest_tsn_acked, tsn);
@@ -1918,5 +1919,33 @@ mod tests {
         // For TSN 11: It was just retransmitted, so num_retransmissions > 0.
         // It should also return None (Karn's algorithm).
         assert_eq!(buf.measure_rtt(t2, Tsn(11)), None);
+    }
+
+    #[test]
+    fn test_acked_chunk_is_removed_from_fast_retransmit() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Insert chunks 10, 11, 12, 13, 14
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", ""));
+        insert(&mut buf, seq.ordered("c", ""));
+        insert(&mut buf, seq.ordered("d", ""));
+        insert(&mut buf, seq.ordered("e", "E"));
+
+        // Nack TSN 10 three consecutive times using Gap Ack Blocks
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false);
+        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+
+        assert!(ack.has_packet_loss);
+        assert!(buf.has_data_to_be_retransmitted());
+
+        // Acknowledge all chunks - the delayed packet arrived.
+        buf.handle_sack(Tsn(14), &[], false);
+
+        // There are no chunks marked for retransmissions.
+        assert!(buf.get_chunks_to_be_fast_retransmitted(now(), 1000).is_empty());
+        assert!(buf.get_chunks_to_be_retransmitted(now(), 1000).is_empty());
     }
 }
