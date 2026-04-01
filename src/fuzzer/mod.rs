@@ -17,6 +17,8 @@ use crate::packet::error_causes::error_cause_from_bytes;
 use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::sctp_packet::SctpPacket;
 
+pub mod fuzz_outstanding_data;
+
 pub fn parse_parameters(data: &[u8]) {
     let _ = parameters_from_bytes(data);
 }
