@@ -32,3 +32,10 @@ path = "fuzz_targets/parse_packet.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_outstanding_data"
+path = "fuzz_targets/fuzz_outstanding_data.rs"
+test = false
+doc = false
+bench = false
