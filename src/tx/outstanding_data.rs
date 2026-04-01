@@ -1919,4 +1919,31 @@ mod tests {
         // It should also return None (Karn's algorithm).
         assert_eq!(buf.measure_rtt(t2, Tsn(11)), None);
     }
+
+    fn test_acked_chunk_not_removed_from_fast_retransmit() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Insert chunks 10, 11, 12, 13, 14
+        insert(&mut buf, seq.ordered("a", "B")); // TSN 10
+        insert(&mut buf, seq.ordered("b", "")); // TSN 11
+        insert(&mut buf, seq.ordered("c", "")); // TSN 12
+        insert(&mut buf, seq.ordered("d", "")); // TSN 13
+        insert(&mut buf, seq.ordered("e", "E")); // TSN 14
+
+        // Nack TSN 10 three consecutive times using Gap Ack Blocks
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false);
+        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+
+        assert!(ack.has_packet_loss);
+        assert!(buf.has_data_to_be_retransmitted()); // TSN 10 is marked for fast retransmit
+
+        // SACK 4: Acknowledge all chunks - the delayed packet arrived.
+        buf.handle_sack(Tsn(14), &[], false);
+
+        // Attempting to pull the chunks for fast retransmission now finds the
+        // Acked chunk in the set, triggering `debug_assert!(!item.is_acked())`.
+        assert!(buf.get_chunks_to_be_fast_retransmitted(now(), 1000).is_empty());
+    }
 }
