@@ -26,8 +26,9 @@ use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
 use crate::packet::user_initiated_abort_error_cause::UserInitiatedAbortErrorCause;
 use crate::socket::context::Context;
 use crate::socket::state::CookieEchoState;
-use crate::socket::state::ShutdownSentState;
+use crate::socket::state::ShutdownState;
 use crate::socket::state::State;
+use crate::socket::transmission_control_block::TransmissionControlBlock;
 use crate::timer::BackoffAlgorithm;
 use crate::timer::Timer;
 use crate::transition_between;
@@ -63,17 +64,23 @@ pub(crate) fn do_shutdown(state: &mut State, ctx: &mut Context, now: SocketTime)
     }
 }
 
-pub(crate) fn handle_shutdown(state: &mut State, ctx: &mut Context) {
+pub(crate) fn handle_shutdown(state: &mut State, ctx: &mut Context, now: SocketTime) {
     match state {
         State::Closed
         | State::ShutdownReceived(_)
-        | State::ShutdownAckSent(_)
         | State::CookieWait(_)
         | State::CookieEchoed(_) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-21>:
             //
             //   If a SHUTDOWN chunk is received in the COOKIE-WAIT or COOKIE ECHOED state, the
             //   SHUTDOWN chunk SHOULD be silently discarded.
+        }
+        State::ShutdownAckSent(s) => {
+            // Retransmission of SHUTDOWN chunk - the sent SHUTDOWN ACK must have been lost. Resend
+            // and restart timer.
+            s.t2_shutdown.set_duration(s.tcb.rto.rto());
+            s.t2_shutdown.start(now);
+            send_shutdown_ack(&s.tcb, ctx);
         }
         State::Established(_) | State::ShutdownPending(_) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-6>:
@@ -87,28 +94,39 @@ pub(crate) fn handle_shutdown(state: &mut State, ctx: &mut Context) {
                     State::ShutdownReceived(tcb)
             );
 
-            maybe_send_shutdown_ack(state, ctx);
+            maybe_send_shutdown_ack(state, ctx, now);
         }
-        State::ShutdownSent(_) => {
+        State::ShutdownSent(s) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-22>:
             //
             //   If an endpoint is in the SHUTDOWN-SENT state and receives a SHUTDOWN chunk from
             //   its peer, the endpoint SHOULD respond immediately with a SHUTDOWN ACK chunk to
             //   its peer and move into the SHUTDOWN-ACK-SENT state, restarting its T2-shutdown
             //   timer.
+            let rto = s.tcb.rto.rto();
+            let mut t2_shutdown = Timer::new(
+                rto,
+                BackoffAlgorithm::Exponential,
+                ctx.options.max_retransmissions,
+                None,
+            );
+            t2_shutdown.start(now);
+
             transition_between!(*state,
-                State::ShutdownSent(ShutdownSentState { tcb, .. }) =>
-                    State::ShutdownAckSent(tcb)
+                State::ShutdownSent(ShutdownState { tcb, .. }) =>
+                    State::ShutdownAckSent(ShutdownState { tcb, t2_shutdown })
             );
 
-            send_shutdown_ack(state, ctx);
+            let State::ShutdownAckSent(s) = state else { unreachable!() };
+            send_shutdown_ack(&s.tcb, ctx);
         }
     }
 }
 
 pub(crate) fn handle_shutdown_ack(state: &mut State, ctx: &mut Context, header: &CommonHeader) {
     match &state {
-        State::ShutdownSent(ShutdownSentState { tcb, .. }) | State::ShutdownAckSent(tcb) => {
+        State::ShutdownSent(ShutdownState { tcb, .. })
+        | State::ShutdownAckSent(ShutdownState { tcb, .. }) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-14>:
             //
             //   Upon the receipt of the SHUTDOWN ACK chunk, the sender of the SHUTDOWN chunk
@@ -183,21 +201,33 @@ pub(crate) fn handle_t2_shutdown_timeout(
     ctx: &mut Context,
     now: SocketTime,
 ) -> bool {
-    let State::ShutdownSent(s) = state else {
-        return false;
+    let (expired, running) = match state {
+        State::ShutdownSent(s) | State::ShutdownAckSent(s) => {
+            (s.t2_shutdown.expire(now), s.t2_shutdown.is_running())
+        }
+        _ => return false,
     };
-    if !s.t2_shutdown.expire(now) {
+
+    if !expired {
         return false;
     }
 
-    if s.t2_shutdown.is_running() {
-        send_shutdown(state, ctx);
+    if running {
+        match state {
+            State::ShutdownSent(s) => send_shutdown(&s.tcb, ctx),
+            State::ShutdownAckSent(s) => send_shutdown_ack(&s.tcb, ctx),
+            _ => unreachable!(),
+        }
         return true;
     }
 
+    let tcb = match state {
+        State::ShutdownSent(s) | State::ShutdownAckSent(s) => &s.tcb,
+        _ => unreachable!(),
+    };
+
     ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-        s.tcb
-            .new_packet()
+        tcb.new_packet()
             .add(&Chunk::Abort(AbortChunk {
                 error_causes: vec![ErrorCause::UserInitiatedAbort(UserInitiatedAbortErrorCause {
                     reason: "Too many retransmissions".into(),
@@ -225,7 +255,7 @@ pub(crate) fn maybe_send_shutdown_on_packet_received(
             //   SHUTDOWN chunk and restart the T2-shutdown timer.
             s.t2_shutdown.set_duration(s.tcb.rto.rto());
             s.t2_shutdown.start(now);
-            send_shutdown(state, ctx);
+            send_shutdown(&s.tcb, ctx);
         }
     }
 }
@@ -253,14 +283,15 @@ pub(crate) fn maybe_send_shutdown(state: &mut State, ctx: &mut Context, now: Soc
 
     transition_between!(*state,
         State::ShutdownPending(tcb) =>
-            State::ShutdownSent(ShutdownSentState { tcb, t2_shutdown })
+            State::ShutdownSent(ShutdownState { tcb, t2_shutdown })
     );
 
-    send_shutdown(state, ctx);
+    let State::ShutdownSent(s) = state else { unreachable!() };
+    send_shutdown(&s.tcb, ctx);
 }
 
-pub(crate) fn maybe_send_shutdown_ack(state: &mut State, ctx: &mut Context) {
-    let State::ShutdownReceived(tcb) = &state else { unreachable!() };
+pub(crate) fn maybe_send_shutdown_ack(state: &mut State, ctx: &mut Context, now: SocketTime) {
+    let State::ShutdownReceived(tcb) = state else { unreachable!() };
     if tcb.retransmission_queue.unacked_bytes() != 0 {
         // Not ready to shutdown yet.
         return;
@@ -272,15 +303,23 @@ pub(crate) fn maybe_send_shutdown_ack(state: &mut State, ctx: &mut Context) {
     //   chunk receiver MUST send a SHUTDOWN ACK chunk and start a T2-shutdown timer of its own,
     //   entering the SHUTDOWN-ACK-SENT state. If the timer expires, the endpoint MUST resend
     //   the SHUTDOWN ACK chunk [...]
+    let mut t2_shutdown = Timer::new(
+        tcb.rto.rto(),
+        BackoffAlgorithm::Exponential,
+        ctx.options.max_retransmissions,
+        None,
+    );
+    t2_shutdown.start(now);
+
     transition_between!(*state,
-        State::ShutdownReceived(tcb) => State::ShutdownAckSent(tcb)
+        State::ShutdownReceived(tcb) => State::ShutdownAckSent(ShutdownState { tcb, t2_shutdown })
     );
 
-    send_shutdown_ack(state, ctx);
+    let State::ShutdownAckSent(s) = state else { unreachable!() };
+    send_shutdown_ack(&s.tcb, ctx);
 }
 
-pub(crate) fn send_shutdown(state: &mut State, ctx: &mut Context) {
-    let State::ShutdownSent(ShutdownSentState { tcb, .. }) = &state else { unreachable!() };
+pub(crate) fn send_shutdown(tcb: &TransmissionControlBlock, ctx: &mut Context) {
     ctx.events.borrow_mut().add(SocketEvent::SendPacket(
         tcb.new_packet()
             .add(&Chunk::Shutdown(ShutdownChunk {
@@ -291,8 +330,7 @@ pub(crate) fn send_shutdown(state: &mut State, ctx: &mut Context) {
     ctx.tx_packets_count += 1;
 }
 
-pub(crate) fn send_shutdown_ack(state: &mut State, ctx: &mut Context) {
-    let State::ShutdownAckSent(tcb) = &state else { unreachable!() };
+pub(crate) fn send_shutdown_ack(tcb: &TransmissionControlBlock, ctx: &mut Context) {
     ctx.events.borrow_mut().add(SocketEvent::SendPacket(
         tcb.new_packet().add(&Chunk::ShutdownAck(ShutdownAckChunk {})).build(),
     ));

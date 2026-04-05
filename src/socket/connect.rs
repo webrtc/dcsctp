@@ -46,7 +46,7 @@ use crate::socket::context::Context;
 use crate::socket::shutdown::send_shutdown_ack;
 use crate::socket::state::CookieEchoState;
 use crate::socket::state::CookieWaitState;
-use crate::socket::state::ShutdownSentState;
+use crate::socket::state::ShutdownState;
 use crate::socket::state::State;
 use crate::socket::state_cookie::StateCookie;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
@@ -153,7 +153,7 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
             my_initial_tsn = *initial_tsn;
             tie_tag = 0;
         }
-        State::ShutdownAckSent(_) => {
+        State::ShutdownAckSent(s) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-9.2-18>:
             //
             //   If an endpoint is in the SHUTDOWN-ACK-SENT state and receives an INIT chunk
@@ -161,12 +161,12 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
             //   transport addresses (either in the IP addresses or in the INIT chunk) that
             //   belong to this association, it SHOULD discard the INIT chunk and retransmit
             // the   SHUTDOWN ACK chunk.
-            send_shutdown_ack(state, ctx);
+            send_shutdown_ack(&s.tcb, ctx);
             return;
         }
         State::Established(tcb)
         | State::ShutdownPending(tcb)
-        | State::ShutdownSent(ShutdownSentState { tcb, .. })
+        | State::ShutdownSent(ShutdownState { tcb, .. })
         | State::ShutdownReceived(tcb) => {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-5.2.2>:
             //

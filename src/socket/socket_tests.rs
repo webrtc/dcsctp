@@ -644,6 +644,73 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_ack_sent_timer_expires_resends_shutdown_ack() {
+        let now = SocketTime::zero();
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_z.shutdown();
+
+        // Z -> SHUTDOWN -> A
+        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+
+        // A -> SHUTDOWN_ACK -> /lost/ Z
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::ShutdownAck(_)));
+
+        assert_eq!(socket_a.state(), SocketState::ShuttingDown);
+
+        // Let the timer expire.
+        let expected_timeout = now + options.rto_initial;
+        assert_eq!(socket_a.poll_timeout(), expected_timeout);
+        socket_a.advance_time(expected_timeout);
+
+        // A should resend SHUTDOWN_ACK.
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::ShutdownAck(_)));
+    }
+
+    #[test]
+    fn receive_shutdown_in_shutdown_ack_sent_resends_shutdown_ack() {
+        let now = SocketTime::zero();
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_z.shutdown();
+
+        // Z -> SHUTDOWN -> A
+        let shutdown_packet = expect_sent_packet!(socket_z.poll_event());
+        socket_a.handle_input(&shutdown_packet);
+
+        // A -> SHUTDOWN_ACK -> /lost/ Z
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::ShutdownAck(_)));
+
+        assert_eq!(socket_a.state(), SocketState::ShuttingDown);
+
+        // Z doesn't get SHUTDOWN_ACK, so its T2-shutdown timer expires.
+        let expected_timeout = now + options.rto_initial;
+        assert_eq!(socket_z.poll_timeout(), expected_timeout);
+        socket_z.advance_time(expected_timeout);
+
+        // Z retransmits SHUTDOWN.
+        let resent_shutdown_packet = expect_sent_packet!(socket_z.poll_event());
+        socket_a.handle_input(&resent_shutdown_packet);
+
+        // A immediately resends SHUTDOWN_ACK.
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::ShutdownAck(_)));
+    }
+
+    #[test]
     fn establish_connection_while_sending_data() {
         let options = default_options();
         let mut socket_a = Socket::new("A", &options);

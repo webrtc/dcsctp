@@ -13,6 +13,7 @@ and this project adheres to
  - Possible incorrect RTT calculation on packet loss.
  - Possible debug assertion when acknowledging fast retransmit chunks.
  - Support receiving invalid and old/crafted SACKs.
+ - Fixed shutdown timer and duplicate SHUTDOWN handling in SHUTDOWN-ACK-SENT.
 
 ## 0.1.10 - 2025-02-26
 
