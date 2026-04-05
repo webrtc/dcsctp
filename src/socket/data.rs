@@ -109,7 +109,7 @@ pub(crate) fn handle_sack(state: &mut State, ctx: &mut Context, now: SocketTime,
 
     match state {
         State::ShutdownPending(_) => maybe_send_shutdown(state, ctx, now),
-        State::ShutdownReceived(_) => maybe_send_shutdown_ack(state, ctx),
+        State::ShutdownReceived(_) => maybe_send_shutdown_ack(state, ctx, now),
         _ => (),
     }
 

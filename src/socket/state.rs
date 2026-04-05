@@ -31,7 +31,7 @@ pub(crate) struct CookieEchoState {
     pub tcb: TransmissionControlBlock,
 }
 
-pub(crate) struct ShutdownSentState {
+pub(crate) struct ShutdownState {
     pub t2_shutdown: Timer,
     pub tcb: TransmissionControlBlock,
 }
@@ -42,9 +42,9 @@ pub(crate) enum State {
     CookieEchoed(CookieEchoState),
     Established(TransmissionControlBlock),
     ShutdownPending(TransmissionControlBlock),
-    ShutdownSent(ShutdownSentState),
+    ShutdownSent(ShutdownState),
     ShutdownReceived(TransmissionControlBlock),
-    ShutdownAckSent(TransmissionControlBlock),
+    ShutdownAckSent(ShutdownState),
 }
 
 impl State {
@@ -53,9 +53,9 @@ impl State {
             State::CookieEchoed(CookieEchoState { tcb, .. })
             | State::Established(tcb)
             | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
+            | State::ShutdownSent(ShutdownState { tcb, .. })
             | State::ShutdownReceived(tcb)
-            | State::ShutdownAckSent(tcb) => Some(tcb),
+            | State::ShutdownAckSent(ShutdownState { tcb, .. }) => Some(tcb),
             _ => None,
         }
     }
@@ -65,9 +65,9 @@ impl State {
             State::CookieEchoed(CookieEchoState { tcb, .. })
             | State::Established(tcb)
             | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
+            | State::ShutdownSent(ShutdownState { tcb, .. })
             | State::ShutdownReceived(tcb)
-            | State::ShutdownAckSent(tcb) => Some(tcb),
+            | State::ShutdownAckSent(ShutdownState { tcb, .. }) => Some(tcb),
             _ => None,
         }
     }

@@ -73,7 +73,7 @@ use crate::socket::shutdown::handle_shutdown_ack;
 use crate::socket::shutdown::handle_shutdown_complete;
 use crate::socket::shutdown::handle_t2_shutdown_timeout;
 use crate::socket::shutdown::maybe_send_shutdown_on_packet_received;
-use crate::socket::state::ShutdownSentState;
+use crate::socket::state::ShutdownState;
 use crate::socket::state::State;
 use crate::socket::stream_reset::do_reset_streams;
 use crate::socket::stream_reset::handle_reconfig;
@@ -350,7 +350,7 @@ impl DcSctpSocket for Socket {
                         }
                         Chunk::Sack(c) => handle_sack(&mut self.state, &mut self.ctx, now, c),
                         Chunk::Abort(c) => self.handle_abort(c),
-                        Chunk::Shutdown(_) => handle_shutdown(&mut self.state, &mut self.ctx),
+                        Chunk::Shutdown(_) => handle_shutdown(&mut self.state, &mut self.ctx, now),
                         Chunk::ShutdownAck(_) => handle_shutdown_ack(
                             &mut self.state,
                             &mut self.ctx,
@@ -425,9 +425,9 @@ impl DcSctpSocket for Socket {
             }
             State::Established(tcb)
             | State::ShutdownPending(tcb)
-            | State::ShutdownSent(ShutdownSentState { tcb, .. })
+            | State::ShutdownSent(ShutdownState { tcb, .. })
             | State::ShutdownReceived(tcb)
-            | State::ShutdownAckSent(tcb) => {
+            | State::ShutdownAckSent(ShutdownState { tcb, .. }) => {
                 let ack_timer_expired = tcb.data_tracker.handle_timeout(now);
 
                 let rtx_timer_expired = tcb.retransmission_queue.handle_timeout(now);
@@ -497,15 +497,15 @@ impl DcSctpSocket for Socket {
             }
             State::Established(ref tcb)
             | State::ShutdownPending(ref tcb)
-            | State::ShutdownSent(ShutdownSentState { ref tcb, .. })
+            | State::ShutdownSent(ShutdownState { ref tcb, .. })
             | State::ShutdownReceived(ref tcb)
-            | State::ShutdownAckSent(ref tcb) => {
+            | State::ShutdownAckSent(ShutdownState { ref tcb, .. }) => {
                 let mut timeout = tcb.retransmission_queue.next_timeout();
                 timeout = closest_timeout(timeout, tcb.reconfig_timer.next_expiry());
                 timeout = closest_timeout(timeout, tcb.data_tracker.next_timeout());
                 timeout = closest_timeout(timeout, self.ctx.heartbeat_interval.next_expiry());
                 timeout = closest_timeout(timeout, self.ctx.heartbeat_timeout.next_expiry());
-                if let State::ShutdownSent(ref s) = self.state {
+                if let State::ShutdownSent(ref s) | State::ShutdownAckSent(ref s) = self.state {
                     timeout = closest_timeout(timeout, s.t2_shutdown.next_expiry());
                 }
                 timeout
