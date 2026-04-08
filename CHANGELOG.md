@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.11 - 2026-04-08
+
 ### Fixed
 
  - Possible incorrect RTT calculation on packet loss.
@@ -15,7 +17,7 @@ and this project adheres to
  - Support receiving invalid and old/crafted SACKs.
  - Fixed shutdown timer and duplicate SHUTDOWN handling in SHUTDOWN-ACK-SENT.
 
-## 0.1.10 - 2025-02-26
+## 0.1.10 - 2026-02-26
 
 ### Fixed
 
@@ -26,7 +28,7 @@ and this project adheres to
 
  - Optimized performance of message reassembly.
 
-## 0.1.9 - 2025-02-16
+## 0.1.9 - 2026-02-16
 
 ### Fixed
 
