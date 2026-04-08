@@ -711,6 +711,55 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_ignored_in_shutdown_received() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_z.shutdown();
+
+        // Z -> SHUTDOWN -> A
+        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+
+        // A produces SHUTDOWN ACK
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::ShutdownAck(_)));
+
+        assert_eq!(socket_a.state(), SocketState::ShuttingDown);
+
+        // Second shutdown while already shutting down, must be ignored.
+        socket_a.shutdown();
+        expect_no_event!(socket_a.poll_event());
+    }
+
+    #[test]
+    fn shutdown_ignored_in_shutdown_pending() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Send a message that will remain outstanding (unacknowledged) which
+        // transitions the socket to SHUTDOWN-PENDING instead of SHUTDOWN-SENT.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .unwrap();
+        socket_a.shutdown();
+
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(packet.chunks[0], Chunk::Data(_)));
+
+        assert_eq!(socket_a.state(), SocketState::ShuttingDown);
+
+        // Second shutdown while already shutting down, must be ignored.
+        socket_a.shutdown();
+        expect_no_event!(socket_a.poll_event());
+    }
+
+    #[test]
     fn establish_connection_while_sending_data() {
         let options = default_options();
         let mut socket_a = Socket::new("A", &options);
