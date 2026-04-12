@@ -12,6 +12,7 @@ and this project adheres to
 
  - Align sender and receiver to signal advertised receiver window size as
    payload bytes, excluding any headers.
+ - Support receiving invalid SACKs causing serial number arithmetic wrapping.
 
 ## 0.1.11 - 2026-04-08
 
