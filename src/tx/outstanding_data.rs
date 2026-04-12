@@ -408,8 +408,10 @@ impl OutstandingData {
         for block in gap_ack_blocks {
             let cur_block_first_acked = cumulative_tsn_ack.add_to(block.start as u32);
             let mut tsn = prev_block_last_acked.max(self.last_cumulative_tsn_ack) + 1;
-            let limit = cur_block_first_acked.min(self.next_tsn());
-            while tsn < limit && tsn <= max_tsn_to_nack {
+            let limit = self.next_tsn();
+            // TSN comparisons lack transitivity; each upper bound must be evaluated individually to
+            // safely handle serial arithmetic wrapping.
+            while tsn < cur_block_first_acked && tsn <= max_tsn_to_nack && tsn < limit {
                 ack_info.has_packet_loss |= self.nack_chunk(tsn, false, !is_in_fast_recovery);
                 tsn += 1;
             }
@@ -2020,5 +2022,14 @@ mod tests {
         // Assume a valid (but old) SACK is received, acking TSN 5, 15.
         let gab = vec![GapAckBlock::new(10, 10)];
         buf.handle_sack(Tsn(5), &gab, false);
+    }
+
+    #[test]
+    fn test_malformed_sack_does_not_panic() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(u32::MAX));
+
+        // This shouldn't panic.
+        let is_in_fast_recovery = true;
+        buf.handle_sack(Tsn(u32::MAX / 2 - 1), &[GapAckBlock::new(2, 2)], is_in_fast_recovery);
     }
 }
