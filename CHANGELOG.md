@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.12 - 2026-04-13
+
 ### Fixed
 
  - Align sender and receiver to signal advertised receiver window size as
