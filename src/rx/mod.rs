@@ -14,6 +14,8 @@
 
 use crate::api::PpId;
 use crate::packet::data::Data;
+use bytes::Bytes;
+use bytes::BytesMut;
 use std::collections::VecDeque;
 
 pub mod data_tracker;
@@ -47,22 +49,22 @@ pub struct Interval<K: ReassemblyKey> {
     /// Only valid if `has_beginning` is true (as per RFC 8260).
     pub ppid: PpId,
     /// The payload data chunks that make up this interval.
-    pub payload: VecDeque<Vec<u8>>,
+    pub payload: VecDeque<Bytes>,
 }
 
 impl<K: ReassemblyKey> Interval<K> {
     /// Consumes the interval and returns the assembled payload.
-    pub fn collect_payload(self) -> Vec<u8> {
+    pub fn collect_payload(self) -> Bytes {
         let mut parts = self.payload;
         if parts.len() == 1 {
             parts.pop_front().unwrap()
         } else {
             let total_payload_len = parts.iter().map(|p| p.len()).sum();
-            let mut payload = Vec::with_capacity(total_payload_len);
+            let mut payload = BytesMut::with_capacity(total_payload_len);
             for p in parts {
-                payload.extend(p);
+                payload.extend_from_slice(&p);
             }
-            payload
+            payload.freeze()
         }
     }
 }
@@ -279,7 +281,10 @@ mod tests {
         assert_eq!(list.intervals[0].start, TestKey(Tsn(10)));
         assert_eq!(list.intervals[0].end, TestKey(Tsn(11)));
         // Verify payload order
-        assert_eq!(list.intervals[0].payload, &[b"p0", b"p1"]);
+        assert_eq!(
+            list.intervals[0].payload,
+            VecDeque::from([Bytes::from("p0"), Bytes::from("p1")])
+        );
         // Verify PPID inherited from Begin chunk
         assert_eq!(list.intervals[0].ppid, PpId(53));
     }
@@ -300,13 +305,13 @@ mod tests {
         assert_eq!(list.intervals.len(), 2);
         assert_eq!(list.intervals[0].start, TestKey(Tsn(11)));
         assert_eq!(list.intervals[0].end, TestKey(Tsn(11)));
-        assert_eq!(list.intervals[0].payload, &[b"p1"]);
+        assert_eq!(list.intervals[0].payload, VecDeque::from([Bytes::from("p1")]));
         assert!(!list.intervals[0].has_beginning);
         assert!(list.intervals[0].has_end);
 
         assert_eq!(list.intervals[1].start, TestKey(Tsn(12)));
         assert_eq!(list.intervals[1].end, TestKey(Tsn(12)));
-        assert_eq!(list.intervals[1].payload, &[b"p2"]);
+        assert_eq!(list.intervals[1].payload, VecDeque::from([Bytes::from("p2")]));
         assert!(list.intervals[1].has_beginning);
         assert!(!list.intervals[1].has_end);
     }
@@ -332,7 +337,10 @@ mod tests {
         assert_eq!(interval.end, TestKey(Tsn(12)));
         assert!(interval.has_beginning);
         assert!(interval.has_end);
-        assert_eq!(interval.payload, &[b"p0", b"p1", b"p2"]);
+        assert_eq!(
+            interval.payload,
+            VecDeque::from([Bytes::from("p0"), Bytes::from("p1"), Bytes::from("p2")])
+        );
     }
 
     #[test]
@@ -354,7 +362,7 @@ mod tests {
         assert!(interval.has_end);
         assert!(interval.has_beginning);
         assert_eq!(interval.payload.len(), 2);
-        assert_eq!(interval.payload, &[b"p0", b"p1"]);
+        assert_eq!(interval.payload, VecDeque::from([Bytes::from("p0"), Bytes::from("p1")]));
     }
 
     #[test]

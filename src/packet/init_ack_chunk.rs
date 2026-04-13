@@ -116,6 +116,7 @@ impl fmt::Display for InitAckChunk {
 mod tests {
     use super::*;
     use crate::packet::state_cookie_parameter::StateCookieParameter;
+    use bytes::Bytes;
 
     #[test]
     fn init_ack_from_capture() {
@@ -142,7 +143,8 @@ mod tests {
             0x00, 0x06, 0xc0, 0x82, 0x00, 0x00, 0x51, 0x95, 0x01, 0x88, 0x0d, 0x80, 0x7b, 0x19,
             0xe7, 0xf9, 0xc6, 0x18, 0x5c, 0x4a, 0xbf, 0x39, 0x32, 0xe5, 0x63, 0x8e,
         ];
-        let c = InitAckChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(BYTES);
+        let c = InitAckChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(c.initiate_tag, 0x579c2f98);
         assert_eq!(c.a_rwnd, 131072);
@@ -172,8 +174,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            InitAckChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            InitAckChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.initiate_tag, 123);
         assert_eq!(deserialized.a_rwnd, 456);

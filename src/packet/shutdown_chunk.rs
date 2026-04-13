@@ -71,6 +71,7 @@ impl fmt::Display for ShutdownChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -80,7 +81,8 @@ mod tests {
         //  Chunk length: 8
         //  Cumulative TSN Ack: 101831101
         const BYTES: &[u8] = &[0x07, 0x00, 0x00, 0x08, 0x06, 0x11, 0xd1, 0xbd];
-        let c = ShutdownChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(BYTES);
+        let c = ShutdownChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.cumulative_tsn_ack, Tsn(101831101));
     }
 
@@ -91,8 +93,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            ShutdownChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ShutdownChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         assert_eq!(deserialized.cumulative_tsn_ack, Tsn(12345678));
         assert_eq!(deserialized.to_string(), "SHUTDOWN cumulative_tsn_ack=12345678");

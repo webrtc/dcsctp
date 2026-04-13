@@ -113,7 +113,8 @@ impl UnorderedStream {
         let queued_bytes = data.payload.len() as isize;
         let idx = self.intervals.add(key, data);
 
-        if let Some(interval) = self.intervals.pop_if_complete(idx) {
+        let complete_interval = self.intervals.pop_if_complete(idx);
+        if let Some(interval) = complete_interval {
             let stream_id = self.stream_id;
             let ppid = interval.ppid;
             let payload = interval.collect_payload();
@@ -536,7 +537,7 @@ mod tests {
 
         assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].payload, b"efgh");
+        assert_eq!(&messages[0].payload[..], b"efgh");
     }
 
     #[test]
@@ -566,6 +567,6 @@ mod tests {
         let data = seq.unordered("efgh", "BE");
         assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].payload, b"efgh");
+        assert_eq!(&messages[0].payload[..], b"efgh");
     }
 }
