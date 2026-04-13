@@ -33,9 +33,11 @@ jobs:
           toolchain: nightly
       - run: |
           cargo install cargo-fuzz
-          cargo fuzz run parse_parameters -- -max_total_time=5
-          cargo fuzz run parse_error_causes -- -max_total_time=5
-          cargo fuzz run parse_packet -- -max_total_time=5
+          cargo fuzz build
+          cargo fuzz run parse_parameters -- -max_total_time=10 -timeout=1 -max_len=200
+          cargo fuzz run parse_error_causes -- -max_total_time=10 -timeout=1 -max_len=200
+          cargo fuzz run parse_packet -- -max_total_time=10 -timeout=1 -max_len=200
+          cargo fuzz run fuzz_outstanding_data -- -max_total_time=10 -timeout=1 -max_len=200
 
   check-rustfmt:
     name: Check (rustfmt)
