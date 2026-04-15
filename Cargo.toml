@@ -11,7 +11,7 @@ repository = "https://github.com/webrtc/dcsctp"
 cxx = "1.0"
 cxx-build = "1.0"
 dcsctp = { path = "." }
-fastrand = "2.3"
+fastrand = "2.4"
 itertools = "0.14"
 libfuzzer-sys = "0.4"
 log = "0.4"
