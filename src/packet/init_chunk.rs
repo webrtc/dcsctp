@@ -18,9 +18,9 @@ use crate::packet::chunk::RawChunk;
 use crate::packet::chunk::write_chunk_header;
 use crate::packet::ensure;
 use crate::packet::parameter::Parameter;
-use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::parameter::parameters_serialize_to;
 use crate::packet::parameter::parameters_serialized_size;
+use crate::packet::parameter::try_parameters_from_bytes;
 use crate::packet::read_u16_be;
 use crate::packet::read_u32_be;
 use crate::packet::write_u16_be;
@@ -73,7 +73,7 @@ impl TryFrom<RawChunk<'_>> for InitChunk {
         let nbr_outbound_streams = read_u16_be!(&raw.value[8..10]);
         let nbr_inbound_streams = read_u16_be!(&raw.value[10..12]);
         let initial_tsn = Tsn(read_u32_be!(&raw.value[12..16]));
-        let parameters = parameters_from_bytes(&raw.value[16..])?;
+        let parameters = try_parameters_from_bytes(&raw.value[16..])?;
 
         Ok(Self {
             initiate_tag,
@@ -125,7 +125,7 @@ mod tests {
             0xa6, 0x44, 0xce, 0x4d, 0xd2, 0xad, 0x80, 0x04, 0x00, 0x06, 0x00, 0x01, 0x00, 0x00,
             0x80, 0x03, 0x00, 0x06, 0x80, 0xc1, 0x00, 0x00,
         ];
-        let c = InitChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = InitChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
 
         assert_eq!(c.initiate_tag, 0xde7a1690);
         assert_eq!(c.a_rwnd, 131072);
@@ -159,7 +159,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            InitChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            InitChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
 
         assert_eq!(deserialized.initiate_tag, 123);
         assert_eq!(deserialized.a_rwnd, 456);

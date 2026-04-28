@@ -166,7 +166,7 @@ mod tests {
             0x40, 0x02, 0x00, 0x15, 0x94, 0x4a, 0x5d, 0xd5, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x35, 0x01, 0x00, 0x00, 0x00,
         ];
-        let c = IDataChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = IDataChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
         assert_eq!(c.tsn, Tsn(2487901653));
         assert_eq!(c.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(c.data.mid, Mid(0));
@@ -194,7 +194,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            IDataChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            IDataChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
         assert_eq!(deserialized.data.stream_key, StreamKey::Ordered(StreamId(456)));
         assert_eq!(deserialized.data.mid, Mid(789));
@@ -224,7 +224,7 @@ mod tests {
             0x40, 0x01, 0x00, 0x15, 0x94, 0x4a, 0x5e, 0x0a, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
         ];
-        let c = IDataChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = IDataChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
         assert_eq!(c.tsn, Tsn(2487901706));
         assert_eq!(c.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(c.data.mid, Mid(1));
@@ -251,7 +251,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            IDataChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            IDataChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
         assert_eq!(deserialized.data.stream_key, StreamKey::Ordered(StreamId(456)));
         assert_eq!(deserialized.data.mid, Mid(789));

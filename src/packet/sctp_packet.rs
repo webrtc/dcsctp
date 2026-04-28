@@ -82,7 +82,7 @@ impl From<ChunkParseError> for PacketParseError {
 }
 
 impl SctpPacket {
-    pub fn from_bytes(data: &[u8], options: &Options) -> Result<SctpPacket, PacketParseError> {
+    pub fn try_from_bytes(data: &[u8], options: &Options) -> Result<SctpPacket, PacketParseError> {
         ensure!(
             data.len() >= COMMON_HEADER_SIZE + CHUNK_TLV_SIZE && data.len() <= MAX_PACKET_SIZE,
             PacketParseError::InvalidPacketSize
@@ -123,7 +123,7 @@ impl SctpPacket {
         let mut remaining = &data[COMMON_HEADER_SIZE..];
 
         while !remaining.is_empty() {
-            let (raw, next_remaining) = RawChunk::from_bytes(remaining)?;
+            let (raw, next_remaining) = RawChunk::try_from_bytes(remaining)?;
             let chunk = Chunk::try_from(raw)?;
             chunks.push(chunk);
 
@@ -290,7 +290,7 @@ mod tests {
             0x00, 0x06, 0x80, 0xc1, 0x00, 0x00,
         ];
 
-        let packet = SctpPacket::from_bytes(bytes, &Options::default()).unwrap();
+        let packet = SctpPacket::try_from_bytes(bytes, &Options::default()).unwrap();
         assert_eq!(packet.common_header.source_port, 5000);
         assert_eq!(packet.common_header.destination_port, 5000);
         assert_eq!(packet.common_header.verification_tag, 0);
@@ -332,7 +332,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let packet = SctpPacket::from_bytes(bytes, &Options::default()).unwrap();
+        let packet = SctpPacket::try_from_bytes(bytes, &Options::default()).unwrap();
         assert_eq!(packet.common_header.source_port, 1234);
         assert_eq!(packet.common_header.destination_port, 4321);
         assert_eq!(packet.common_header.verification_tag, 0x697e3a4e);
@@ -367,7 +367,7 @@ mod tests {
             0x00, 0x10, 0x55, 0x08, 0x36, 0x40, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let packet = SctpPacket::from_bytes(bytes, &Options::default());
+        let packet = SctpPacket::try_from_bytes(bytes, &Options::default());
         assert!(packet.is_err());
     }
 
@@ -396,7 +396,7 @@ mod tests {
         ];
 
         let options = &Options { disable_checksum_verification: true, ..Default::default() };
-        let packet = SctpPacket::from_bytes(bytes, options).unwrap();
+        let packet = SctpPacket::try_from_bytes(bytes, options).unwrap();
 
         assert_eq!(packet.common_header.source_port, 5000);
         assert_eq!(packet.common_header.destination_port, 5000);
@@ -425,7 +425,7 @@ mod tests {
         }));
         let serialized = b.build();
 
-        let packet = SctpPacket::from_bytes(&serialized, &Options::default()).unwrap();
+        let packet = SctpPacket::try_from_bytes(&serialized, &Options::default()).unwrap();
 
         assert_eq!(packet.common_header.verification_tag, VERIFICATION_TAG);
         assert_eq!(packet.chunks.len(), 1);
@@ -478,7 +478,7 @@ mod tests {
         }));
         let serialized = b.build();
 
-        let packet = SctpPacket::from_bytes(&serialized, &Options::default()).unwrap();
+        let packet = SctpPacket::try_from_bytes(&serialized, &Options::default()).unwrap();
 
         assert_eq!(packet.common_header.verification_tag, VERIFICATION_TAG);
         assert_eq!(packet.chunks.len(), 3);
@@ -513,7 +513,7 @@ mod tests {
         }))
         .build();
 
-        let packet = SctpPacket::from_bytes(&bytes, &Default::default()).unwrap();
+        let packet = SctpPacket::try_from_bytes(&bytes, &Default::default()).unwrap();
         assert_eq!(packet.chunks.len(), 1);
         let Chunk::Abort(abort) = &packet.chunks[0] else {
             panic!();
@@ -532,7 +532,7 @@ mod tests {
             0x00, 0x00, 0x00,
         ];
 
-        let packet = SctpPacket::from_bytes(bytes, &Options::default());
+        let packet = SctpPacket::try_from_bytes(bytes, &Options::default());
         assert!(packet.is_err());
     }
 
@@ -611,7 +611,7 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..Default::default()
         };
-        let packet = SctpPacket::from_bytes(bytes, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(bytes, &options).unwrap();
 
         assert_eq!(packet.common_header.source_port, 5000);
         assert_eq!(packet.common_header.destination_port, 5000);
@@ -649,7 +649,7 @@ mod tests {
                 ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS,
             ..Default::default()
         };
-        assert!(SctpPacket::from_bytes(bytes, &options).is_err());
+        assert!(SctpPacket::try_from_bytes(bytes, &options).is_err());
     }
 
     #[test]

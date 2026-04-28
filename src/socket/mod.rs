@@ -324,7 +324,7 @@ impl DcSctpSocket for Socket {
         let now = *self.now.borrow();
         log_packet(&self.name, now, false, packet);
 
-        match SctpPacket::from_bytes(packet, &self.ctx.options) {
+        match SctpPacket::try_from_bytes(packet, &self.ctx.options) {
             Err(_e) => {
                 self.ctx.events.borrow_mut().add(SocketEvent::OnError(
                     ErrorKind::ParseFailed,

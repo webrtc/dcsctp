@@ -84,7 +84,7 @@ mod tests {
         cause.serialize_to(&mut serialized);
 
         let error = SupportedExtensionsParameter::try_from(
-            RawParameter::from_bytes(&serialized).unwrap().0,
+            RawParameter::try_from_bytes(&serialized).unwrap().0,
         )
         .unwrap();
         assert_eq!(error.chunk_types, vec![1, 2, 3, 4]);

@@ -317,7 +317,7 @@ mod tests {
         // A <- INIT_ACK <- Z
         let packet = &expect_sent_packet!(socket_z.poll_event());
         let Chunk::InitAck(init_ack) =
-            SctpPacket::from_bytes(packet, &options).unwrap().chunks.pop().unwrap()
+            SctpPacket::try_from_bytes(packet, &options).unwrap().chunks.pop().unwrap()
         else {
             unreachable!()
         };
@@ -339,7 +339,7 @@ mod tests {
         socket_a.handle_input(&packet);
 
         assert!(matches!(
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
+            SctpPacket::try_from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
                 .unwrap()
                 .chunks[0],
             Chunk::Abort(_)
@@ -535,7 +535,7 @@ mod tests {
 
         // A -> COOKIE_ECHO ->/lost/ Z
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::CookieEcho(_)));
         assert!(matches!(packet.chunks[1], Chunk::Data(_)));
         expect_no_event!(socket_a.poll_event());
@@ -553,7 +553,7 @@ mod tests {
         now = now + options.t1_cookie_timeout - options.rto_initial;
         socket_a.advance_time(now);
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::CookieEcho(_)));
         assert!(matches!(packet.chunks[1], Chunk::Data(_)));
         expect_no_event!(socket_a.poll_event());
@@ -622,7 +622,7 @@ mod tests {
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
-            let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+            let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
             assert!(matches!(packet.chunks[0], Chunk::Shutdown(_)));
             expect_no_event!(socket_a.poll_event());
         }
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(socket_a.state(), SocketState::Closed);
 
         assert!(matches!(
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
+            SctpPacket::try_from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
                 .unwrap()
                 .chunks[0],
             Chunk::Abort(_)
@@ -893,7 +893,8 @@ mod tests {
         .build();
         socket_a.handle_input(&packet);
         let packet =
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
+            SctpPacket::try_from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
+                .unwrap();
         assert_eq!(packet.chunks.len(), 1);
         let Chunk::HeartbeatAck(ack) = &packet.chunks[0] else {
             panic!();
@@ -920,14 +921,14 @@ mod tests {
         assert_eq!(socket_a.poll_timeout(), expected_timeout);
         socket_a.advance_time(expected_timeout);
         let request_packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&request_packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&request_packet, &options).unwrap();
         assert_eq!(packet.chunks.len(), 1);
         assert!(matches!(packet.chunks[0], Chunk::HeartbeatRequest { .. }));
 
         // Feed it to Sock-z and expect a HEARTBEAT_ACK that will be propagated back.
         socket_z.handle_input(&request_packet);
         let ack_packet = expect_sent_packet!(socket_z.poll_event());
-        let packet = SctpPacket::from_bytes(&ack_packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&ack_packet, &options).unwrap();
         assert_eq!(packet.chunks.len(), 1);
         assert!(matches!(packet.chunks[0], Chunk::HeartbeatAck { .. }));
 
@@ -968,7 +969,7 @@ mod tests {
 
         socket_a.advance_time(restarted_heartbeat_timeout);
         let request_packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&request_packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&request_packet, &options).unwrap();
         assert_eq!(packet.chunks.len(), 1);
         assert!(matches!(packet.chunks[0], Chunk::HeartbeatRequest { .. }));
     }
@@ -987,7 +988,7 @@ mod tests {
         now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
@@ -995,7 +996,7 @@ mod tests {
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
-        let abort_packet = SctpPacket::from_bytes(&abort_packet, &options).unwrap();
+        let abort_packet = SctpPacket::try_from_bytes(&abort_packet, &options).unwrap();
         assert!(matches!(abort_packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1016,7 +1017,7 @@ mod tests {
         now = now + options.heartbeat_interval;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
@@ -1027,7 +1028,7 @@ mod tests {
         now = now + options.heartbeat_interval - options.rto_initial;
         socket_a.advance_time(now);
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         // Letting the heartbeat expire
@@ -1035,7 +1036,7 @@ mod tests {
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
-        let abort_packet = SctpPacket::from_bytes(&abort_packet, &options).unwrap();
+        let abort_packet = SctpPacket::try_from_bytes(&abort_packet, &options).unwrap();
         assert!(matches!(abort_packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1062,7 +1063,7 @@ mod tests {
 
             // Dropping every heartbeat.
             let hb_packet = expect_sent_packet!(socket_a.poll_event());
-            let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+            let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
             assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
             // Letting the heartbeat expire
@@ -1078,14 +1079,14 @@ mod tests {
 
         // Last heartbeat
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
         now = now + Duration::from_secs(1);
         socket_a.advance_time(now);
 
         let abort_packet = expect_sent_packet!(socket_a.poll_event());
-        let abort_packet = SctpPacket::from_bytes(&abort_packet, &options).unwrap();
+        let abort_packet = SctpPacket::try_from_bytes(&abort_packet, &options).unwrap();
         assert!(matches!(abort_packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1111,7 +1112,7 @@ mod tests {
 
             // Dropping every heartbeat.
             let hb_packet = expect_sent_packet!(socket_a.poll_event());
-            let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+            let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
             assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
 
             // Letting the heartbeat expire
@@ -1127,7 +1128,7 @@ mod tests {
 
         // Last heartbeat
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let mut hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let mut hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         let Some(Chunk::HeartbeatRequest(req)) = hb_packet.chunks.pop() else {
             panic!();
         };
@@ -1153,7 +1154,7 @@ mod tests {
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
     }
 
@@ -1173,7 +1174,7 @@ mod tests {
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&hb_packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&hb_packet, &options).unwrap().chunks[0],
             Chunk::HeartbeatRequest(_)
         ));
 
@@ -1185,7 +1186,7 @@ mod tests {
         socket_a.advance_time(now);
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
-        let mut hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        let mut hb_packet = SctpPacket::try_from_bytes(&hb_packet, &options).unwrap();
         let Some(Chunk::HeartbeatRequest(req)) = hb_packet.chunks.pop() else {
             panic!();
         };
@@ -1206,7 +1207,7 @@ mod tests {
 
         let hb_packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&hb_packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&hb_packet, &options).unwrap().chunks[0],
             Chunk::HeartbeatRequest(_)
         ));
 
@@ -1378,7 +1379,8 @@ mod tests {
         socket_a.send(Message::new(StreamId(3), PpId(53), payload.clone()), &s).unwrap();
 
         let packet =
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
+            SctpPacket::try_from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
+                .unwrap();
         assert_eq!(packet.chunks.len(), 1);
         let Chunk::Data(chunk) = &packet.chunks[0] else {
             panic!();
@@ -1387,7 +1389,8 @@ mod tests {
         assert_eq!(chunk.data.ssn, Ssn(2));
 
         let packet =
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
+            SctpPacket::try_from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
+                .unwrap();
         assert_eq!(packet.chunks.len(), 1);
         let Chunk::Data(chunk) = &packet.chunks[0] else {
             panic!();
@@ -1514,7 +1517,7 @@ mod tests {
 
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Letting it expire.
@@ -1522,7 +1525,7 @@ mod tests {
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1543,7 +1546,7 @@ mod tests {
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Dropping the one allowed re-transmission.
@@ -1551,14 +1554,14 @@ mod tests {
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         now = now + options.rto_initial * 2;
         socket_a.advance_time(now);
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1579,7 +1582,7 @@ mod tests {
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         // Acking the retransmission
@@ -1588,7 +1591,7 @@ mod tests {
 
         let packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::Data(_)
         ));
         socket_z.handle_input(&packet);
@@ -1596,7 +1599,7 @@ mod tests {
 
         let packet = expect_sent_packet!(socket_z.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::Sack(_)
         ));
         socket_a.handle_input(&packet);
@@ -1608,7 +1611,7 @@ mod tests {
 
         // Dropping first transmission of second message. The TX error counter recovered before.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         now = now + options.rto_initial;
@@ -1617,7 +1620,7 @@ mod tests {
         // The socket should not abort, but retransmit the packet.
         let packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::Data(_)
         ));
         expect_no_event!(socket_a.poll_event());
@@ -1644,7 +1647,7 @@ mod tests {
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options_a).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options_a).unwrap().chunks[0],
             Chunk::HeartbeatRequest(_)
         ));
 
@@ -1658,7 +1661,7 @@ mod tests {
         expect_no_event!(socket_a.poll_event());
         expect_no_event!(socket_z.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options_a).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options_a).unwrap().chunks[0],
             Chunk::HeartbeatRequest(_)
         ));
     }
@@ -1677,7 +1680,7 @@ mod tests {
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         for i in 0..options.max_retransmissions.unwrap() {
@@ -1686,7 +1689,7 @@ mod tests {
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
-            let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+            let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
             assert!(matches!(packet.chunks[0], Chunk::Data(_)));
         }
 
@@ -1697,7 +1700,7 @@ mod tests {
         println!("Done");
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Abort(_)));
 
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
@@ -1718,7 +1721,7 @@ mod tests {
             .unwrap();
         // Dropping first transmission.
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(matches!(packet.chunks[0], Chunk::Data(_)));
 
         for i in 0..options.max_retransmissions.unwrap() - 1 {
@@ -1727,7 +1730,7 @@ mod tests {
             socket_a.advance_time(now);
 
             let packet = expect_sent_packet!(socket_a.poll_event());
-            let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+            let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
             assert!(matches!(packet.chunks[0], Chunk::Data(_)));
         }
 
@@ -2831,7 +2834,7 @@ mod tests {
         socket_a
             .send(
                 Message::new(StreamId(1), PpId(101), vec![0; options.mtu]),
-                &SendOptions { lifecycle_id: LifecycleId::new(41), ..Default::default() },
+                &SendOptions { lifecycle_id: LifecycleId::try_new(41), ..Default::default() },
             )
             .unwrap();
         socket_a
@@ -2843,7 +2846,7 @@ mod tests {
         socket_a
             .send(
                 Message::new(StreamId(1), PpId(103), vec![0; options.mtu]),
-                &SendOptions { lifecycle_id: LifecycleId::new(42), ..Default::default() },
+                &SendOptions { lifecycle_id: LifecycleId::try_new(42), ..Default::default() },
             )
             .unwrap();
 
@@ -2867,7 +2870,7 @@ mod tests {
                 Message::new(StreamId(1), PpId(101), vec![0; options.mtu - 100]),
                 &SendOptions {
                     max_retransmissions: Some(0),
-                    lifecycle_id: LifecycleId::new(41),
+                    lifecycle_id: LifecycleId::try_new(41),
                     ..Default::default()
                 },
             )
@@ -2877,7 +2880,7 @@ mod tests {
                 Message::new(StreamId(1), PpId(102), vec![0; options.mtu - 100]),
                 &SendOptions {
                     max_retransmissions: Some(0),
-                    lifecycle_id: LifecycleId::new(42),
+                    lifecycle_id: LifecycleId::try_new(42),
                     ..Default::default()
                 },
             )
@@ -2887,7 +2890,7 @@ mod tests {
                 Message::new(StreamId(1), PpId(103), vec![0; options.mtu - 100]),
                 &SendOptions {
                     max_retransmissions: Some(0),
-                    lifecycle_id: LifecycleId::new(43),
+                    lifecycle_id: LifecycleId::try_new(43),
                     ..Default::default()
                 },
             )
@@ -2922,7 +2925,7 @@ mod tests {
                 Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu]),
                 &SendOptions {
                     max_retransmissions: Some(0),
-                    lifecycle_id: LifecycleId::new(41),
+                    lifecycle_id: LifecycleId::try_new(41),
                     ..Default::default()
                 },
             )
@@ -2952,7 +2955,7 @@ mod tests {
                 Message::new(StreamId(1), PpId(101), vec![0; 20 * options.mtu]),
                 &SendOptions {
                     lifetime: Some(Duration::from_millis(100)),
-                    lifecycle_id: LifecycleId::new(41),
+                    lifecycle_id: LifecycleId::try_new(41),
                     ..Default::default()
                 },
             )
@@ -3013,22 +3016,22 @@ mod tests {
 
         let data1 = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&data1, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&data1, &options).unwrap().chunks[0],
             Chunk::Data(DataChunk { data: Data { ssn: Ssn(0), .. }, .. })
         ));
         let data2 = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&data2, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&data2, &options).unwrap().chunks[0],
             Chunk::Data(DataChunk { data: Data { ssn: Ssn(0), .. }, .. })
         ));
         let data3 = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&data3, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&data3, &options).unwrap().chunks[0],
             Chunk::Data(DataChunk { data: Data { ssn: Ssn(1), .. }, .. })
         ));
         let reconfig = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&reconfig, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&reconfig, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
 
@@ -3052,7 +3055,7 @@ mod tests {
 
         let packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
         socket_z.handle_input(&packet);
@@ -3061,7 +3064,7 @@ mod tests {
 
         let packet = expect_sent_packet!(socket_z.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&packet, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
         socket_a.handle_input(&packet);
@@ -3148,7 +3151,7 @@ mod tests {
         socket_a.connect();
         // A -> INIT -> Z
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert_ne!(packet.common_header.checksum, 0);
     }
 
@@ -3167,7 +3170,7 @@ mod tests {
 
         // A <- INIT_ACK <- Z
         let packet = expect_sent_packet!(socket_z.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert_eq!(packet.common_header.checksum, 0);
     }
 
@@ -3188,7 +3191,7 @@ mod tests {
 
         // A -> COOKIE_ECHO -> Z
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert_ne!(packet.common_header.checksum, 0);
     }
 
@@ -3212,7 +3215,7 @@ mod tests {
 
         // A <- COOOKIE_ACK <- Z
         let packet = expect_sent_packet!(socket_z.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert_eq!(packet.common_header.checksum, 0);
     }
 
@@ -3232,7 +3235,7 @@ mod tests {
             .unwrap();
 
         let packet = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert_eq!(packet.common_header.checksum, 0);
     }
 
@@ -3263,7 +3266,7 @@ mod tests {
         loop {
             if let Some(e) = socket_a.poll_event() {
                 if let SocketEvent::SendPacket(ref send) = e {
-                    let packet = SctpPacket::from_bytes(send, &options).unwrap();
+                    let packet = SctpPacket::try_from_bytes(send, &options).unwrap();
                     assert_eq!(packet.common_header.checksum, 0);
                     socket_z.handle_input(send);
                 }
@@ -3271,7 +3274,7 @@ mod tests {
             }
             if let Some(e) = socket_z.poll_event() {
                 if let SocketEvent::SendPacket(ref send) = e {
-                    let packet = SctpPacket::from_bytes(send, &options).unwrap();
+                    let packet = SctpPacket::try_from_bytes(send, &options).unwrap();
                     assert_eq!(packet.common_header.checksum, 0);
                     socket_a.handle_input(send);
                 }
@@ -3305,7 +3308,7 @@ mod tests {
 
         let fwd_tsn_packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&fwd_tsn_packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&fwd_tsn_packet, &options).unwrap().chunks[0],
             Chunk::ForwardTsn(_)
         ));
 
@@ -3313,7 +3316,7 @@ mod tests {
         socket_a.reset_streams(&[StreamId(1)]).unwrap();
         let reconfig_packet = expect_sent_packet!(socket_a.poll_event());
         assert!(matches!(
-            SctpPacket::from_bytes(&reconfig_packet, &options).unwrap().chunks[0],
+            SctpPacket::try_from_bytes(&reconfig_packet, &options).unwrap().chunks[0],
             Chunk::ReConfig(_)
         ));
 
@@ -3332,7 +3335,7 @@ mod tests {
 
         let data_packet = expect_sent_packet!(socket_a.poll_event());
         socket_z.handle_input(&data_packet);
-        let data_packet = SctpPacket::from_bytes(&data_packet, &options).unwrap();
+        let data_packet = SctpPacket::try_from_bytes(&data_packet, &options).unwrap();
         let Chunk::Data(c) = &data_packet.chunks[0] else {
             panic!();
         };
@@ -3341,7 +3344,7 @@ mod tests {
 
         let data_packet = expect_sent_packet!(socket_a.poll_event());
         socket_z.handle_input(&data_packet);
-        let data_packet = SctpPacket::from_bytes(&data_packet, &options).unwrap();
+        let data_packet = SctpPacket::try_from_bytes(&data_packet, &options).unwrap();
         let Chunk::Data(c) = &data_packet.chunks[0] else {
             panic!();
         };
@@ -3371,8 +3374,8 @@ mod tests {
         let packet2 = expect_sent_packet!(socket_a.poll_event());
         expect_no_event!(socket_a.poll_event());
 
-        let packet1 = SctpPacket::from_bytes(&packet1, &options).unwrap();
-        let packet2 = SctpPacket::from_bytes(&packet2, &options).unwrap();
+        let packet1 = SctpPacket::try_from_bytes(&packet1, &options).unwrap();
+        let packet2 = SctpPacket::try_from_bytes(&packet2, &options).unwrap();
 
         let Chunk::Init(init1) = &packet1.chunks[0] else { unreachable!() };
         let Chunk::Init(init2) = &packet2.chunks[0] else { unreachable!() };
@@ -3400,8 +3403,8 @@ mod tests {
         let init_ack_packet2 = expect_sent_packet!(socket_z.poll_event());
         expect_no_event!(socket_z.poll_event());
 
-        let packet1 = SctpPacket::from_bytes(&init_ack_packet1, &options).unwrap();
-        let packet2 = SctpPacket::from_bytes(&init_ack_packet2, &options).unwrap();
+        let packet1 = SctpPacket::try_from_bytes(&init_ack_packet1, &options).unwrap();
+        let packet2 = SctpPacket::try_from_bytes(&init_ack_packet2, &options).unwrap();
 
         let Chunk::InitAck(init_ack1) = &packet1.chunks[0] else { unreachable!() };
         let Chunk::InitAck(init_ack2) = &packet2.chunks[0] else { unreachable!() };
@@ -3574,7 +3577,7 @@ mod tests {
         // A -> COOKIE_ECHO + DATA.
         let packet_a_cookie_echo = expect_sent_packet!(socket_a.poll_event());
         // Verify it contains DATA
-        let packet = SctpPacket::from_bytes(&packet_a_cookie_echo, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet_a_cookie_echo, &options).unwrap();
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Data(_))));
 
         // DROP packet_a_cookie_echo. Z does not receive it.
@@ -3601,7 +3604,7 @@ mod tests {
 
         // A -> DATA (Retransmission)
         let packet_retransmit = expect_sent_packet!(socket_a.poll_event());
-        let packet = SctpPacket::from_bytes(&packet_retransmit, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet_retransmit, &options).unwrap();
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Data(_))));
 
         // Z <- DATA
@@ -3630,7 +3633,7 @@ mod tests {
         socket_z.handle_input(&packet);
 
         let packet = expect_sent_packet!(socket_z.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Sack(_))));
 
         // Send a second message from A to Z. This will be the second packet, which should trigger
@@ -3653,7 +3656,7 @@ mod tests {
         // Advancing time by the SACK timeout should however trigger it to send.
         socket_z.advance_time(next_timeout);
         let packet = expect_sent_packet!(socket_z.poll_event());
-        let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        let packet = SctpPacket::try_from_bytes(&packet, &options).unwrap();
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Sack(_))));
     }
 }
