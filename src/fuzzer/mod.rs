@@ -16,6 +16,7 @@ use crate::api::Options;
 use crate::packet::error_causes::error_cause_from_bytes;
 use crate::packet::parameter::parameters_from_bytes;
 use crate::packet::sctp_packet::SctpPacket;
+use bytes::Bytes;
 
 pub mod fuzz_outstanding_data;
 
@@ -29,5 +30,5 @@ pub fn parse_error_causes(data: &[u8]) {
 
 pub fn parse_packet(data: &[u8]) {
     let options = Options { disable_checksum_verification: true, ..Default::default() };
-    let _ = SctpPacket::from_bytes(data, &options);
+    let _ = SctpPacket::from_bytes(Bytes::copy_from_slice(data), &options);
 }

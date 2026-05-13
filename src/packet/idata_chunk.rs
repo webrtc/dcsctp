@@ -79,12 +79,17 @@ impl TryFrom<RawChunk<'_>> for IDataChunk {
         let (ppid, fsn) = if is_beginning { (ppid_or_fsn, 0) } else { (0, ppid_or_fsn) };
         let stream_id = StreamId(read_u16_be!(&raw.value[4..6]));
         let is_unordered = (raw.flags & (1 << FLAGS_BIT_UNORDERED)) != 0;
+
+        let payload_offset = raw.value_offset + 16;
+        let payload_length = raw.value.len() - 16;
+        let payload = raw.packet.slice(payload_offset..payload_offset + payload_length);
+
         let data = Data {
             stream_key: StreamKey::new(is_unordered, stream_id),
             mid: Mid(read_u32_be!(&raw.value[8..12])),
             ppid: PpId(ppid),
             fsn: Fsn(fsn),
-            payload: raw.value[16..].to_vec(),
+            payload,
             is_beginning,
             is_end: (raw.flags & (1 << FLAGS_BIT_END)) != 0,
             ..Default::default()
@@ -148,6 +153,7 @@ impl fmt::Display for IDataChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn at_beginning_from_capture() {
@@ -166,7 +172,8 @@ mod tests {
             0x40, 0x02, 0x00, 0x15, 0x94, 0x4a, 0x5d, 0xd5, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x35, 0x01, 0x00, 0x00, 0x00,
         ];
-        let c = IDataChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let c = IDataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.tsn, Tsn(2487901653));
         assert_eq!(c.data.stream_key, StreamKey::Ordered(StreamId(1)));
         assert_eq!(c.data.mid, Mid(0));
@@ -185,7 +192,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 mid: Mid(789),
                 ppid: PpId(9090),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: vec![1, 2, 3, 4, 5].into(),
                 is_beginning: true,
                 ..Default::default()
             },
@@ -193,8 +200,9 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            IDataChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            IDataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
         assert_eq!(deserialized.data.stream_key, StreamKey::Ordered(StreamId(456)));
         assert_eq!(deserialized.data.mid, Mid(789));
@@ -224,7 +232,8 @@ mod tests {
             0x40, 0x01, 0x00, 0x15, 0x94, 0x4a, 0x5e, 0x0a, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
         ];
-        let c = IDataChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let c = IDataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.tsn, Tsn(2487901706));
         assert_eq!(c.data.stream_key, StreamKey::Ordered(StreamId(3)));
         assert_eq!(c.data.mid, Mid(1));
@@ -243,15 +252,16 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 mid: Mid(789),
                 fsn: Fsn(10),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: vec![1, 2, 3, 4, 5].into(),
                 ..Default::default()
             },
         };
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            IDataChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            IDataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
         assert_eq!(deserialized.data.stream_key, StreamKey::Ordered(StreamId(456)));
         assert_eq!(deserialized.data.mid, Mid(789));

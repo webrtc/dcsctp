@@ -142,7 +142,8 @@ impl UnorderedStream {
         let queued_bytes = data.payload.len() as isize;
         let idx = self.intervals.add(key, data);
 
-        if let Some(interval) = self.intervals.pop_if_complete(idx) {
+        let complete_interval = self.intervals.pop_if_complete(idx);
+        if let Some(interval) = complete_interval {
             let stream_id = self.stream_id;
             let ppid = interval.ppid;
             let payload = interval.collect_payload();
