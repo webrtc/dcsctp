@@ -578,6 +578,61 @@ mod tests {
     }
 
     #[test]
+    fn flushes_send_queue_immediately_upon_receiving_cookie_ack() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+
+        let payload_size = options.mtu + 100;
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![0; payload_size]),
+                &SendOptions::default(),
+            )
+            .unwrap();
+        socket_a.connect();
+
+        // A -> INIT -> Z
+        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        // A <- INIT_ACK <- Z
+        socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+
+        // A -> COOKIE_ECHO -> Z (bundled with the first DATA chunk)
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let parsed_packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(parsed_packet.chunks[0], Chunk::CookieEcho(_)));
+        assert!(matches!(parsed_packet.chunks[1], Chunk::Data(_)));
+
+        // Verify that socket_a does not produce any further SendPacket events right away
+        // (respecting the 1-packet limit while in COOKIE-ECHOED state).
+        expect_no_event!(socket_a.poll_event());
+
+        // Z -> COOKIE_ACK -> A
+        socket_z.handle_input(&packet);
+        expect_on_connected!(socket_z.poll_event());
+        let cookie_ack_packet = expect_sent_packet!(socket_z.poll_event());
+
+        // Inject the COOKIE_ACK into socket_a
+        socket_a.handle_input(&cookie_ack_packet);
+        expect_on_connected!(socket_a.poll_event());
+
+        // Receiving the COOKIE_ACK should allow more data to be sent.
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        let parsed_packet = SctpPacket::from_bytes(&packet, &options).unwrap();
+        assert!(matches!(parsed_packet.chunks[0], Chunk::Data(_)));
+
+        // Inject the remaining data chunk to Z
+        socket_z.handle_input(&packet);
+
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        let message = socket_z.get_next_message().unwrap();
+        assert_eq!(message.stream_id, StreamId(1));
+        assert_eq!(message.payload.len(), payload_size);
+        assert!(socket_z.get_next_message().is_none());
+    }
+
+    #[test]
     fn shutdown_connection() {
         let mut socket_a = Socket::new("A", &default_options());
         let mut socket_z = Socket::new("Z", &default_options());
