@@ -420,6 +420,7 @@ pub(crate) fn handle_cookie_ack(state: &mut State, ctx: &mut Context, now: Socke
     ctx.heartbeat_interval.start(now);
     info!("Socket is connected!");
     ctx.events.borrow_mut().add(SocketEvent::OnConnected());
+    ctx.send_buffered_packets(state, now);
 }
 
 /// Handles the T1-init timer.
