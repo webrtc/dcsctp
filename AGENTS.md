@@ -30,6 +30,10 @@ kernel.
 - **Test**: `cargo test` (Runs extensive unit and integration tests).
 - **Lint**: `cargo clippy --all-features --all-targets -- -D warnings`
 - **Format**: `cargo +nightly fmt --all -- --check`
+- **Release**: Bump the minor version in `Cargo.toml`, run `cargo build` to
+  update `Cargo.lock`, and move "Unreleased" items in `CHANGELOG.md` to the
+  new version. Create a commit with these changes using a previous release
+  (e.g., "v0.1.12") as a template.
 
 ## Contribution Rules
 
