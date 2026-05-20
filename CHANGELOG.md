@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.13 - 2026-05-20
+
 ### Fixed
 
  - Explicitly flush buffered packets in the send queue upon receiving a COOKIE-ACK chunk.
