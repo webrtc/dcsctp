@@ -79,7 +79,7 @@ pub(crate) struct RawChunk<'a> {
 impl<'a> RawChunk<'a> {
     /// Reads a chunk from `bytes` and returns a raw representation of the frame and the remaining
     /// data that was not consumed when reading this chunk.
-    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
+    pub(crate) fn try_from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
         ensure!(bytes.len() >= TLV_HEADER_SIZE, ChunkParseError::InvalidLength);
 
         let length = read_u16_be!(&bytes[2..4]) as usize;
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn parse_success() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00, 0x08, 0x01, 0x02, 0x03, 0x04];
-        let desc = RawChunk::from_bytes(BYTES).unwrap().0;
+        let desc = RawChunk::try_from_bytes(BYTES).unwrap().0;
         let parsed = TestChunk::try_from(desc).unwrap();
         assert_eq!(parsed.additional_data, 0x01020304);
     }
@@ -248,14 +248,14 @@ mod tests {
     #[test]
     fn parse_insufficient_size() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00];
-        assert_eq!(RawChunk::from_bytes(BYTES).unwrap_err(), ChunkParseError::InvalidLength);
+        assert_eq!(RawChunk::try_from_bytes(BYTES).unwrap_err(), ChunkParseError::InvalidLength);
     }
 
     #[test]
     fn parse_invalid_type() {
         const BYTES: &[u8] = &[0x41, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            TestChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap_err(),
             ChunkParseError::InvalidType,
         );
     }
@@ -264,7 +264,7 @@ mod tests {
     fn parse_invalid_length() {
         const BYTES: &[u8] = &[0x42, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(
-            TestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap_err(),
+            TestChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap_err(),
             ChunkParseError::InvalidLength,
         );
     }
@@ -298,12 +298,12 @@ mod tests {
             0x61, 0x6e, 0x6e, 0x65, 0x6c, 0x00, 0x00, 0x00,
         ];
         const DATA_HEADER_SIZE: usize = 16;
-        let (chunk, remaining) = RawChunk::from_bytes(BYTES).unwrap();
+        let (chunk, remaining) = RawChunk::try_from_bytes(BYTES).unwrap();
         assert_eq!(chunk.typ, 0x0b);
         assert!(chunk.value.is_empty());
         assert_eq!(remaining.len(), round_up_to_4!(DATA_HEADER_SIZE + 41));
 
-        let (chunk, remaining) = RawChunk::from_bytes(remaining).unwrap();
+        let (chunk, remaining) = RawChunk::try_from_bytes(remaining).unwrap();
         assert_eq!(chunk.typ, 0x00);
         assert_eq!(chunk.value.len(), DATA_HEADER_SIZE - TLV_HEADER_SIZE + 41);
         assert!(remaining.is_empty());
@@ -338,7 +338,7 @@ mod tests {
             0x61, 0x6e, 0x6e, 0x65, 0x6c, 0x00, 0x00, 0x00,
         ];
         const DATA_HEADER_SIZE: usize = 16;
-        let (raw_chunk, remaining) = RawChunk::from_bytes(BYTES).unwrap();
+        let (raw_chunk, remaining) = RawChunk::try_from_bytes(BYTES).unwrap();
         let chunk = Chunk::try_from(raw_chunk).unwrap();
         assert!(matches!(chunk, Chunk::CookieAck { .. }));
         assert_eq!(chunk.as_serializable().serialized_size(), 4);
@@ -346,7 +346,7 @@ mod tests {
         chunk.as_serializable().serialize_to(&mut data1);
         assert_eq!(data1, BYTES[0..4]);
 
-        let (raw_chunk, _remaining) = RawChunk::from_bytes(remaining).unwrap();
+        let (raw_chunk, _remaining) = RawChunk::try_from_bytes(remaining).unwrap();
         let chunk = Chunk::try_from(raw_chunk).unwrap();
         assert!(matches!(chunk, Chunk::Data { .. }));
         assert_eq!(chunk.as_serializable().serialized_size(), 57);

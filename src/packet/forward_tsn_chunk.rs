@@ -121,7 +121,7 @@ mod tests {
         //     Chunk length: 8
         //     New cumulative TSN: 1905748778
         const BYTES: &[u8] = &[0xc0, 0x00, 0x00, 0x08, 0x71, 0x97, 0x6b, 0x2a];
-        let c = ForwardTsnChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = ForwardTsnChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
         assert_eq!(c.new_cumulative_tsn, Tsn(1905748778));
     }
 
@@ -139,7 +139,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            ForwardTsnChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ForwardTsnChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
 
         assert_eq!(deserialized.new_cumulative_tsn, Tsn(123));
         assert_eq!(deserialized.skipped_streams.len(), 2);

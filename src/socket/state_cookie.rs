@@ -36,7 +36,7 @@ pub struct StateCookie {
 }
 
 impl StateCookie {
-    pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+    pub fn try_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() != COOKIE_SIZE {
             return Err("Invalid state cookie size");
         }
@@ -110,7 +110,7 @@ mod tests {
 
         let serialized = s.serialize();
         assert_eq!(serialized.len(), COOKIE_SIZE);
-        let deserialized = StateCookie::from_bytes(&serialized).unwrap();
+        let deserialized = StateCookie::try_from_bytes(&serialized).unwrap();
         assert_eq!(deserialized.peer_tag, 123);
         assert_eq!(deserialized.my_tag, 321);
         assert_eq!(deserialized.peer_initial_tsn, Tsn(456));

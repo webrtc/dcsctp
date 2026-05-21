@@ -779,7 +779,7 @@ impl From<&bridge::SendOptions> for DcSctpSendOptions {
                 .then_some(Duration::from_millis(options.lifetime_ms)),
             max_retransmissions: (options.max_retransmissions != u16::MAX)
                 .then_some(options.max_retransmissions),
-            lifecycle_id: LifecycleId::new(options.lifecycle_id),
+            lifecycle_id: LifecycleId::try_new(options.lifecycle_id),
         }
     }
 }

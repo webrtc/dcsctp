@@ -60,7 +60,7 @@ pub(crate) struct RawParameter<'a> {
 }
 
 impl<'a> RawParameter<'a> {
-    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
+    pub(crate) fn try_from_bytes(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), ChunkParseError> {
         ensure!(bytes.len() >= PARAMETER_HEADER_SIZE, ChunkParseError::InvalidLength);
         let typ = read_u16_be!(&bytes[0..2]);
         let length = read_u16_be!(&bytes[2..4]) as usize;
@@ -171,12 +171,12 @@ impl AsSerializableTlv for Parameter {
     }
 }
 
-pub fn parameters_from_bytes(data: &[u8]) -> Result<Vec<Parameter>, ChunkParseError> {
+pub fn try_parameters_from_bytes(data: &[u8]) -> Result<Vec<Parameter>, ChunkParseError> {
     let mut result = Vec::<Parameter>::with_capacity(2);
     let mut remaining = data;
 
     while !remaining.is_empty() {
-        let (raw, next_remaining) = RawParameter::from_bytes(remaining)?;
+        let (raw, next_remaining) = RawParameter::try_from_bytes(remaining)?;
         let error_cause = Parameter::try_from(raw)?;
         result.push(error_cause);
 
@@ -213,6 +213,6 @@ mod tests {
     #[test]
     fn fuzz() {
         const DATA: &[u8] = &[0, 16, 0, 8, 0, 0, 0, 0];
-        let _ = parameters_from_bytes(DATA);
+        let _ = try_parameters_from_bytes(DATA);
     }
 }

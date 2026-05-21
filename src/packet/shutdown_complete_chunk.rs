@@ -73,7 +73,7 @@ mod tests {
         //  Chunk flags: 0x00
         //  Chunk length: 4
         const BYTES: &[u8] = &[0x0e, 0x00, 0x00, 0x04];
-        ShutdownCompleteChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        ShutdownCompleteChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
     }
 
     #[test]
@@ -83,7 +83,8 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
         let deserialized =
-            ShutdownCompleteChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            ShutdownCompleteChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0)
+                .unwrap();
         assert_eq!(chunk.tag_reflected, deserialized.tag_reflected);
     }
 

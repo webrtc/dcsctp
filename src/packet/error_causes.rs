@@ -92,12 +92,12 @@ impl AsSerializableTlv for ErrorCause {
     }
 }
 
-pub fn error_cause_from_bytes(data: &[u8]) -> Result<Vec<ErrorCause>, ChunkParseError> {
+pub fn try_error_causes_from_bytes(data: &[u8]) -> Result<Vec<ErrorCause>, ChunkParseError> {
     let mut result = Vec::<ErrorCause>::with_capacity(2);
     let mut remaining = data;
 
     while !remaining.is_empty() {
-        let (raw, next_remaining) = RawParameter::from_bytes(remaining)?;
+        let (raw, next_remaining) = RawParameter::try_from_bytes(remaining)?;
         let error_cause = ErrorCause::try_from(raw)?;
         result.push(error_cause);
 

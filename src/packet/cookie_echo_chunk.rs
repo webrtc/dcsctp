@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn init_from_capture() {
         const BYTES: &[u8] = &[0x0a, 0x00, 0x00, 0x08, 0x12, 0x34, 0x56, 0x78];
-        let c = CookieEchoChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let c = CookieEchoChunk::try_from(RawChunk::try_from_bytes(BYTES).unwrap().0).unwrap();
 
         assert_eq!(c.cookie, vec![0x12, 0x34, 0x56, 0x78]);
     }
@@ -87,7 +87,7 @@ mod tests {
         chunk.serialize_to(&mut serialized);
 
         let deserialized =
-            CookieEchoChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            CookieEchoChunk::try_from(RawChunk::try_from_bytes(&serialized).unwrap().0).unwrap();
 
         assert_eq!(deserialized.cookie, vec![1, 2, 3, 4, 5]);
     }

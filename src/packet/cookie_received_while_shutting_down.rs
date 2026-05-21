@@ -71,7 +71,7 @@ mod tests {
         cause.serialize_to(&mut serialized);
 
         CookieReceivedWhileShuttingDownErrorCause::try_from(
-            RawParameter::from_bytes(&serialized).unwrap().0,
+            RawParameter::try_from_bytes(&serialized).unwrap().0,
         )
         .unwrap();
     }

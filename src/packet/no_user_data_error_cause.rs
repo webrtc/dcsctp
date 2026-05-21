@@ -79,7 +79,7 @@ mod tests {
         let mut serialized = vec![0; cause.serialized_size()];
         cause.serialize_to(&mut serialized);
         let deserialized =
-            NoUserDataErrorCause::try_from(RawParameter::from_bytes(&serialized).unwrap().0)
+            NoUserDataErrorCause::try_from(RawParameter::try_from_bytes(&serialized).unwrap().0)
                 .unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
     }

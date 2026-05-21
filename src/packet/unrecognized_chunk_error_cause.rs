@@ -75,7 +75,7 @@ mod tests {
 
         let mut serialized = vec![0; cause.serialized_size()];
         cause.serialize_to(&mut serialized);
-        UnrecognizedChunkErrorCause::try_from(RawParameter::from_bytes(&serialized).unwrap().0)
+        UnrecognizedChunkErrorCause::try_from(RawParameter::try_from_bytes(&serialized).unwrap().0)
             .unwrap();
     }
 }
