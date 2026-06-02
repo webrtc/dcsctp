@@ -229,6 +229,7 @@ pub(crate) fn handle_t2_shutdown_timeout(
     ctx.events.borrow_mut().add(SocketEvent::SendPacket(
         tcb.new_packet()
             .add(&Chunk::Abort(AbortChunk {
+                tag_reflected: false,
                 error_causes: vec![ErrorCause::UserInitiatedAbort(UserInitiatedAbortErrorCause {
                     reason: "Too many retransmissions".into(),
                 })],

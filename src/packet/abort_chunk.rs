@@ -40,6 +40,7 @@ pub(crate) const CHUNK_TYPE: u8 = 6;
 /// ```
 #[derive(Debug, Default)]
 pub struct AbortChunk {
+    pub tag_reflected: bool,
     pub error_causes: Vec<ErrorCause>,
 }
 
@@ -50,13 +51,15 @@ impl TryFrom<RawChunk<'_>> for AbortChunk {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
         let error_causes = error_cause_from_bytes(raw.value)?;
-        Ok(Self { error_causes })
+        let tag_reflected = (raw.flags & 0x01) != 0;
+        Ok(Self { tag_reflected, error_causes })
     }
 }
 
 impl SerializableTlv for AbortChunk {
     fn serialize_to(&self, output: &mut [u8]) {
-        let value = write_chunk_header(CHUNK_TYPE, 0, self.value_size(), output);
+        let flags = if self.tag_reflected { 1 } else { 0 };
+        let value = write_chunk_header(CHUNK_TYPE, flags, self.value_size(), output);
         parameters_serialize_to(&self.error_causes, value);
     }
 
@@ -67,7 +70,7 @@ impl SerializableTlv for AbortChunk {
 
 impl fmt::Display for AbortChunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ABORT")
+        write!(f, "ABORT, tag_reflected={}", self.tag_reflected)
     }
 }
 
@@ -97,6 +100,7 @@ mod tests {
     #[test]
     fn serialize_and_deserialize() {
         let chunk = AbortChunk {
+            tag_reflected: true,
             error_causes: vec![ErrorCause::ProtocolViolation(ProtocolViolationErrorCause {
                 information: "Invalid foo".into(),
             })],
@@ -104,6 +108,8 @@ mod tests {
 
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
-        AbortChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        let deserialized =
+            AbortChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        assert!(deserialized.tag_reflected);
     }
 }

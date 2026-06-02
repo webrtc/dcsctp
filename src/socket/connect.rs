@@ -32,12 +32,13 @@ use crate::packet::idata_chunk;
 use crate::packet::iforward_tsn_chunk;
 use crate::packet::init_ack_chunk::InitAckChunk;
 use crate::packet::init_chunk::InitChunk;
+use crate::packet::missing_mandatory_parameter_error_cause::MissingMandatoryParameterErrorCause;
 use crate::packet::parameter::Parameter;
-use crate::packet::protocol_violation_error_cause::ProtocolViolationErrorCause;
 use crate::packet::re_config_chunk;
 use crate::packet::sctp_packet::CommonHeader;
 use crate::packet::sctp_packet::SctpPacketBuilder;
 use crate::packet::shutdown_ack_chunk::ShutdownAckChunk;
+use crate::packet::state_cookie_parameter;
 use crate::packet::state_cookie_parameter::StateCookieParameter;
 use crate::packet::supported_extensions_parameter::SupportedExtensionsParameter;
 use crate::packet::zero_checksum_acceptable_parameter::ZeroChecksumAcceptableParameter;
@@ -257,15 +258,18 @@ pub(crate) fn handle_init_ack(
     }) else {
         ctx.events.borrow_mut().add(SocketEvent::SendPacket(
             SctpPacketBuilder::new(
-                s.verification_tag,
+                chunk.initiate_tag,
                 ctx.options.local_port,
                 ctx.options.remote_port,
                 round_down_to_4!(ctx.options.mtu),
             )
             .add(&Chunk::Abort(AbortChunk {
-                error_causes: vec![ErrorCause::ProtocolViolation(ProtocolViolationErrorCause {
-                    information: "INIT-ACK malformed".into(),
-                })],
+                tag_reflected: false,
+                error_causes: vec![ErrorCause::MissingMandatoryParameter(
+                    MissingMandatoryParameterErrorCause::new(vec![
+                        state_cookie_parameter::PARAMETER_TYPE,
+                    ]),
+                )],
             }))
             .build(),
         ));

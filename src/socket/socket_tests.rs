@@ -30,6 +30,7 @@ mod tests {
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS;
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
     use crate::math::round_down_to_4;
+    use crate::packet::abort_chunk::AbortChunk;
     use crate::packet::chunk::Chunk;
     use crate::packet::data::Data;
     use crate::packet::data_chunk;
@@ -44,6 +45,8 @@ mod tests {
     use crate::packet::sctp_packet;
     use crate::packet::sctp_packet::SctpPacket;
     use crate::packet::sctp_packet::SctpPacketBuilder;
+    use crate::packet::shutdown_ack_chunk::ShutdownAckChunk;
+    use crate::packet::shutdown_complete_chunk::ShutdownCompleteChunk;
     use crate::packet::unknown_chunk::UnknownChunk;
     use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
     use crate::rx::reassembly_queue::HIGH_WATERMARK_LIMIT;
@@ -92,6 +95,10 @@ mod tests {
             heartbeat_interval: Duration::ZERO,
             ..Options::default()
         }
+    }
+
+    fn generate_invalid_tag(tag: u32) -> u32 {
+        if tag == 1 { 2 } else { tag ^ 1 }
     }
 
     fn exchange_packets(
@@ -338,12 +345,21 @@ mod tests {
         .build();
         socket_a.handle_input(&packet);
 
-        assert!(matches!(
-            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options)
-                .unwrap()
-                .chunks[0],
-            Chunk::Abort(_)
-        ));
+        let abort_packet =
+            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
+        let Chunk::Abort(abort) = &abort_packet.chunks[0] else {
+            panic!("Expected Abort chunk");
+        };
+        assert_eq!(abort.error_causes.len(), 1);
+        match &abort.error_causes[0] {
+            ErrorCause::MissingMandatoryParameter(c) => {
+                assert_eq!(
+                    c.missing_parameters,
+                    vec![crate::packet::state_cookie_parameter::PARAMETER_TYPE]
+                );
+            }
+            _ => panic!("Expected MissingMandatoryParameter error cause"),
+        }
         assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::ProtocolViolation);
     }
 
@@ -3710,5 +3726,198 @@ mod tests {
         let packet = expect_sent_packet!(socket_z.poll_event());
         let packet = SctpPacket::from_bytes(&packet, &options).unwrap();
         assert!(packet.chunks.iter().any(|c| matches!(c, Chunk::Sack(_))));
+    }
+
+    #[test]
+    fn test_verify_vtag_with_closed_state() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+
+        // Closed State Validation (only INIT with tag 0 accepted).
+        let packet =
+            SctpPacketBuilder::new(123, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk { parameters: vec![] }))
+                .build();
+        socket_a.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
+
+        let packet =
+            SctpPacketBuilder::new(0, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk { parameters: vec![] }))
+                .build();
+        socket_a.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
+    }
+
+    #[test]
+    fn test_verify_vtag_with_established_state() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let my_tag = socket_a.verification_tag();
+        // Correct tag:
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk { parameters: vec![] }))
+                .build();
+        socket_a.handle_input(&packet);
+        let response = expect_sent_packet!(socket_a.poll_event());
+        let parsed = SctpPacket::from_bytes(&response, &options).unwrap();
+        assert!(matches!(parsed.chunks[0], Chunk::HeartbeatAck(_)));
+
+        // Incorrect tag:
+        let packet = SctpPacketBuilder::new(
+            generate_invalid_tag(my_tag),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk { parameters: vec![] }))
+        .build();
+        socket_a.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
+    }
+
+    #[test]
+    fn test_verify_vtag_with_abort_exceptions() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let my_tag = socket_a.verification_tag();
+        let peer_tag = socket_z.verification_tag();
+
+        // Correct ABORT with T-bit = 0: MUST match own (local) verification tag.
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::Abort(AbortChunk { tag_reflected: false, error_causes: vec![] }))
+                .build();
+        socket_a.handle_input(&packet);
+        assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::PeerReported);
+
+        // Incorrect ABORT with T-bit = 0.
+        let packet = SctpPacketBuilder::new(
+            generate_invalid_tag(peer_tag),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::Abort(AbortChunk { tag_reflected: false, error_causes: vec![] }))
+        .build();
+        socket_z.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_z.poll_event()), ErrorKind::ParseFailed);
+        assert_eq!(socket_z.state(), SocketState::Connected);
+
+        // Correct packet with T-bit = 1: MUST match peer's verification tag.
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::Abort(AbortChunk { tag_reflected: true, error_causes: vec![] }))
+                .build();
+        socket_z.handle_input(&packet);
+        assert_eq!(expect_on_aborted!(socket_z.poll_event()), ErrorKind::PeerReported);
+
+        // ABORT bundled as second chunk.
+        let mut socket_a2 = Socket::new("A2", &options);
+        let mut socket_z2 = Socket::new("Z2", &options);
+        connect_sockets(&mut socket_a2, &mut socket_z2);
+        let my_tag = socket_a2.verification_tag();
+
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk { parameters: vec![] }))
+                .add(&Chunk::Abort(AbortChunk { tag_reflected: false, error_causes: vec![] }))
+                .build();
+        socket_a2.handle_input(&packet);
+        assert!(matches!(socket_a2.poll_event(), Some(SocketEvent::SendPacket(_))));
+        assert_eq!(expect_on_aborted!(socket_a2.poll_event()), ErrorKind::PeerReported);
+
+        // ABORT with random tag and T-bit = 1 in CookieWait.
+        let mut socket_a3 = Socket::new("A3", &options);
+        socket_a3.connect(); // Transition to CookieWait
+        let _ = expect_sent_packet!(socket_a3.poll_event());
+
+        let packet =
+            SctpPacketBuilder::new(999, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::Abort(AbortChunk { tag_reflected: true, error_causes: vec![] }))
+                .build();
+        socket_a3.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_a3.poll_event()), ErrorKind::ParseFailed);
+    }
+
+    #[test]
+    fn test_verify_vtag_with_shutdown_complete_exceptions() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let my_tag = socket_a.verification_tag();
+        // Correct SHUTDOWN COMPLETE with T-bit = 0: MUST match own (local) verification tag.
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: false }))
+                .build();
+        socket_a.handle_input(&packet);
+        expect_no_event!(socket_a.poll_event());
+
+        // Incorrect SHUTDOWN COMPLETE with T-bit = 0.
+        let packet = SctpPacketBuilder::new(
+            generate_invalid_tag(my_tag),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: false }))
+        .build();
+        socket_a.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
+
+        // Correct SHUTDOWN COMPLETE with T-bit = 1: MUST match peer's verification tag.
+        let packet =
+            SctpPacketBuilder::new(my_tag, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
+                .build();
+        socket_z.handle_input(&packet);
+        expect_no_event!(socket_z.poll_event());
+
+        // Incorrect SHUTDOWN COMPLETE with T-bit = 1:
+        let packet = SctpPacketBuilder::new(
+            generate_invalid_tag(my_tag),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::ShutdownComplete(ShutdownCompleteChunk { tag_reflected: true }))
+        .build();
+        socket_z.handle_input(&packet);
+        assert_eq!(expect_on_error!(socket_z.poll_event()), ErrorKind::ParseFailed);
+    }
+
+    #[test]
+    fn test_verify_vtag_with_shutdown_ack_exceptions() {
+        let options = default_options();
+        let mut socket = Socket::new("A", &options);
+
+        // Transition to CookieWait
+        socket.connect();
+        let _ = expect_sent_packet!(socket.poll_event());
+
+        // Receive an out-of-the-blue SHUTDOWN ACK.
+        let packet =
+            SctpPacketBuilder::new(999, options.local_port, options.remote_port, options.mtu)
+                .add(&Chunk::ShutdownAck(ShutdownAckChunk {}))
+                .build();
+        socket.handle_input(&packet);
+
+        // Expect a SHUTDOWN COMPLETE.
+        let response = expect_sent_packet!(socket.poll_event());
+        let parsed = SctpPacket::from_bytes(&response, &options).unwrap();
+        assert!(matches!(parsed.chunks[0], Chunk::ShutdownComplete(_)));
+        if let Chunk::ShutdownComplete(ref complete) = parsed.chunks[0] {
+            assert!(complete.tag_reflected);
+        }
     }
 }

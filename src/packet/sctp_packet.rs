@@ -507,6 +507,7 @@ mod tests {
             options.mtu,
         )
         .add(&Chunk::Abort(AbortChunk {
+            tag_reflected: false,
             error_causes: vec![ErrorCause::UserInitiatedAbort(UserInitiatedAbortErrorCause {
                 reason: "".to_string(),
             })],
