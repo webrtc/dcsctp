@@ -17,6 +17,8 @@ use crate::packet::ChunkParseError;
 use crate::packet::SerializableTlv;
 use crate::packet::cookie_received_while_shutting_down::CookieReceivedWhileShuttingDownErrorCause;
 use crate::packet::cookie_received_while_shutting_down::{self};
+use crate::packet::missing_mandatory_parameter_error_cause::MissingMandatoryParameterErrorCause;
+use crate::packet::missing_mandatory_parameter_error_cause::{self};
 use crate::packet::no_user_data_error_cause::NoUserDataErrorCause;
 use crate::packet::no_user_data_error_cause::{self};
 use crate::packet::parameter::RawParameter;
@@ -36,6 +38,7 @@ pub enum ErrorCause {
     CookieReceivedWhileShuttingDown(CookieReceivedWhileShuttingDownErrorCause),
     UserInitiatedAbort(UserInitiatedAbortErrorCause),
     ProtocolViolation(ProtocolViolationErrorCause),
+    MissingMandatoryParameter(MissingMandatoryParameterErrorCause),
     Unknown(UnknownParameter),
 }
 
@@ -47,6 +50,7 @@ impl fmt::Display for ErrorCause {
             ErrorCause::CookieReceivedWhileShuttingDown(c) => c,
             ErrorCause::UserInitiatedAbort(c) => c,
             ErrorCause::ProtocolViolation(c) => c,
+            ErrorCause::MissingMandatoryParameter(c) => c,
             ErrorCause::Unknown(c) => c,
         };
         fmt::Display::fmt(c, f)
@@ -74,6 +78,10 @@ impl TryFrom<RawParameter<'_>> for ErrorCause {
             protocol_violation_error_cause::CAUSE_CODE => {
                 ProtocolViolationErrorCause::try_from(raw).map(ErrorCause::ProtocolViolation)
             }
+            missing_mandatory_parameter_error_cause::CAUSE_CODE => {
+                MissingMandatoryParameterErrorCause::try_from(raw)
+                    .map(ErrorCause::MissingMandatoryParameter)
+            }
             _ => UnknownParameter::try_from(raw).map(ErrorCause::Unknown),
         }
     }
@@ -87,6 +95,7 @@ impl AsSerializableTlv for ErrorCause {
             ErrorCause::CookieReceivedWhileShuttingDown(c) => c,
             ErrorCause::UserInitiatedAbort(c) => c,
             ErrorCause::ProtocolViolation(c) => c,
+            ErrorCause::MissingMandatoryParameter(c) => c,
             ErrorCause::Unknown(c) => c,
         }
     }

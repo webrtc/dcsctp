@@ -35,6 +35,7 @@ pub(crate) mod iforward_tsn_chunk;
 pub(crate) mod incoming_ssn_reset_request_parameter;
 pub(crate) mod init_ack_chunk;
 pub(crate) mod init_chunk;
+pub(crate) mod missing_mandatory_parameter_error_cause;
 pub(crate) mod no_user_data_error_cause;
 pub(crate) mod outgoing_ssn_reset_request_parameter;
 pub(crate) mod parameter;
