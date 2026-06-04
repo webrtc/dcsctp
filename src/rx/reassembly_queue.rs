@@ -571,17 +571,17 @@ mod tests {
 
     #[test]
     fn account_forward_tsn_size_in_deferred_reset() {
-      let mut q = make_interleaved_queue();
+        let mut q = make_interleaved_queue();
 
-      q.enter_deferred_reset(Tsn(12), &[StreamId(1)]);
+        q.enter_deferred_reset(Tsn(12), &[StreamId(1)]);
 
-      assert_eq!(q.queued_bytes(), 0);
-      q.handle_forward_tsn(Tsn(14), vec![]);
-      assert!(q.queued_bytes() > 0);
+        assert_eq!(q.queued_bytes(), 0);
+        q.handle_forward_tsn(Tsn(14), vec![]);
+        assert!(q.queued_bytes() > 0);
 
-      // When deferred Forward TSN are processed, queued_bytes should return to
-      // the earlier value.
-      q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
-      assert_eq!(q.queued_bytes(), 0);
+        // When deferred Forward TSN are processed, queued_bytes should return to
+        // the earlier value.
+        q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
+        assert_eq!(q.queued_bytes(), 0);
     }
 }
