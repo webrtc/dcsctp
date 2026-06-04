@@ -142,6 +142,10 @@ impl ReassemblyQueue {
         self.queued_bytes >= self.max_size_bytes
     }
 
+    fn forward_tsn_cost(num_streams: usize) -> usize {
+        (1 + num_streams) * 4
+    }
+
     pub fn handle_forward_tsn(
         &mut self,
         new_cumulative_ack: Tsn,
@@ -149,6 +153,7 @@ impl ReassemblyQueue {
     ) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
             if new_cumulative_ack > deferred_stream.sender_last_assigned_tsn {
+                self.queued_bytes += ReassemblyQueue::forward_tsn_cost(skipped_streams.len());
                 deferred_stream
                     .deferred_operations
                     .push(DeferredOperation::ForwardTsn(new_cumulative_ack, skipped_streams));
@@ -188,6 +193,7 @@ impl ReassemblyQueue {
             deferred.deferred_operations.into_iter().for_each(|op| match op {
                 DeferredOperation::Data(tsn, data) => self.add(tsn, data),
                 DeferredOperation::ForwardTsn(tsn, skipped) => {
+                    self.queued_bytes -= ReassemblyQueue::forward_tsn_cost(skipped.len());
                     self.handle_forward_tsn(tsn, skipped);
                 }
             });
@@ -561,5 +567,21 @@ mod tests {
         // just validate that it hasn't kept the discarded message and now tries to assemble it.
         q.add(Tsn(11), lost);
         assert_eq!(q.messages_ready_count(), 0);
+    }
+
+    #[test]
+    fn account_forward_tsn_size_in_deferred_reset() {
+      let mut q = make_interleaved_queue();
+
+      q.enter_deferred_reset(Tsn(12), &[StreamId(1)]);
+
+      assert_eq!(q.queued_bytes(), 0);
+      q.handle_forward_tsn(Tsn(14), vec![]);
+      assert!(q.queued_bytes() > 0);
+
+      // When deferred Forward TSN are processed, queued_bytes should return to
+      // the earlier value.
+      q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
+      assert_eq!(q.queued_bytes(), 0);
     }
 }
