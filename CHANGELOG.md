@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+ - Account payload size of the deferred forward TSN messages.
+
 ## 0.1.13 - 2026-05-20
 
 ### Fixed
