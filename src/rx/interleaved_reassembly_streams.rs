@@ -130,17 +130,18 @@ impl UnorderedStream {
 pub struct InterleavedReassemblyStreams {
     ordered: HashMap<StreamId, OrderedStream>,
     unordered: HashMap<StreamId, UnorderedStream>,
+    queued_bytes: usize,
 }
 
 impl InterleavedReassemblyStreams {
     pub fn new() -> Self {
-        Self { ordered: HashMap::new(), unordered: HashMap::new() }
+        Self { ordered: HashMap::new(), unordered: HashMap::new(), queued_bytes: 0 }
     }
 }
 
 impl ReassemblyStreams for InterleavedReassemblyStreams {
-    fn add(&mut self, _tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
-        match data.stream_key {
+    fn add(&mut self, _tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) {
+        let diff = match data.stream_key {
             StreamKey::Ordered(stream_id) => self
                 .ordered
                 .entry(stream_id)
@@ -151,7 +152,8 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                 .entry(stream_id)
                 .or_insert_with(|| UnorderedStream::new(stream_id))
                 .add(data, on_reassembled),
-        }
+        };
+        self.queued_bytes = self.queued_bytes.strict_add_signed(diff);
     }
 
     fn handle_forward_tsn(
@@ -159,8 +161,7 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
         _new_cumulative_ack: Tsn,
         skipped_streams: &[SkippedStream],
         on_reassembled: &mut dyn FnMut(Message),
-    ) -> usize {
-        let mut released_bytes = 0;
+    ) {
         for skipped_stream in skipped_streams {
             if let SkippedStream::IForwardTsn(stream_key, mid) = skipped_stream {
                 match stream_key {
@@ -170,7 +171,7 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                             .entry(*stream_id)
                             .or_insert_with(|| OrderedStream::new(*stream_id, Mid(0)));
 
-                        released_bytes +=
+                        self.queued_bytes -=
                             stream.intervals.retain(|interval| interval.start.mid > *mid);
 
                         if stream.next_mid <= *mid {
@@ -178,7 +179,7 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                         }
 
                         // Try to assemble messages after the jump
-                        released_bytes += stream.try_assemble_next(on_reassembled);
+                        self.queued_bytes -= stream.try_assemble_next(on_reassembled);
                     }
                     StreamKey::Unordered(stream_id) => {
                         let stream = self
@@ -186,28 +187,35 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                             .entry(*stream_id)
                             .or_insert_with(|| UnorderedStream::new(*stream_id));
 
-                        released_bytes +=
+                        self.queued_bytes -=
                             stream.intervals.retain(|interval| interval.start.mid > *mid);
                     }
                 }
             }
         }
-        released_bytes
     }
 
     fn reset_streams(&mut self, streams: &[StreamId]) {
         if streams.is_empty() {
             for stream in self.ordered.values_mut() {
+                self.queued_bytes -= stream.intervals.total_bytes();
                 stream.next_mid = Mid(0);
+                stream.intervals = IntervalList::default();
             }
         } else {
             for stream_id in streams {
                 if let Some(stream) = self.ordered.get_mut(stream_id) {
+                    self.queued_bytes -= stream.intervals.total_bytes();
                     stream.next_mid = Mid(0);
+                    stream.intervals = IntervalList::default();
                 }
             }
         }
         // Unordered streams don't need reset as they don't block on MID.
+    }
+
+    fn queued_bytes(&self) -> usize {
+        self.queued_bytes
     }
 
     fn get_handover_readiness(&self) -> HandoverReadiness {
@@ -256,11 +264,15 @@ mod tests {
         let mut s = InterleavedReassemblyStreams::new();
         let mut seq = DataSequencer::new(StreamId(1));
 
-        assert_eq!(s.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {}), 1);
-        assert_eq!(s.add(Tsn(2), seq.unordered("bcd", ""), &mut |_| {}), 3);
-        assert_eq!(s.add(Tsn(3), seq.unordered("ef", ""), &mut |_| {}), 2);
+        s.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {});
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(2), seq.unordered("bcd", ""), &mut |_| {});
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(3), seq.unordered("ef", ""), &mut |_| {});
+        assert_eq!(s.queued_bytes(), 6);
         // Adding the end fragment should make it empty again.
-        assert_eq!(s.add(Tsn(4), seq.unordered("g", "E"), &mut |_| {}), -6);
+        s.add(Tsn(4), seq.unordered("g", "E"), &mut |_| {});
+        assert_eq!(s.queued_bytes(), 0);
     }
 
     #[test]
@@ -274,11 +286,15 @@ mod tests {
         let c3 = seq.unordered("ef", "");
         let c4 = seq.unordered("g", "E");
 
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
-        assert_eq!(s.add(Tsn(4), c4, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(2), c2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(4), c4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 5);
         assert!(messages.is_empty());
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), -5);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
     }
 
@@ -293,10 +309,14 @@ mod tests {
         let c3 = seq.ordered("ef", "");
         let c4 = seq.ordered("g", "E");
 
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(4), c4, &mut |m| messages.push(m)), -6);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(2), c2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 6);
+        s.add(Tsn(4), c4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
     }
 
@@ -314,14 +334,21 @@ mod tests {
         let c31 = seq.ordered("ij", "B");
         let c32 = seq.ordered("k", "E");
 
-        assert_eq!(s.add(Tsn(1), c11, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(3), c13, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(4), c14, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(5), c21, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(6), c31, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(7), c32, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(1), c11, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(3), c13, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 3);
+        s.add(Tsn(4), c14, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(5), c21, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 5);
+        s.add(Tsn(6), c31, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 7);
+        s.add(Tsn(7), c32, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 8);
         assert!(messages.is_empty());
-        assert_eq!(s.add(Tsn(2), c12, &mut |m| messages.push(m)), -8);
+        s.add(Tsn(2), c12, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
 
         assert_eq!(messages.len(), 3);
     }
@@ -336,18 +363,19 @@ mod tests {
         let c2 = seq.unordered("bcd", "");
         let c3 = seq.unordered("ef", "");
 
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(2), c2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 6);
         // Adding the end fragment should make it empty again.
-        assert_eq!(
-            s.handle_forward_tsn(
-                Tsn(3),
-                &[SkippedStream::IForwardTsn(StreamKey::Unordered(StreamId(1)), Mid(0))],
-                &mut |m| messages.push(m)
-            ),
-            6
+        s.handle_forward_tsn(
+            Tsn(3),
+            &[SkippedStream::IForwardTsn(StreamKey::Unordered(StreamId(1)), Mid(0))],
+            &mut |m| messages.push(m),
         );
+        assert_eq!(s.queued_bytes(), 0);
     }
 
     #[test]
@@ -359,18 +387,19 @@ mod tests {
         let c1 = seq.ordered("a", "B");
         let c2 = seq.ordered("bcd", "");
         let c3 = seq.ordered("ef", "");
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 3);
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(2), c2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 6);
         // Adding the end fragment should make it empty again.
-        assert_eq!(
-            s.handle_forward_tsn(
-                Tsn(3),
-                &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
-                &mut |m| messages.push(m)
-            ),
-            6
+        s.handle_forward_tsn(
+            Tsn(3),
+            &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
+            &mut |m| messages.push(m),
         );
+        assert_eq!(s.queued_bytes(), 0);
     }
 
     #[test]
@@ -387,21 +416,25 @@ mod tests {
         let c6 = seq.ordered("ij", "B");
         let c7 = seq.ordered("k", "E");
 
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(4), c4, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(5), c5, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(6), c6, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(7), c7, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 3);
+        s.add(Tsn(4), c4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
+        s.add(Tsn(5), c5, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 5);
+        s.add(Tsn(6), c6, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 7);
+        s.add(Tsn(7), c7, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 8);
 
-        assert_eq!(
-            s.handle_forward_tsn(
-                Tsn(8),
-                &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(2))],
-                &mut |m| messages.push(m)
-            ),
-            8
+        s.handle_forward_tsn(
+            Tsn(8),
+            &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(2))],
+            &mut |m| messages.push(m),
         );
+        assert_eq!(s.queued_bytes(), 0);
     }
 
     #[test]
@@ -418,23 +451,27 @@ mod tests {
         let c6 = seq.ordered("ij", "B");
         let c7 = seq.ordered("k", "E");
 
-        assert_eq!(s.add(Tsn(1), c1, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(1), c1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
 
-        assert_eq!(s.add(Tsn(3), c3, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(4), c4, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(3), c3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 3);
+        s.add(Tsn(4), c4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 4);
 
-        assert_eq!(s.add(Tsn(5), c5, &mut |m| messages.push(m)), 1);
-        assert_eq!(s.add(Tsn(6), c6, &mut |m| messages.push(m)), 2);
-        assert_eq!(s.add(Tsn(7), c7, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(5), c5, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 5);
+        s.add(Tsn(6), c6, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 7);
+        s.add(Tsn(7), c7, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 8);
 
-        assert_eq!(
-            s.handle_forward_tsn(
-                Tsn(8),
-                &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
-                &mut |m| messages.push(m)
-            ),
-            8
+        s.handle_forward_tsn(
+            Tsn(8),
+            &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
+            &mut |m| messages.push(m),
         );
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 2);
     }
 
@@ -446,16 +483,15 @@ mod tests {
 
         seq.ordered("abc", "BE"); // TSN=1 Not received.
         let c2 = seq.ordered("def", "BE");
-        assert_eq!(
-            s.handle_forward_tsn(
-                Tsn(1),
-                &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
-                &mut |m| messages.push(m)
-            ),
-            0
+        s.handle_forward_tsn(
+            Tsn(1),
+            &[SkippedStream::IForwardTsn(StreamKey::Ordered(StreamId(1)), Mid(0))],
+            &mut |m| messages.push(m),
         );
+        assert_eq!(s.queued_bytes(), 0);
 
-        assert_eq!(s.add(Tsn(2), c2, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(2), c2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
     }
 
@@ -470,16 +506,20 @@ mod tests {
         let data3 = seq.unordered("c", "BE");
         let data4 = seq.unordered("d", "BE");
 
-        assert_eq!(s.add(Tsn(1), data1, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(1), data1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
 
-        assert_eq!(s.add(Tsn(3), data3, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(3), data3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 2);
 
-        assert_eq!(s.add(Tsn(2), data2, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(2), data2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 3);
 
-        assert_eq!(s.add(Tsn(4), data4, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(4), data4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 4);
     }
 
@@ -494,16 +534,20 @@ mod tests {
         let data3 = seq.ordered("c", "BE");
         let data4 = seq.ordered("d", "BE");
 
-        assert_eq!(s.add(Tsn(1), data1, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(1), data1, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
 
-        assert_eq!(s.add(Tsn(3), data3, &mut |m| messages.push(m)), 1);
+        s.add(Tsn(3), data3, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 1);
         assert_eq!(messages.len(), 1);
 
-        assert_eq!(s.add(Tsn(2), data2, &mut |m| messages.push(m)), -1);
+        s.add(Tsn(2), data2, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 3);
 
-        assert_eq!(s.add(Tsn(4), data4, &mut |m| messages.push(m)), 0);
+        s.add(Tsn(4), data4, &mut |m| messages.push(m));
+        assert_eq!(s.queued_bytes(), 0);
         assert_eq!(messages.len(), 4);
     }
 
@@ -513,13 +557,15 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         // Check readiness: Should only be ready when there are no unassembled chunks.
-        assert_eq!(streams1.add(Tsn(1), seq.ordered("a", "B"), &mut |_| {}), 1);
+        streams1.add(Tsn(1), seq.ordered("a", "B"), &mut |_| {});
+        assert_eq!(streams1.queued_bytes(), 1);
         assert!(
             streams1
                 .get_handover_readiness()
                 .contains(HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS)
         );
-        assert_eq!(streams1.add(Tsn(2), seq.ordered("bcd", "E"), &mut |_| {}), -1);
+        streams1.add(Tsn(2), seq.ordered("bcd", "E"), &mut |_| {});
+        assert_eq!(streams1.queued_bytes(), 0);
         assert!(streams1.get_handover_readiness().is_ready());
 
         // Save and restore state
@@ -534,7 +580,8 @@ mod tests {
         let data = seq.ordered("efgh", "BE");
         assert_eq!(data.mid, Mid(1));
 
-        assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
+        streams2.add(Tsn(3), data, &mut |m| messages.push(m));
+        assert_eq!(streams2.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload, b"efgh");
     }
@@ -545,13 +592,15 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         // Check readiness: Should only be ready when there are no unassembled chunks.
-        assert_eq!(streams1.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {}), 1);
+        streams1.add(Tsn(1), seq.unordered("a", "B"), &mut |_| {});
+        assert_eq!(streams1.queued_bytes(), 1);
         assert!(
             streams1
                 .get_handover_readiness()
                 .contains(HandoverReadiness::STREAM_HAS_UNASSEMBLED_CHUNKS)
         );
-        assert_eq!(streams1.add(Tsn(2), seq.unordered("bcd", "E"), &mut |_| {}), -1);
+        streams1.add(Tsn(2), seq.unordered("bcd", "E"), &mut |_| {});
+        assert_eq!(streams1.queued_bytes(), 0);
         assert!(streams1.get_handover_readiness().is_ready());
 
         // Save and restore state
@@ -564,7 +613,8 @@ mod tests {
 
         // Verify restored state
         let data = seq.unordered("efgh", "BE");
-        assert_eq!(streams2.add(Tsn(3), data, &mut |m| messages.push(m)), 0);
+        streams2.add(Tsn(3), data, &mut |m| messages.push(m));
+        assert_eq!(streams2.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload, b"efgh");
     }

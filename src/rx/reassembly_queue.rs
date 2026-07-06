@@ -68,7 +68,7 @@ impl DerefMut for ReassemblyStrategy {
 pub struct ReassemblyQueue {
     max_size_bytes: usize,
     watermark_bytes: usize,
-    queued_bytes: usize,
+    deferred_bytes: usize,
     streams: ReassemblyStrategy,
     deferred_reset_streams: Option<DeferredResetStreams>,
     rx_messages_count: usize,
@@ -86,7 +86,7 @@ impl ReassemblyQueue {
         Self {
             max_size_bytes,
             watermark_bytes: (max_size_bytes as f32 * HIGH_WATERMARK_LIMIT) as usize,
-            queued_bytes: 0,
+            deferred_bytes: 0,
             streams,
             deferred_reset_streams: None,
             rx_messages_count: 0,
@@ -99,9 +99,7 @@ impl ReassemblyQueue {
     }
 
     pub fn get_next_message(&mut self) -> Option<Message> {
-        let message = self.reassembled_messages.pop_front()?;
-        self.queued_bytes -= message.payload.len();
-        Some(message)
+        self.reassembled_messages.pop_front()
     }
 
     pub fn rx_messages_count(&self) -> usize {
@@ -115,31 +113,30 @@ impl ReassemblyQueue {
             if tsn > deferred_stream.sender_last_assigned_tsn
                 && deferred_stream.streams.contains(&data.stream_key.id())
             {
-                self.queued_bytes += data.payload.len();
+                self.deferred_bytes += data.payload.len();
                 deferred_stream.deferred_operations.push(DeferredOperation::Data(tsn, data));
                 return;
             }
         }
 
-        let bytes_added_to_queue = self.streams.add(tsn, data, &mut |message| {
+        self.streams.add(tsn, data, &mut |message| {
             self.rx_messages_count += 1;
-            self.queued_bytes += message.payload.len();
             self.reassembled_messages.push_back(message);
         });
-
-        self.queued_bytes = self.queued_bytes.wrapping_add_signed(bytes_added_to_queue);
     }
 
     pub fn queued_bytes(&self) -> usize {
-        self.queued_bytes
+        let ready_messages_bytes: usize =
+            self.reassembled_messages.iter().map(|m| m.payload.len()).sum();
+        ready_messages_bytes + self.streams.queued_bytes() + self.deferred_bytes
     }
 
     pub fn is_above_watermark(&self) -> bool {
-        self.queued_bytes >= self.watermark_bytes
+        self.queued_bytes() >= self.watermark_bytes
     }
 
     pub fn is_full(&self) -> bool {
-        self.queued_bytes >= self.max_size_bytes
+        self.queued_bytes() >= self.max_size_bytes
     }
 
     fn forward_tsn_cost(num_streams: usize) -> usize {
@@ -153,7 +150,7 @@ impl ReassemblyQueue {
     ) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
             if new_cumulative_ack > deferred_stream.sender_last_assigned_tsn {
-                self.queued_bytes += ReassemblyQueue::forward_tsn_cost(skipped_streams.len());
+                self.deferred_bytes += ReassemblyQueue::forward_tsn_cost(skipped_streams.len());
                 deferred_stream
                     .deferred_operations
                     .push(DeferredOperation::ForwardTsn(new_cumulative_ack, skipped_streams));
@@ -161,18 +158,15 @@ impl ReassemblyQueue {
             }
         }
 
-        let bytes_removed_from_queue =
-            self.streams.handle_forward_tsn(new_cumulative_ack, &skipped_streams, &mut |message| {
-                self.rx_messages_count += 1;
-                self.queued_bytes += message.payload.len();
-                self.reassembled_messages.push_back(message);
-            });
-        self.queued_bytes -= bytes_removed_from_queue;
+        self.streams.handle_forward_tsn(new_cumulative_ack, &skipped_streams, &mut |message| {
+            self.rx_messages_count += 1;
+            self.reassembled_messages.push_back(message);
+        });
     }
 
     /// The remaining bytes until the queue has reached the watermark limit.
     pub fn remaining_bytes(&self) -> usize {
-        self.watermark_bytes - self.queued_bytes
+        self.watermark_bytes.saturating_sub(self.queued_bytes())
     }
 
     pub(crate) fn enter_deferred_reset(
@@ -190,10 +184,10 @@ impl ReassemblyQueue {
     pub(crate) fn reset_streams_and_leave_deferred_reset(&mut self, streams: &[StreamId]) {
         self.streams.reset_streams(streams);
         if let Some(deferred) = self.deferred_reset_streams.take() {
+            self.deferred_bytes = 0;
             deferred.deferred_operations.into_iter().for_each(|op| match op {
                 DeferredOperation::Data(tsn, data) => self.add(tsn, data),
                 DeferredOperation::ForwardTsn(tsn, skipped) => {
-                    self.queued_bytes -= ReassemblyQueue::forward_tsn_cost(skipped.len());
                     self.handle_forward_tsn(tsn, skipped);
                 }
             });
@@ -583,5 +577,67 @@ mod tests {
         // the earlier value.
         q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
         assert_eq!(q.queued_bytes(), 0);
+    }
+
+    #[test]
+    fn traditional_reset_streams_clears_queued_bytes() {
+        let mut q = make_traditional_queue();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        q.add(Tsn(10), seq.ordered("abc", "B"));
+        assert_eq!(q.queued_bytes(), 3);
+
+        q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
+
+        assert_eq!(q.queued_bytes(), 0);
+    }
+
+    #[test]
+    fn interleaved_reset_streams_clears_queued_bytes() {
+        let mut q = make_interleaved_queue();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        q.add(Tsn(10), seq.ordered("abc", "B"));
+        assert_eq!(q.queued_bytes(), 3);
+
+        q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
+
+        assert_eq!(q.queued_bytes(), 0);
+    }
+
+    #[test]
+    fn watermark_straddling_does_not_underflow() {
+        let mut q = ReassemblyQueue::new(100, false); // watermark will be 90 bytes
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Add a message that is larger than the watermark (e.g. 95 bytes)
+        q.add(Tsn(10), seq.ordered(&"a".repeat(95), "B"));
+
+        assert_eq!(q.queued_bytes(), 95);
+        assert!(q.is_above_watermark());
+
+        // Assert remaining_bytes saturates to 0 rather than underflowing/panicking
+        assert_eq!(q.remaining_bytes(), 0);
+    }
+
+    #[test]
+    fn deferred_reset_does_not_double_count_bytes() {
+        let mut q = make_traditional_queue();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        // Enter deferred reset
+        q.enter_deferred_reset(Tsn(10), &[StreamId(1)]);
+
+        // Add chunk that is deferred (not completed, B-bit only)
+        q.add(Tsn(11), seq.ordered("abc", "B"));
+
+        // Initially, the bytes should be counted as deferred bytes
+        assert_eq!(q.queued_bytes(), 3);
+
+        // Leave deferred reset (plays back the deferred chunk)
+        q.reset_streams_and_leave_deferred_reset(&[StreamId(1)]);
+
+        // The chunk should be buffered in the stream, but not double-counted
+        assert_eq!(q.queued_bytes(), 3);
     }
 }

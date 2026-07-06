@@ -8,7 +8,11 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
  - Account payload size of the deferred forward TSN messages.
+ - Refactored ReassemblyQueue byte tracking into smaller parts, fixing integer
+   underflows and double-counting bugs.
 
 ### Added
 

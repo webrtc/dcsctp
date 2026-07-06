@@ -37,30 +37,27 @@ pub trait ReassemblyStreams {
     ///
     /// This method expects that the data is deduplicated and sanity checked by the caller, e.g. by
     /// the DataTracker.
-    ///
-    /// Returns the additional number of bytes added to the queue as a result of performing this
-    /// operation. If this addition resulted in messages being assembled and delivered, this may be
-    /// negative.
-    fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize;
+    fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message));
 
     /// Called for incoming FORWARD-TSN/I-FORWARD-TSN chunks - when the sender wishes the received
     /// to skip/forget about data up until the provided TSN. This is used to implement partial
     /// reliability, such as limiting the number of retransmissions or the an expiration duration.
     /// As a result of skipping data, this may result in the implementation being able to assemble
     /// messages in ordered streams.
-    ///
-    /// Returns the number of bytes removed from the queue as a result of this operation.
     fn handle_forward_tsn(
         &mut self,
         new_cumulative_ack: Tsn,
         skipped_streams: &[SkippedStream],
         on_reassembled: &mut dyn FnMut(Message),
-    ) -> usize;
+    );
 
     /// Called for incoming (possibly deferred) RE_CONFIG chunks asking for either a few streams, or
     /// all streams (when the list is empty) to be reset - to have their next SSN or Message ID to
     /// be zero.
     fn reset_streams(&mut self, streams: &[StreamId]);
+
+    /// Returns the number of bytes currently buffered in the unassembled streams.
+    fn queued_bytes(&self) -> usize;
 
     fn get_handover_readiness(&self) -> HandoverReadiness;
     fn add_to_handover_state(&self, state: &mut SocketHandoverState);
