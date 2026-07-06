@@ -84,6 +84,14 @@ impl<K: ReassemblyKey> IntervalList<K> {
         self.intervals.is_empty()
     }
 
+    /// Returns the total number of bytes currently buffered in the list.
+    pub fn total_bytes(&self) -> usize {
+        self.intervals
+            .iter()
+            .map(|interval| interval.payload.iter().map(|p| p.len()).sum::<usize>())
+            .sum()
+    }
+
     /// Adds a new chunk to the list, merging it with existing intervals if possible.
     ///
     /// This method expects that the data is deduplicated and sanity checked by the caller, e.g. by
