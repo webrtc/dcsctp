@@ -44,6 +44,7 @@ use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
 use crate::packet::idata_chunk::IDataChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
+use crate::packet::protocol_violation_error_cause::ProtocolViolationErrorCause;
 use crate::packet::sctp_packet;
 use crate::packet::sctp_packet::SctpPacket;
 use crate::packet::unknown_chunk::UnknownChunk;
@@ -261,6 +262,43 @@ impl Socket {
         self.ctx.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
     }
 
+    fn validate_chunk_interleaving(&mut self, chunk: &Chunk) -> bool {
+        if let Some(tcb) = self.state.tcb() {
+            // From <https://datatracker.ietf.org/doc/html/rfc8260#section-2> and
+            // <https://datatracker.ietf.org/doc/html/rfc8260#section-2.3.1>.
+            let is_interleaving = tcb.capabilities.message_interleaving;
+            let violation_reason = match chunk {
+                Chunk::Data(_) | Chunk::ForwardTsn(_) if is_interleaving => {
+                    Some("DATA/FORWARD-TSN chunk received when message interleaving is negotiated")
+                }
+                Chunk::IData(_) | Chunk::IForwardTsn(_) if !is_interleaving => Some(
+                    "I-DATA/I-FORWARD-TSN chunk received when message interleaving is not negotiated",
+                ),
+                _ => None,
+            };
+            if let Some(reason) = violation_reason {
+                let abort_packet = tcb
+                    .new_packet()
+                    .add(&Chunk::Abort(AbortChunk {
+                        tag_reflected: false,
+                        error_causes: vec![ErrorCause::ProtocolViolation(
+                            ProtocolViolationErrorCause { information: reason.into() },
+                        )],
+                    }))
+                    .build();
+                self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(abort_packet));
+                self.ctx.tx_packets_count += 1;
+                self.ctx.internal_close(
+                    &mut self.state,
+                    ErrorKind::ProtocolViolation,
+                    reason.into(),
+                );
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn verification_tag(&self) -> u32 {
         match &self.state {
             State::Closed => 0,
@@ -451,6 +489,9 @@ impl DcSctpSocket for Socket {
                     &packet.chunks,
                 );
                 for chunk in packet.chunks {
+                    if !self.validate_chunk_interleaving(&chunk) {
+                        break;
+                    }
                     match chunk {
                         Chunk::Data(DataChunk { tsn, data })
                         | Chunk::IData(IDataChunk { tsn, data }) => {
