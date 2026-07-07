@@ -8,15 +8,16 @@ and this project adheres to
 
 ## Unreleased
 
+### Added
+
+ - Added Verification Tag validation on incoming packets as per RFC 9260 Section 8.5.
+ - Validate incoming DATA/IDATA/FORWARD-TSN/I-FORWARD-TSN chunk types match negotiated message interleaving capability.
+
 ### Fixed
 
  - Account payload size of the deferred forward TSN messages.
  - Refactored ReassemblyQueue byte tracking into smaller parts, fixing integer
    underflows and double-counting bugs.
-
-### Added
-
- - Added Verification Tag validation on incoming packets as per RFC 9260 Section 8.5.
 
 ## 0.1.13 - 2026-05-20
 

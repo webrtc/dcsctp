@@ -37,6 +37,7 @@ mod tests {
     use crate::packet::data_chunk::DataChunk;
     use crate::packet::error_causes::ErrorCause;
     use crate::packet::error_chunk::ErrorChunk;
+    use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
     use crate::packet::heartbeat_ack_chunk::HeartbeatAckChunk;
     use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
     use crate::packet::heartbeat_request_chunk::HeartbeatRequestChunk;
@@ -69,6 +70,7 @@ mod tests {
     use crate::testing::event_helpers::is_lifecycle_message_maybe_expired;
     use crate::types::Ssn;
     use crate::types::StreamKey;
+    use crate::types::Tsn;
     use core::panic;
     use std::cmp::min;
     use std::collections::HashSet;
@@ -3919,5 +3921,119 @@ mod tests {
         if let Chunk::ShutdownComplete(ref complete) = parsed.chunks[0] {
             assert!(complete.tag_reflected);
         }
+    }
+
+    fn assert_aborted_with_protocol_violation(socket: &mut Socket, options: &Options) {
+        let abort_packet = expect_sent_packet!(socket.poll_event());
+        let packet = SctpPacket::from_bytes(&abort_packet, options).unwrap();
+        let Chunk::Abort(abort_chunk) = &packet.chunks[0] else {
+            panic!("Expected ABORT chunk");
+        };
+        assert!(matches!(abort_chunk.error_causes[0], ErrorCause::ProtocolViolation(_)));
+        assert_eq!(expect_on_aborted!(socket.poll_event()), ErrorKind::ProtocolViolation);
+    }
+
+    #[test]
+    fn message_interleaving_disabled_rejects_idata() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::IData(crate::packet::idata_chunk::IDataChunk {
+            tsn: Tsn(10),
+            data: Data {
+                payload: b"hello".to_vec(),
+                is_beginning: true,
+                is_end: true,
+                ..Default::default()
+            },
+        }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        assert_aborted_with_protocol_violation(&mut socket_a, &options);
+    }
+
+    #[test]
+    fn message_interleaving_disabled_rejects_iforward_tsn() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::IForwardTsn(crate::packet::iforward_tsn_chunk::IForwardTsnChunk {
+            new_cumulative_tsn: Tsn(10),
+            skipped_streams: vec![],
+        }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        assert_aborted_with_protocol_violation(&mut socket_a, &options);
+    }
+
+    #[test]
+    fn message_interleaving_enabled_rejects_data() {
+        let mut options = default_options();
+        options.enable_message_interleaving = true;
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::Data(DataChunk {
+            tsn: Tsn(10),
+            data: Data {
+                payload: b"hello".to_vec(),
+                is_beginning: true,
+                is_end: true,
+                ..Default::default()
+            },
+        }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        assert_aborted_with_protocol_violation(&mut socket_a, &options);
+    }
+
+    #[test]
+    fn message_interleaving_enabled_rejects_forward_tsn() {
+        let mut options = default_options();
+        options.enable_message_interleaving = true;
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::ForwardTsn(ForwardTsnChunk {
+            new_cumulative_tsn: Tsn(10),
+            skipped_streams: vec![],
+        }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        assert_aborted_with_protocol_violation(&mut socket_a, &options);
     }
 }
