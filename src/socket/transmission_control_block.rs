@@ -220,7 +220,7 @@ impl TransmissionControlBlock {
             self.remote_port,
             self.max_packet_size,
         );
-        b.write_checksum(!self.capabilities.zero_checksum);
+        b.write_checksum(!self.capabilities.zero_checksum_enabled());
         b
     }
 
@@ -241,7 +241,7 @@ impl TransmissionControlBlock {
             partial_reliability: self.capabilities.partial_reliability,
             message_interleaving: self.capabilities.message_interleaving,
             reconfig: self.capabilities.reconfig,
-            zero_checksum: self.capabilities.zero_checksum,
+            zero_checksum: self.capabilities.zero_checksum_enabled(),
             negotiated_maximum_incoming_streams: self
                 .capabilities
                 .negotiated_maximum_incoming_streams,

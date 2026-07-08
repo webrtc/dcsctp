@@ -29,6 +29,7 @@ use crate::api::SocketEvent;
 use crate::api::SocketState;
 use crate::api::SocketTime;
 use crate::api::StreamId;
+use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
 use crate::api::handover::HandoverReadiness;
 use crate::api::handover::HandoverSocketState;
 use crate::api::handover::SocketHandoverState;
@@ -815,7 +816,7 @@ impl DcSctpSocket for Socket {
             peer_rwnd_bytes: tcb.retransmission_queue.rwnd() as u32,
             peer_implementation: self.ctx.peer_implementation,
             uses_message_interleaving: tcb.capabilities.message_interleaving,
-            uses_zero_checksum: tcb.capabilities.zero_checksum,
+            uses_zero_checksum: tcb.capabilities.zero_checksum_enabled(),
             negotiated_maximum_incoming_streams: tcb
                 .capabilities
                 .negotiated_maximum_incoming_streams,
@@ -849,7 +850,11 @@ impl DcSctpSocket for Socket {
             partial_reliability: state.capabilities.partial_reliability,
             message_interleaving: state.capabilities.message_interleaving,
             reconfig: state.capabilities.reconfig,
-            zero_checksum: state.capabilities.zero_checksum,
+            zero_checksum_method: if state.capabilities.zero_checksum {
+                self.ctx.options.zero_checksum_alternate_error_detection_method
+            } else {
+                ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE
+            },
             negotiated_maximum_incoming_streams: state
                 .capabilities
                 .negotiated_maximum_incoming_streams,

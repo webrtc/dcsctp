@@ -59,8 +59,6 @@ use crate::types::Tsn;
 use log::info;
 #[cfg(not(test))]
 use log::warn;
-use std::cmp::min;
-use std::collections::HashSet;
 #[cfg(test)]
 use std::println as info;
 #[cfg(test)]
@@ -185,14 +183,16 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
         }
     }
 
-    let capabilities = compute_capabilities(
-        &ctx.options,
+    let peer_capabilities = Capabilities::from_parameters(
         chunk.nbr_outbound_streams,
         chunk.nbr_inbound_streams,
         &chunk.parameters,
     );
-    let write_checksum = !capabilities.zero_checksum;
-    let mut parameters = make_capability_parameters(&ctx.options, capabilities.zero_checksum);
+    let capabilities = peer_capabilities.negotiate(&ctx.options);
+    let write_checksum = !capabilities.zero_checksum_enabled();
+    let mut parameters =
+        make_capability_parameters(&ctx.options, capabilities.zero_checksum_enabled());
+
     parameters.push(Parameter::StateCookie(StateCookieParameter {
         cookie: StateCookie {
             peer_tag: chunk.initiate_tag,
@@ -201,7 +201,7 @@ pub(crate) fn handle_init(state: &mut State, ctx: &mut Context, chunk: InitChunk
             my_initial_tsn,
             a_rwnd: chunk.a_rwnd,
             tie_tag,
-            capabilities,
+            peer_capabilities,
         }
         .serialize(),
     }));
@@ -395,7 +395,7 @@ pub(crate) fn handle_cookie_echo(
         unreachable!();
     };
 
-    let write_checksum = !tcb.capabilities.zero_checksum;
+    let write_checksum = !tcb.capabilities.zero_checksum_enabled();
     let mut b = SctpPacketBuilder::new(
         cookie.peer_tag,
         ctx.options.local_port,
@@ -474,13 +474,15 @@ fn establish_new_tcb(
     cookie: &StateCookie,
     reset_queue: bool,
 ) {
-    ctx.send_queue.enable_message_interleaving(cookie.capabilities.message_interleaving);
+    let capabilities = cookie.peer_capabilities.negotiate(&ctx.options);
+    ctx.send_queue.enable_message_interleaving(capabilities.message_interleaving);
 
     if reset_queue {
         ctx.send_queue.reset();
     }
 
     let tie_tag = fastrand::u64(..);
+    let a_rwnd = std::cmp::min(cookie.a_rwnd, ctx.options.max_send_buffer_size as u32);
     let new_tcb = TransmissionControlBlock::new(
         &ctx.options,
         cookie.my_tag,
@@ -488,8 +490,8 @@ fn establish_new_tcb(
         cookie.peer_tag,
         cookie.peer_initial_tsn,
         tie_tag,
-        cookie.a_rwnd,
-        cookie.capabilities,
+        a_rwnd,
+        capabilities,
         ctx.events.clone(),
     );
 
@@ -558,56 +560,8 @@ fn compute_capabilities(
     peer_nbr_inbound_streams: u16,
     parameters: &[Parameter],
 ) -> Capabilities {
-    let supported: HashSet<u8> = HashSet::from_iter(
-        parameters
-            .iter()
-            .find_map(|e| match e {
-                Parameter::SupportedExtensions(SupportedExtensionsParameter { chunk_types }) => {
-                    Some(chunk_types)
-                }
-                _ => None,
-            })
-            .unwrap_or(&vec![])
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>(),
-    );
-
-    let partial_reliability = options.enable_partial_reliability
-        && (parameters.iter().any(|e| matches!(e, Parameter::ForwardTsnSupported(_)))
-            || supported.contains(&forward_tsn_chunk::CHUNK_TYPE));
-
-    let message_interleaving = options.enable_message_interleaving
-        && supported.contains(&idata_chunk::CHUNK_TYPE)
-        && supported.contains(&iforward_tsn_chunk::CHUNK_TYPE);
-
-    let peer_zero_checksum = *parameters
-        .iter()
-        .find_map(|e| match e {
-            Parameter::ZeroChecksumAcceptable(ZeroChecksumAcceptableParameter { method }) => {
-                Some(method)
-            }
-            _ => None,
-        })
-        .unwrap_or(&ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE);
-    let zero_checksum = (options.zero_checksum_alternate_error_detection_method
-        != ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE)
-        && (options.zero_checksum_alternate_error_detection_method == peer_zero_checksum);
-
-    Capabilities {
-        partial_reliability,
-        message_interleaving,
-        reconfig: supported.contains(&re_config_chunk::CHUNK_TYPE),
-        zero_checksum,
-        negotiated_maximum_incoming_streams: min(
-            options.announced_maximum_incoming_streams,
-            peer_nbr_outbound_streams,
-        ),
-        negotiated_maximum_outgoing_streams: min(
-            options.announced_maximum_outgoing_streams,
-            peer_nbr_inbound_streams,
-        ),
-    }
+    Capabilities::from_parameters(peer_nbr_outbound_streams, peer_nbr_inbound_streams, parameters)
+        .negotiate(options)
 }
 
 fn make_capability_parameters(options: &Options, support_zero_checksum: bool) -> Vec<Parameter> {
