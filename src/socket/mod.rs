@@ -262,17 +262,22 @@ impl Socket {
         self.ctx.events.borrow_mut().add(SocketEvent::OnError(ErrorKind::PeerReported, message));
     }
 
-    fn validate_chunk_interleaving(&mut self, chunk: &Chunk) -> bool {
+    fn validate_chunk(&mut self, chunk: &Chunk) -> bool {
         if let Some(tcb) = self.state.tcb() {
             // From <https://datatracker.ietf.org/doc/html/rfc8260#section-2> and
             // <https://datatracker.ietf.org/doc/html/rfc8260#section-2.3.1>.
             let is_interleaving = tcb.capabilities.message_interleaving;
+            // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.3.1>.
+            let partial_reliability = tcb.capabilities.partial_reliability;
             let violation_reason = match chunk {
                 Chunk::Data(_) | Chunk::ForwardTsn(_) if is_interleaving => {
                     Some("DATA/FORWARD-TSN chunk received when message interleaving is negotiated")
                 }
                 Chunk::IData(_) | Chunk::IForwardTsn(_) if !is_interleaving => Some(
                     "I-DATA/I-FORWARD-TSN chunk received when message interleaving is not negotiated",
+                ),
+                Chunk::ForwardTsn(_) | Chunk::IForwardTsn(_) if !partial_reliability => Some(
+                    "FORWARD-TSN/I-FORWARD-TSN chunk received when partial reliability is not negotiated",
                 ),
                 _ => None,
             };
@@ -489,7 +494,7 @@ impl DcSctpSocket for Socket {
                     &packet.chunks,
                 );
                 for chunk in packet.chunks {
-                    if !self.validate_chunk_interleaving(&chunk) {
+                    if !self.validate_chunk(&chunk) {
                         break;
                     }
                     match chunk {

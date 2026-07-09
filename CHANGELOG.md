@@ -12,6 +12,7 @@ and this project adheres to
 
  - Added Verification Tag validation on incoming packets as per RFC 9260 Section 8.5.
  - Validate incoming DATA/IDATA/FORWARD-TSN/I-FORWARD-TSN chunk types match negotiated message interleaving capability.
+ - Validate incoming FORWARD-TSN/I-FORWARD-TSN to match negotiated partial reliability capability.
 
 ### Fixed
 
