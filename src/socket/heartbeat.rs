@@ -46,7 +46,6 @@ pub(crate) fn handle_heartbeat_req(
 }
 
 pub(crate) fn handle_heartbeat_ack(ctx: &mut Context, now: SocketTime, chunk: HeartbeatAckChunk) {
-    ctx.heartbeat_timeout.stop();
     match chunk.parameters.iter().find_map(|p| match p {
         Parameter::HeartbeatInfo(HeartbeatInfoParameter { info }) => Some(info),
         _ => None,
@@ -54,6 +53,7 @@ pub(crate) fn handle_heartbeat_ack(ctx: &mut Context, now: SocketTime, chunk: He
         Some(info) if info.len() == 4 => {
             let counter = read_u32_be!(&info);
             if counter == ctx.heartbeat_counter {
+                ctx.heartbeat_timeout.stop();
                 let _rtt = now - ctx.heartbeat_sent_time;
                 // From <https://datatracker.ietf.org/doc/html/rfc9260#section-8.1>:
                 //
