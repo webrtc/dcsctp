@@ -1076,6 +1076,49 @@ mod tests {
     }
 
     #[test]
+    fn close_connection_if_heartbeat_ack_is_invalid() {
+        let mut options = default_options();
+        options.heartbeat_interval = Duration::from_secs(30);
+        options.max_retransmissions = Some(0);
+        let mut now = SocketTime::zero();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        now = now + options.heartbeat_interval;
+        socket_a.advance_time(now);
+        let hb_packet = expect_sent_packet!(socket_a.poll_event());
+        let hb_packet = SctpPacket::from_bytes(&hb_packet, &options).unwrap();
+        assert!(matches!(hb_packet.chunks[0], Chunk::HeartbeatRequest(_)));
+
+        // Send an invalid HeartbeatAckChunk with wrong nonce.
+        let invalid_ack_packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::HeartbeatAck(HeartbeatAckChunk {
+            parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
+                info: vec![0xFF, 0xFF, 0xFF, 0xFF],
+            })],
+        }))
+        .build();
+        socket_a.handle_input(&invalid_ack_packet);
+
+        // Letting the heartbeat expire, since the invalid ack should not have stopped the timeout.
+        now = now + options.rto_initial;
+        socket_a.advance_time(now);
+
+        let abort_packet = expect_sent_packet!(socket_a.poll_event());
+        let abort_packet = SctpPacket::from_bytes(&abort_packet, &options).unwrap();
+        assert!(matches!(abort_packet.chunks[0], Chunk::Abort(_)));
+
+        assert_eq!(expect_on_aborted!(socket_a.poll_event()), ErrorKind::TooManyRetries);
+        expect_no_event!(socket_a.poll_event());
+    }
+
+    #[test]
     fn close_connection_after_second_lost_heartbeat() {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);

@@ -20,6 +20,7 @@ and this project adheres to
  - Refactored ReassemblyQueue byte tracking into smaller parts, fixing integer
    underflows and double-counting bugs.
  - Discard FORWARD-TSN with invalid TSN.
+ - Stop heartbeat timeout only after validating nonce in HEARTBEAT-ACK.
 
 ## 0.1.13 - 2026-05-20
 
