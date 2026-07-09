@@ -980,6 +980,32 @@ mod tests {
     }
 
     #[test]
+    fn oversized_heartbeat_request_is_dropped() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            65535,
+        )
+        .add(&Chunk::HeartbeatRequest(HeartbeatRequestChunk {
+            parameters: vec![Parameter::HeartbeatInfo(HeartbeatInfoParameter {
+                info: vec![0u8; 2000],
+            })],
+        }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        // The heartbeat parameters are too large to fit in an MTU-sized response.
+        // It should be completely dropped.
+        assert!(socket_a.poll_event().is_none());
+    }
+
+    #[test]
     fn expect_heartbeat_to_be_sent() {
         let mut options = default_options();
         options.heartbeat_interval = Duration::from_secs(30);
@@ -1937,6 +1963,39 @@ mod tests {
         socket_a.handle_input(&packet);
 
         assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::PeerReported);
+    }
+
+    #[test]
+    fn unrecognized_chunk_echoing_is_capped_to_mtu() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            65535,
+        )
+        .add(&Chunk::Unknown(UnknownChunk { typ: 0x49, flags: 0, value: vec![0u8; 2000] }))
+        .build();
+        socket_a.handle_input(&packet);
+
+        assert_eq!(expect_on_error!(socket_a.poll_event()), ErrorKind::ParseFailed);
+
+        let out_bytes = expect_sent_packet!(socket_a.poll_event());
+        assert!(out_bytes.len() <= options.mtu);
+        let packet = SctpPacket::from_bytes(&out_bytes, &options).unwrap();
+
+        assert_eq!(packet.chunks.len(), 1);
+        let Chunk::Error(err) = &packet.chunks[0] else { panic!() };
+        assert_eq!(err.error_causes.len(), 1);
+        let ErrorCause::UnrecognizedChunk(unrec) = &err.error_causes[0] else { panic!() };
+
+        // Verify that the error chunk contains a truncated copy of the unrecognized chunk.
+        assert!(unrec.chunk.len() > 100);
+        assert!(unrec.chunk.len() < 2000);
     }
 
     #[test]

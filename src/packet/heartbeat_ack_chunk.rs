@@ -24,6 +24,7 @@ use crate::packet::parameter::parameters_serialized_size;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 5;
+pub(crate) const HEADER_SIZE: usize = 4;
 
 /// Heartbeat Acknowledgement (HEARTBEAT ACK) chunk
 ///

@@ -34,16 +34,19 @@ use crate::api::handover::HandoverSocketState;
 use crate::api::handover::SocketHandoverState;
 use crate::events::Events;
 use crate::logging::log_packet;
+use crate::math::round_down_to_4;
 use crate::packet::SerializableTlv;
 use crate::packet::abort_chunk::AbortChunk;
 use crate::packet::chunk::Chunk;
 use crate::packet::data_chunk;
 use crate::packet::data_chunk::DataChunk;
 use crate::packet::error_causes::ErrorCause;
+use crate::packet::error_chunk;
 use crate::packet::error_chunk::ErrorChunk;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
 use crate::packet::idata_chunk::IDataChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
+use crate::packet::parameter::PARAMETER_HEADER_SIZE;
 use crate::packet::protocol_violation_error_cause::ProtocolViolationErrorCause;
 use crate::packet::sctp_packet;
 use crate::packet::sctp_packet::SctpPacket;
@@ -435,10 +438,19 @@ impl Socket {
             //   [...] report the unrecognized chunk in an ERROR chunk using the 'Unrecognized Chunk
             //   Type' error cause.
             if let Some(tcb) = self.state.tcb() {
+                let mut packet = tcb.new_packet();
+                // To avoid exceeding MTU, limit what is echoed back.
+                const OVERHEAD: usize = error_chunk::HEADER_SIZE + PARAMETER_HEADER_SIZE;
+                let max_len = round_down_to_4!(packet.bytes_remaining().saturating_sub(OVERHEAD));
+
                 let mut serialized = vec![0; chunk.serialized_size()];
                 chunk.serialize_to(&mut serialized);
+                if serialized.len() > max_len {
+                    serialized.truncate(max_len);
+                }
+
                 self.ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-                    tcb.new_packet()
+                    packet
                         .add(&Chunk::Error(ErrorChunk {
                             error_causes: vec![ErrorCause::UnrecognizedChunk(
                                 UnrecognizedChunkErrorCause { chunk: serialized },
