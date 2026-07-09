@@ -4062,4 +4062,48 @@ mod tests {
 
         assert_aborted_with_protocol_violation(&mut socket_a, &options_a);
     }
+
+    #[test]
+    fn handle_forward_tsn_rejects_invalid_tsn() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Z sends a message to A. Capture the legitimate DATA chunk.
+        socket_z
+            .send(Message::new(StreamId(1), PpId(51), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+        let packet_bytes = expect_sent_packet!(socket_z.poll_event());
+        let packet = SctpPacket::from_bytes(&packet_bytes, &options).unwrap();
+        let Chunk::Data(data_chunk) = &packet.chunks[0] else {
+            panic!("Expected Data chunk");
+        };
+        let valid_tsn = data_chunk.tsn;
+
+        // Forge a FORWARD-TSN packet with a TSN far outside the outstanding window.
+        let invalid_tsn = valid_tsn + 200_000;
+        let forward_tsn_packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::ForwardTsn(ForwardTsnChunk {
+            new_cumulative_tsn: invalid_tsn,
+            skipped_streams: vec![],
+        }))
+        .build();
+
+        socket_a.handle_input(&forward_tsn_packet);
+
+        // Feed the legitimate DATA packet to A.
+        socket_a.handle_input(&packet_bytes);
+
+        // Verify that A successfully received and reassembled the message.
+        // If the invalid FORWARD-TSN had been processed, the cumulative ack TSN
+        // would have jumped, and this legitimate DATA packet would have been dropped as duplicate.
+        let msg = socket_a.get_next_message().expect("Message should be received");
+        assert_eq!(msg.payload, b"hello");
+    }
 }
