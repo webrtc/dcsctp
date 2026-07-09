@@ -74,6 +74,35 @@ impl ReassemblyKey for InterleavedKey {
     }
 }
 
+/// A reassembly key for unordered interleaved streams that derives standard linear ordering.
+///
+/// Unordered streams accept chunks with arbitrary MIDs without discarding them based on
+/// sequence bounds. To safely store these in an `IntervalList` (which requires a strict
+/// total order for binary search), bypass RFC1982 ordering and use standard sorting instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnorderedInterleavedKey {
+    pub mid: Mid,
+    pub fsn: Fsn,
+}
+
+impl PartialOrd for UnorderedInterleavedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UnorderedInterleavedKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.mid.0.cmp(&other.mid.0).then_with(|| self.fsn.0.cmp(&other.fsn.0))
+    }
+}
+
+impl ReassemblyKey for UnorderedInterleavedKey {
+    fn next(&self) -> Self {
+        UnorderedInterleavedKey { mid: self.mid, fsn: self.fsn + 1 }
+    }
+}
+
 pub struct OrderedStream {
     stream_id: StreamId,
     intervals: IntervalList<InterleavedKey>,
@@ -127,7 +156,7 @@ impl OrderedStream {
 
 pub struct UnorderedStream {
     stream_id: StreamId,
-    intervals: IntervalList<InterleavedKey>,
+    intervals: IntervalList<UnorderedInterleavedKey>,
 }
 
 impl UnorderedStream {
@@ -142,7 +171,7 @@ impl UnorderedStream {
             return 0;
         }
 
-        let key = InterleavedKey { mid: data.mid, fsn: data.fsn };
+        let key = UnorderedInterleavedKey { mid: data.mid, fsn: data.fsn };
         let queued_bytes = data.payload.len() as isize;
         let idx = self.intervals.add(key, data);
 
@@ -652,5 +681,23 @@ mod tests {
         assert_eq!(streams2.queued_bytes(), 0);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload, b"efgh");
+    }
+
+    #[test]
+    fn unordered_interleaved_streams_support_extreme_mid_distances() {
+        let mut streams = InterleavedReassemblyStreams::new();
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        let mut data1 = seq.unordered("a", "B");
+        data1.mid = Mid(0);
+        streams.add(Tsn(1), data1, &mut |_| {});
+
+        let mut data2 = seq.unordered("b", "B");
+        data2.mid = Mid(1 << 31);
+        streams.add(Tsn(2), data2, &mut |_| {});
+
+        // Ensure that binary search invariants in IntervalList are maintained
+        // even when receiving MIDs exactly at the maximum sequence distance.
+        assert_eq!(streams.queued_bytes(), 2);
     }
 }
