@@ -178,12 +178,22 @@ impl SctpPacketBuilder {
 
         let chunk_offset = self.data.len();
         let chunk_size = chunk.as_serializable().serialized_size();
-        self.data.resize(round_up_to_4!(self.data.len() + chunk_size), 0);
+        let new_len = round_up_to_4!(self.data.len() + chunk_size);
+        debug_assert!(
+            new_len <= self.max_packet_size,
+            "packet too large: {} > {}",
+            new_len,
+            self.max_packet_size
+        );
+        if new_len > self.max_packet_size {
+            return self;
+        }
+
+        self.data.resize(new_len, 0);
         chunk
             .as_serializable()
             .serialize_to(&mut self.data[chunk_offset..chunk_offset + chunk_size]);
         debug_assert!(is_divisible_by_4!(self.data.len()));
-        debug_assert!(self.data.len() <= self.max_packet_size);
         self
     }
 
