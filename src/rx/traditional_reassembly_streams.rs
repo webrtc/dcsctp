@@ -23,6 +23,7 @@ use crate::packet::data::Data;
 use crate::rx::IntervalList;
 use crate::rx::ReassemblyKey;
 use crate::rx::reassembly_streams::ReassemblyStreams;
+use crate::types::SerialNumber;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
@@ -223,8 +224,8 @@ impl OrderedStream {
 
 impl OrderedStream {
     fn add(&mut self, tsn: Tsn, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
-        if data.ssn < self.next_ssn {
-            // Already delivered or skipped.
+        if data.ssn != self.next_ssn && !data.ssn.greater_than(self.next_ssn) {
+            // Already delivered, skipped, or ambiguously too far ahead.
             return 0;
         }
 

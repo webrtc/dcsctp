@@ -24,6 +24,10 @@ and this project adheres to
  - Stop heartbeat timeout only after validating nonce in HEARTBEAT-ACK.
  - Dropping/truncating oversized Unrecognized or HEARTBEAT chunks.
 
+### Changed
+
+ - Refactored RFC1982 serial number types.
+
 ## 0.1.13 - 2026-05-20
 
 ### Fixed
