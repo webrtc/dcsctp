@@ -4036,4 +4036,30 @@ mod tests {
 
         assert_aborted_with_protocol_violation(&mut socket_a, &options);
     }
+
+    #[test]
+    fn handle_forward_tsn_without_partial_reliability_aborts() {
+        let mut options_a = default_options();
+        options_a.enable_partial_reliability = false;
+        let mut socket_a = Socket::new("A", &options_a);
+        let mut socket_z = Socket::new("Z", &default_options());
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Forge a FORWARD-TSN packet with a dummy TSN.
+        let packet = SctpPacketBuilder::new(
+            socket_a.verification_tag(),
+            options_a.local_port,
+            options_a.remote_port,
+            options_a.mtu,
+        )
+        .add(&Chunk::ForwardTsn(ForwardTsnChunk {
+            new_cumulative_tsn: Tsn(10),
+            skipped_streams: vec![],
+        }))
+        .build();
+
+        socket_a.handle_input(&packet);
+
+        assert_aborted_with_protocol_violation(&mut socket_a, &options_a);
+    }
 }
