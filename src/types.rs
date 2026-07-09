@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::api::StreamId;
-use std::cmp::Ordering;
 use std::fmt;
 
 /// Ordered/Unordered stream identifiers.
@@ -47,258 +46,113 @@ impl StreamKey {
     }
 }
 
-/// See <https://datatracker.ietf.org/doc/html/rfc1982#section-3.2>.
-fn cmp_rfc1982_u32(a: u32, b: u32) -> Ordering {
-    if a == b {
-        Ordering::Equal
-    } else if (a < b && (b - a) < (1 << 31)) || (a > b && (a - b) > (1 << 31)) {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    }
+pub trait SerialNumber: Sized + Copy + Eq + Ord {
+    type DistanceType;
+
+    /// Calculates the absolute distance `|self - other|` between two sequence numbers,
+    /// properly accounting for sequence space wrapping.
+    fn distance_to(self, other: Self) -> Self::DistanceType;
+
+    /// Returns true if this sequence number is strictly greater than `base`.
+    /// This corresponds to the strictly "greater than" half of the sequence space.
+    fn greater_than(&self, base: Self) -> bool;
 }
 
-fn cmp_rfc1982_u16(a: u16, b: u16) -> Ordering {
-    if a == b {
-        Ordering::Equal
-    } else if (a < b && (b - a) < (1 << 15)) || (a > b && (a - b) > (1 << 15)) {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    }
+macro_rules! define_rfc1982_serial {
+    ($name:ident, $int_type:ident, $half_space:expr, $doc:expr) => {
+        #[doc = $doc]
+        #[derive(Clone, Copy, Eq, Hash, PartialEq)]
+        pub struct $name(pub $int_type);
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(self, f)
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl std::cmp::PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl std::cmp::Ord for $name {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                if self == other {
+                    std::cmp::Ordering::Equal
+                } else if other.greater_than(*self) {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            }
+        }
+
+        impl std::ops::Add<$int_type> for $name {
+            type Output = $name;
+
+            #[inline]
+            fn add(self, rhs: $int_type) -> $name {
+                $name(self.0.wrapping_add(rhs))
+            }
+        }
+
+        impl std::ops::Sub<$int_type> for $name {
+            type Output = $name;
+
+            #[inline]
+            fn sub(self, rhs: $int_type) -> $name {
+                $name(self.0.wrapping_sub(rhs))
+            }
+        }
+
+        impl std::ops::AddAssign<$int_type> for $name {
+            fn add_assign(&mut self, rhs: $int_type) {
+                self.0 = self.0.wrapping_add(rhs);
+            }
+        }
+
+        impl std::ops::SubAssign<$int_type> for $name {
+            fn sub_assign(&mut self, rhs: $int_type) {
+                self.0 = self.0.wrapping_sub(rhs);
+            }
+        }
+
+        impl SerialNumber for $name {
+            type DistanceType = $int_type;
+
+            fn distance_to(self, other: Self) -> $int_type {
+                if self > other {
+                    self.0.wrapping_sub(other.0)
+                } else {
+                    other.0.wrapping_sub(self.0)
+                }
+            }
+
+            fn greater_than(&self, base: Self) -> bool {
+                let diff = self.0.wrapping_sub(base.0);
+                diff > 0 && diff < $half_space
+            }
+        }
+
+        impl $name {
+            pub fn add_to(self, other: $int_type) -> Self {
+                $name(self.0.wrapping_add(other))
+            }
+        }
+    };
 }
 
-/// Stream Sequence Number (SSN)
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct Ssn(pub u16);
-
-impl fmt::Debug for Ssn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for Ssn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::cmp::PartialOrd for Ssn {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for Ssn {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-1.6>:
-        //
-        //   Any arithmetic done on Stream Sequence Numbers SHOULD use Serial Number Arithmetic, as
-        //   defined in [RFC1982] [...]
-        cmp_rfc1982_u16(self.0, other.0)
-    }
-}
-
-impl std::ops::Add<u16> for Ssn {
-    type Output = Ssn;
-
-    #[inline]
-    fn add(self, rhs: u16) -> Ssn {
-        Ssn(self.0.wrapping_add(rhs))
-    }
-}
-
-impl std::ops::Sub<u16> for Ssn {
-    type Output = Ssn;
-
-    #[inline]
-    fn sub(self, rhs: u16) -> Ssn {
-        Ssn(self.0.wrapping_sub(rhs))
-    }
-}
-
-impl std::ops::AddAssign<u16> for Ssn {
-    fn add_assign(&mut self, rhs: u16) {
-        self.0 = self.0.wrapping_add(rhs);
-    }
-}
-
-impl std::ops::SubAssign<u16> for Ssn {
-    fn sub_assign(&mut self, rhs: u16) {
-        self.0 = self.0.wrapping_sub(rhs);
-    }
-}
-
-/// Message Identifier (MID)
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct Mid(pub u32);
-
-impl fmt::Debug for Mid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for Mid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::cmp::PartialOrd for Mid {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for Mid {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // From <https://datatracker.ietf.org/doc/html/rfc8260#section-2.1>:
-        //
-        //   Please note that the serial number arithmetic defined in [RFC1982] [...] applies.
-        cmp_rfc1982_u32(self.0, other.0)
-    }
-}
-
-impl std::ops::AddAssign<u32> for Mid {
-    fn add_assign(&mut self, rhs: u32) {
-        self.0 = self.0.wrapping_add(rhs);
-    }
-}
-
-impl std::ops::Add<u32> for Mid {
-    type Output = Mid;
-
-    #[inline]
-    fn add(self, rhs: u32) -> Mid {
-        Mid(self.0.wrapping_add(rhs))
-    }
-}
-
-/// Fragment Sequence Number (FSN)
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct Fsn(pub u32);
-
-impl fmt::Debug for Fsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for Fsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::cmp::PartialOrd for Fsn {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for Fsn {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // From <https://datatracker.ietf.org/doc/html/rfc8260#section-2.1>:
-        //
-        //   For the FSN, the serial number arithmetic defined in [RFC1982] applies [...]
-        cmp_rfc1982_u32(self.0, other.0)
-    }
-}
-
-impl std::ops::Add<u32> for Fsn {
-    type Output = Fsn;
-
-    #[inline]
-    fn add(self, rhs: u32) -> Fsn {
-        Fsn(self.0.wrapping_add(rhs))
-    }
-}
-
-impl std::ops::AddAssign<u32> for Fsn {
-    fn add_assign(&mut self, rhs: u32) {
-        self.0 = self.0.wrapping_add(rhs);
-    }
-}
-
-impl Fsn {
-    pub fn distance_to(self, other: Fsn) -> u32 {
-        if self > other { self.0.wrapping_sub(other.0) } else { other.0.wrapping_sub(self.0) }
-    }
-}
-
-/// Transmission Sequence Number (TSN)
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct Tsn(pub u32);
-
-impl fmt::Debug for Tsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for Tsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::cmp::PartialOrd for Tsn {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for Tsn {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // From <https://datatracker.ietf.org/doc/html/rfc9260#section-1.6-2>:
-        //
-        //   Comparisons and arithmetic on TSNs in this document SHOULD use Serial Number
-        //   Arithmetic, as defined in [RFC1982] [...]
-        cmp_rfc1982_u32(self.0, other.0)
-    }
-}
-
-impl std::ops::Add<u32> for Tsn {
-    type Output = Tsn;
-
-    #[inline]
-    fn add(self, rhs: u32) -> Tsn {
-        Tsn(self.0.wrapping_add(rhs))
-    }
-}
-
-impl std::ops::Sub<u32> for Tsn {
-    type Output = Tsn;
-
-    #[inline]
-    fn sub(self, rhs: u32) -> Tsn {
-        Tsn(self.0.wrapping_sub(rhs))
-    }
-}
-
-impl std::ops::AddAssign<u32> for Tsn {
-    fn add_assign(&mut self, rhs: u32) {
-        self.0 = self.0.wrapping_add(rhs);
-    }
-}
-
-impl std::ops::SubAssign<u32> for Tsn {
-    fn sub_assign(&mut self, rhs: u32) {
-        self.0 = self.0.wrapping_sub(rhs);
-    }
-}
-
-impl Tsn {
-    pub fn add_to(self, other: u32) -> Tsn {
-        Tsn(self.0.wrapping_add(other))
-    }
-
-    pub fn distance_to(self, other: Tsn) -> u32 {
-        if self > other { self.0.wrapping_sub(other.0) } else { other.0.wrapping_sub(self.0) }
-    }
-}
+define_rfc1982_serial!(Ssn, u16, 1 << 15, "Stream Sequence Number (SSN)");
+define_rfc1982_serial!(Mid, u32, 1 << 31, "Message Identifier (MID)");
+define_rfc1982_serial!(Fsn, u32, 1 << 31, "Fragment Sequence Number (FSN)");
+define_rfc1982_serial!(Tsn, u32, 1 << 31, "Transmission Sequence Number (TSN)");
 
 /// An ID for every outgoing message, to correlate outgoing data chunks with the message it was
 /// carved from. It can only be compared by equality - there is no defined ordering.

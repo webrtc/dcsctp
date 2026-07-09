@@ -19,6 +19,7 @@ use crate::api::handover::SocketHandoverState;
 use crate::packet::sack_chunk::GapAckBlock;
 use crate::packet::sack_chunk::SackChunk;
 use crate::timer::Timer;
+use crate::types::SerialNumber;
 use crate::types::Tsn;
 use std::cmp::min;
 use std::ops::Range;

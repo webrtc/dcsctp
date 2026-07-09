@@ -23,6 +23,7 @@ use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
 use crate::packet::sack_chunk::GapAckBlock;
 use crate::types::Mid;
 use crate::types::OutgoingMessageId;
+use crate::types::SerialNumber;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;

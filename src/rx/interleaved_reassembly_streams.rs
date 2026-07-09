@@ -25,6 +25,7 @@ use crate::rx::ReassemblyKey;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::types::Fsn;
 use crate::types::Mid;
+use crate::types::SerialNumber;
 use crate::types::StreamKey;
 use crate::types::Tsn;
 use std::collections::HashMap;
@@ -71,8 +72,8 @@ impl OrderedStream {
     }
 
     fn add(&mut self, data: Data, on_reassembled: &mut dyn FnMut(Message)) -> isize {
-        if data.mid < self.next_mid {
-            // Already delivered or skipped.
+        if data.mid != self.next_mid && !data.mid.greater_than(self.next_mid) {
+            // Already delivered, skipped, or ambiguously too far ahead.
             return 0;
         }
 
