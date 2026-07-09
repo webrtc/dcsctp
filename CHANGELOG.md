@@ -19,6 +19,7 @@ and this project adheres to
  - Account payload size of the deferred forward TSN messages.
  - Refactored ReassemblyQueue byte tracking into smaller parts, fixing integer
    underflows and double-counting bugs.
+ - Discard FORWARD-TSN with invalid TSN.
 
 ## 0.1.13 - 2026-05-20
 

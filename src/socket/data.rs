@@ -136,6 +136,11 @@ pub(crate) fn handle_forward_tsn(
     skipped_streams: Vec<SkippedStream>,
 ) {
     if let Some(tcb) = state.tcb_mut() {
+        if !tcb.data_tracker.is_tsn_valid(new_cumulative_tsn) {
+            log::warn!("Received FORWARD-TSN chunk with invalid TSN {:?}", new_cumulative_tsn);
+            return;
+        }
+
         if tcb.data_tracker.handle_forward_tsn(now, new_cumulative_tsn) {
             tcb.reassembly_queue.handle_forward_tsn(new_cumulative_tsn, skipped_streams);
         }
