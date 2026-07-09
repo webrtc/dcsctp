@@ -15,7 +15,9 @@
 use crate::api::ErrorKind;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
+use crate::math::round_down_to_4;
 use crate::packet::chunk::Chunk;
+use crate::packet::heartbeat_ack_chunk;
 use crate::packet::heartbeat_ack_chunk::HeartbeatAckChunk;
 use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
 use crate::packet::heartbeat_request_chunk::HeartbeatRequestChunk;
@@ -36,12 +38,21 @@ pub(crate) fn handle_heartbeat_req(
     //   chunk that contains the Heartbeat Information TLV, together with any other received
     //   TLVs, copied unchanged from the received HEARTBEAT chunk.
     if let Some(tcb) = state.tcb_mut() {
-        ctx.events.borrow_mut().add(SocketEvent::SendPacket(
-            tcb.new_packet()
-                .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
-                .build(),
-        ));
-        ctx.tx_packets_count += 1;
+        let mut packet = tcb.new_packet();
+
+        let max_params_len = round_down_to_4!(
+            packet.bytes_remaining().saturating_sub(heartbeat_ack_chunk::HEADER_SIZE)
+        );
+        let params_size = crate::packet::parameter::parameters_serialized_size(&chunk.parameters);
+
+        if params_size <= max_params_len {
+            ctx.events.borrow_mut().add(SocketEvent::SendPacket(
+                packet
+                    .add(&Chunk::HeartbeatAck(HeartbeatAckChunk { parameters: chunk.parameters }))
+                    .build(),
+            ));
+            ctx.tx_packets_count += 1;
+        }
     }
 }
 
