@@ -23,6 +23,7 @@ and this project adheres to
  - Discard FORWARD-TSN with invalid TSN.
  - Stop heartbeat timeout only after validating nonce in HEARTBEAT-ACK.
  - Dropping/truncating oversized Unrecognized or HEARTBEAT chunks.
+ - Avoid panic on unordered interleaved streams when receiving crafted MIDs.
 
 ### Changed
 
