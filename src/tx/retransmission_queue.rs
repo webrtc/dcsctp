@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 use crate::EventSink;
 use crate::api::Options;
 use crate::api::SocketEvent;
@@ -33,6 +32,7 @@ use crate::tx::outstanding_data::ChunkState;
 use crate::tx::outstanding_data::OutstandingData;
 use crate::tx::send_queue::DataToSend;
 use crate::types::OutgoingMessageId;
+use crate::types::SerialNumber;
 use crate::types::Tsn;
 use std::cell::RefCell;
 use std::cmp::max;
@@ -169,7 +169,7 @@ impl RetransmissionQueue {
     fn is_sack_valid(&self, sack: &SackChunk) -> bool {
         // Important not to drop SACKs with identical TSN to that previously received, as the gap
         // ACK blocks or dup TSN fields may have changed.
-        if sack.cumulative_tsn_ack < self.outstanding_data.last_cumulative_acked_tsn() {
+        if sack.cumulative_tsn_ack.less_than(self.outstanding_data.last_cumulative_acked_tsn()) {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.2.1-5.4.2.1.1>:
             //
             //   If Cumulative TSN Ack is less than the Cumulative TSN Ack Point, then drop the SACK
@@ -178,13 +178,14 @@ impl RetransmissionQueue {
             //   out-of-order SACK chunk.
             false
         } else {
-            sack.cumulative_tsn_ack <= self.outstanding_data.highest_outstanding_tsn()
+            sack.cumulative_tsn_ack
+                .less_than_or_equal(self.outstanding_data.highest_outstanding_tsn())
         }
     }
 
     fn maybe_exit_fast_recovery(&mut self, cumulative_tsn_ack: Tsn) {
         if let Some(fast_recovery_exit_tsn) = self.fast_recovery_exit_tsn {
-            if cumulative_tsn_ack >= fast_recovery_exit_tsn {
+            if cumulative_tsn_ack.greater_than_or_equal(fast_recovery_exit_tsn) {
                 self.fast_recovery_exit_tsn = None;
             }
         }
@@ -373,7 +374,7 @@ impl RetransmissionQueue {
             old_rwnd
         );
 
-        if sack.cumulative_tsn_ack > old_last_cumulative_tsn_ack {
+        if sack.cumulative_tsn_ack.greater_than(old_last_cumulative_tsn_ack) {
             // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.2-2.3.1>:
             //
             //   Whenever a SACK chunk is received that acknowledges the DATA chunk with the

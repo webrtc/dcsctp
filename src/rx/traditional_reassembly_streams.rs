@@ -29,10 +29,42 @@ use crate::types::StreamKey;
 use crate::types::Tsn;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A key used to sort chunks in the reassembly queue.
+///
+/// While RFC1982 arithmetic violates transitivity rules over the full circular sequence
+/// space, it's safe to implement and use `Ord`/`PartialOrd` in sorted containers here because
+/// we limit the "active" number space to half of the full range (the forward half-space).
+/// This restricts the elements to a slice of the circular number space where the math
+/// never wraps around, allowing sorting to happen safely. Within this restricted window,
+/// the sequence numbers do form a strict, transitive total order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TraditionalKey {
     pub ssn: Ssn, // Primary sort key, NOTE: Is always 0 for unordered chunks.
     pub tsn: Tsn, // Secondary sort key.
+}
+
+impl PartialOrd for TraditionalKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TraditionalKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.ssn == other.ssn {
+            if self.tsn == other.tsn {
+                std::cmp::Ordering::Equal
+            } else if other.tsn.greater_than(self.tsn) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        } else if other.ssn.greater_than(self.ssn) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    }
 }
 
 impl ReassemblyKey for TraditionalKey {
@@ -168,7 +200,7 @@ impl UnorderedStream {
         _: Option<&SkippedStream>,
         _: &mut dyn FnMut(Message),
     ) -> usize {
-        self.intervals.retain(|interval| interval.start.tsn > new_cumulative_ack)
+        self.intervals.retain(|interval| interval.start.tsn.greater_than(new_cumulative_ack))
     }
 
     fn reset(&mut self) {
@@ -252,9 +284,10 @@ impl OrderedStream {
     ) -> usize {
         match skipped_stream {
             Some(SkippedStream::ForwardTsn(_, ssn)) => {
-                let mut removed_bytes = self.intervals.retain(|interval| interval.start.ssn > *ssn);
+                let mut removed_bytes =
+                    self.intervals.retain(|interval| interval.start.ssn.greater_than(*ssn));
 
-                if *ssn >= self.next_ssn {
+                if ssn.greater_than_or_equal(self.next_ssn) {
                     self.next_ssn = *ssn + 1;
                 }
                 removed_bytes += self.try_to_assemble_messages(on_reassembled);

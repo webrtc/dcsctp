@@ -127,10 +127,13 @@ impl DataTracker {
     }
 
     fn add_additional_tsn(&mut self, tsn: Tsn) -> bool {
-        let idx = self.additional_tsn_blocks.partition_point(|r| r.start <= tsn);
+        let idx = self.additional_tsn_blocks.partition_point(|r| r.start.less_than_or_equal(tsn));
 
         // Check if it's a duplicate in the block before insertion point.
-        if idx > 0 && self.additional_tsn_blocks[idx - 1].contains(&tsn) {
+        if idx > 0
+            && (self.additional_tsn_blocks[idx - 1].start.less_than_or_equal(tsn)
+                && tsn.less_than(self.additional_tsn_blocks[idx - 1].end))
+        {
             return false;
         }
 
@@ -170,7 +173,7 @@ impl DataTracker {
         debug_assert!(self.is_tsn_valid(tsn));
 
         // Old chunk already seen before?
-        if tsn <= self.last_cumulative_acked_tsn {
+        if tsn.less_than_or_equal(self.last_cumulative_acked_tsn) {
             self.maybe_add_duplicate_tsn(tsn);
             is_duplicate = true;
         } else if tsn == self.last_cumulative_acked_tsn + 1 {
@@ -246,7 +249,7 @@ impl DataTracker {
         // not received at all) data, up until `new_cumulative_ack`.
 
         // Old chunk already seen before?
-        if new_cumulative_tsn <= self.last_cumulative_acked_tsn {
+        if new_cumulative_tsn.less_than_or_equal(self.last_cumulative_acked_tsn) {
             // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.6>:
             //
             //   Note, if the "New Cumulative TSN" value carried in the arrived FORWARD TSN chunk is
@@ -267,10 +270,10 @@ impl DataTracker {
         // If there have been prior gaps that are now overlapping with the new value, remove them.
         self.last_cumulative_acked_tsn = new_cumulative_tsn;
         self.additional_tsn_blocks.retain_mut(|b| {
-            if b.end <= new_cumulative_tsn {
+            if b.end.less_than_or_equal(new_cumulative_tsn) {
                 false
             } else {
-                if b.start <= new_cumulative_tsn {
+                if b.start.less_than_or_equal(new_cumulative_tsn) {
                     b.start = new_cumulative_tsn + 1;
                 }
                 true
