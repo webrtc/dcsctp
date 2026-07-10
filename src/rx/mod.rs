@@ -214,11 +214,30 @@ mod tests {
     use super::*;
     use crate::api::StreamId;
     use crate::testing::data_sequencer::DataSequencer;
+    use crate::types::SerialNumber;
     use crate::types::Tsn;
 
     // A simple key that wraps around a TSN, which wraps around at u32::MAX.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct TestKey(Tsn);
+
+    impl PartialOrd for TestKey {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for TestKey {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            if self.0 == other.0 {
+                std::cmp::Ordering::Equal
+            } else if other.0.greater_than(self.0) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        }
+    }
 
     impl ReassemblyKey for TestKey {
         fn next(&self) -> Self {

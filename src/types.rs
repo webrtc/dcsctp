@@ -46,7 +46,7 @@ impl StreamKey {
     }
 }
 
-pub trait SerialNumber: Sized + Copy + Eq + Ord {
+pub trait SerialNumber: Sized + Copy + Eq {
     type DistanceType;
 
     /// Calculates the absolute distance `|self - other|` between two sequence numbers,
@@ -54,8 +54,25 @@ pub trait SerialNumber: Sized + Copy + Eq + Ord {
     fn distance_to(self, other: Self) -> Self::DistanceType;
 
     /// Returns true if this sequence number is strictly greater than `base`.
-    /// This corresponds to the strictly "greater than" half of the sequence space.
+    /// This corresponds to the strictly "greater than" half of the sequence space,
+    /// excluding equality and the exact half-space ambiguity point.
     fn greater_than(&self, base: Self) -> bool;
+
+    /// Returns true if this sequence number is strictly less than `other`
+    /// (i.e. `other` is strictly greater than `self`).
+    fn less_than(&self, other: Self) -> bool {
+        other.greater_than(*self)
+    }
+
+    /// Returns true if this sequence number is less than or equal to `other`.
+    fn less_than_or_equal(&self, other: Self) -> bool {
+        *self == other || other.greater_than(*self)
+    }
+
+    /// Returns true if this sequence number is greater than or equal to `other`.
+    fn greater_than_or_equal(&self, other: Self) -> bool {
+        *self == other || self.greater_than(other)
+    }
 }
 
 macro_rules! define_rfc1982_serial {
@@ -73,24 +90,6 @@ macro_rules! define_rfc1982_serial {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}", self.0)
-            }
-        }
-
-        impl std::cmp::PartialOrd for $name {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-
-        impl std::cmp::Ord for $name {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                if self == other {
-                    std::cmp::Ordering::Equal
-                } else if other.greater_than(*self) {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                }
             }
         }
 
@@ -128,7 +127,7 @@ macro_rules! define_rfc1982_serial {
             type DistanceType = $int_type;
 
             fn distance_to(self, other: Self) -> $int_type {
-                if self > other {
+                if self.greater_than(other) {
                     self.0.wrapping_sub(other.0)
                 } else {
                     other.0.wrapping_sub(self.0)
@@ -188,26 +187,26 @@ mod tests {
     #[test]
     fn tsn_cmp() {
         assert!(Tsn(42) == Tsn(42));
-        assert!(Tsn(1) > Tsn(0));
-        assert!(Tsn(0) < Tsn(1));
-        assert!(Tsn(44) > Tsn(0));
-        assert!(Tsn(0) < Tsn(44));
-        assert!(Tsn(100) > Tsn(0));
-        assert!(Tsn(0) < Tsn(100));
-        assert!(Tsn(100) > Tsn(44));
-        assert!(Tsn(44) < Tsn(100));
-        assert!(Tsn(200) > Tsn(100));
-        assert!(Tsn(100) < Tsn(200));
-        assert!(Tsn(255) > Tsn(200));
-        assert!(Tsn(200) < Tsn(255));
-        assert!(Tsn(0) > Tsn(MAX_U32));
-        assert!(Tsn(MAX_U32) < Tsn(0));
-        assert!(Tsn(100) > Tsn(MAX_U32));
-        assert!(Tsn(MAX_U32) < Tsn(100));
-        assert!(Tsn(0) > Tsn(MAX_U32));
-        assert!(Tsn(MAX_U32) < Tsn(0));
-        assert!(Tsn(44) > Tsn(MAX_U32));
-        assert!(Tsn(MAX_U32) < Tsn(44));
+        assert!(Tsn(1).greater_than(Tsn(0)));
+        assert!(Tsn(0).less_than(Tsn(1)));
+        assert!(Tsn(44).greater_than(Tsn(0)));
+        assert!(Tsn(0).less_than(Tsn(44)));
+        assert!(Tsn(100).greater_than(Tsn(0)));
+        assert!(Tsn(0).less_than(Tsn(100)));
+        assert!(Tsn(100).greater_than(Tsn(44)));
+        assert!(Tsn(44).less_than(Tsn(100)));
+        assert!(Tsn(200).greater_than(Tsn(100)));
+        assert!(Tsn(100).less_than(Tsn(200)));
+        assert!(Tsn(255).greater_than(Tsn(200)));
+        assert!(Tsn(200).less_than(Tsn(255)));
+        assert!(Tsn(0).greater_than(Tsn(MAX_U32)));
+        assert!(Tsn(MAX_U32).less_than(Tsn(0)));
+        assert!(Tsn(100).greater_than(Tsn(MAX_U32)));
+        assert!(Tsn(MAX_U32).less_than(Tsn(100)));
+        assert!(Tsn(0).greater_than(Tsn(MAX_U32)));
+        assert!(Tsn(MAX_U32).less_than(Tsn(0)));
+        assert!(Tsn(44).greater_than(Tsn(MAX_U32)));
+        assert!(Tsn(MAX_U32).less_than(Tsn(44)));
     }
 
     #[test]
@@ -292,26 +291,26 @@ mod tests {
     #[test]
     fn ssn_cmp() {
         assert!(Ssn(42) == Ssn(42));
-        assert!(Ssn(1) > Ssn(0));
-        assert!(Ssn(0) < Ssn(1));
-        assert!(Ssn(44) > Ssn(0));
-        assert!(Ssn(0) < Ssn(44));
-        assert!(Ssn(100) > Ssn(0));
-        assert!(Ssn(0) < Ssn(100));
-        assert!(Ssn(100) > Ssn(44));
-        assert!(Ssn(44) < Ssn(100));
-        assert!(Ssn(200) > Ssn(100));
-        assert!(Ssn(100) < Ssn(200));
-        assert!(Ssn(255) > Ssn(200));
-        assert!(Ssn(200) < Ssn(255));
-        assert!(Ssn(0) > Ssn(MAX_U16));
-        assert!(Ssn(MAX_U16) < Ssn(0));
-        assert!(Ssn(100) > Ssn(MAX_U16));
-        assert!(Ssn(MAX_U16) < Ssn(100));
-        assert!(Ssn(0) > Ssn(MAX_U16));
-        assert!(Ssn(MAX_U16) < Ssn(0));
-        assert!(Ssn(44) > Ssn(MAX_U16));
-        assert!(Ssn(MAX_U16) < Ssn(44));
+        assert!(Ssn(1).greater_than(Ssn(0)));
+        assert!(Ssn(0).less_than(Ssn(1)));
+        assert!(Ssn(44).greater_than(Ssn(0)));
+        assert!(Ssn(0).less_than(Ssn(44)));
+        assert!(Ssn(100).greater_than(Ssn(0)));
+        assert!(Ssn(0).less_than(Ssn(100)));
+        assert!(Ssn(100).greater_than(Ssn(44)));
+        assert!(Ssn(44).less_than(Ssn(100)));
+        assert!(Ssn(200).greater_than(Ssn(100)));
+        assert!(Ssn(100).less_than(Ssn(200)));
+        assert!(Ssn(255).greater_than(Ssn(200)));
+        assert!(Ssn(200).less_than(Ssn(255)));
+        assert!(Ssn(0).greater_than(Ssn(MAX_U16)));
+        assert!(Ssn(MAX_U16).less_than(Ssn(0)));
+        assert!(Ssn(100).greater_than(Ssn(MAX_U16)));
+        assert!(Ssn(MAX_U16).less_than(Ssn(100)));
+        assert!(Ssn(0).greater_than(Ssn(MAX_U16)));
+        assert!(Ssn(MAX_U16).less_than(Ssn(0)));
+        assert!(Ssn(44).greater_than(Ssn(MAX_U16)));
+        assert!(Ssn(MAX_U16).less_than(Ssn(44)));
     }
 
     #[test]
@@ -350,52 +349,52 @@ mod tests {
     #[test]
     fn mid_cmp() {
         assert!(Mid(42) == Mid(42));
-        assert!(Mid(1) > Mid(0));
-        assert!(Mid(0) < Mid(1));
-        assert!(Mid(44) > Mid(0));
-        assert!(Mid(0) < Mid(44));
-        assert!(Mid(100) > Mid(0));
-        assert!(Mid(0) < Mid(100));
-        assert!(Mid(100) > Mid(44));
-        assert!(Mid(44) < Mid(100));
-        assert!(Mid(200) > Mid(100));
-        assert!(Mid(100) < Mid(200));
-        assert!(Mid(255) > Mid(200));
-        assert!(Mid(200) < Mid(255));
-        assert!(Mid(0) > Mid(MAX_U32));
-        assert!(Mid(MAX_U32) < Mid(0));
-        assert!(Mid(100) > Mid(MAX_U32));
-        assert!(Mid(MAX_U32) < Mid(100));
-        assert!(Mid(0) > Mid(MAX_U32));
-        assert!(Mid(MAX_U32) < Mid(0));
-        assert!(Mid(44) > Mid(MAX_U32));
-        assert!(Mid(MAX_U32) < Mid(44));
+        assert!(Mid(1).greater_than(Mid(0)));
+        assert!(Mid(0).less_than(Mid(1)));
+        assert!(Mid(44).greater_than(Mid(0)));
+        assert!(Mid(0).less_than(Mid(44)));
+        assert!(Mid(100).greater_than(Mid(0)));
+        assert!(Mid(0).less_than(Mid(100)));
+        assert!(Mid(100).greater_than(Mid(44)));
+        assert!(Mid(44).less_than(Mid(100)));
+        assert!(Mid(200).greater_than(Mid(100)));
+        assert!(Mid(100).less_than(Mid(200)));
+        assert!(Mid(255).greater_than(Mid(200)));
+        assert!(Mid(200).less_than(Mid(255)));
+        assert!(Mid(0).greater_than(Mid(MAX_U32)));
+        assert!(Mid(MAX_U32).less_than(Mid(0)));
+        assert!(Mid(100).greater_than(Mid(MAX_U32)));
+        assert!(Mid(MAX_U32).less_than(Mid(100)));
+        assert!(Mid(0).greater_than(Mid(MAX_U32)));
+        assert!(Mid(MAX_U32).less_than(Mid(0)));
+        assert!(Mid(44).greater_than(Mid(MAX_U32)));
+        assert!(Mid(MAX_U32).less_than(Mid(44)));
     }
 
     #[test]
     fn fsn_cmp() {
         assert!(Fsn(42) == Fsn(42));
-        assert!(Fsn(1) > Fsn(0));
-        assert!(Fsn(0) < Fsn(1));
-        assert!(Fsn(1) > Fsn(0));
-        assert!(Fsn(0) < Fsn(1));
-        assert!(Fsn(44) > Fsn(0));
-        assert!(Fsn(0) < Fsn(44));
-        assert!(Fsn(100) > Fsn(0));
-        assert!(Fsn(0) < Fsn(100));
-        assert!(Fsn(100) > Fsn(44));
-        assert!(Fsn(44) < Fsn(100));
-        assert!(Fsn(200) > Fsn(100));
-        assert!(Fsn(100) < Fsn(200));
-        assert!(Fsn(255) > Fsn(200));
-        assert!(Fsn(200) < Fsn(255));
-        assert!(Fsn(0) > Fsn(MAX_U32));
-        assert!(Fsn(MAX_U32) < Fsn(0));
-        assert!(Fsn(100) > Fsn(MAX_U32));
-        assert!(Fsn(MAX_U32) < Fsn(100));
-        assert!(Fsn(0) > Fsn(MAX_U32));
-        assert!(Fsn(MAX_U32) < Fsn(0));
-        assert!(Fsn(44) > Fsn(MAX_U32));
-        assert!(Fsn(MAX_U32) < Fsn(44));
+        assert!(Fsn(1).greater_than(Fsn(0)));
+        assert!(Fsn(0).less_than(Fsn(1)));
+        assert!(Fsn(1).greater_than(Fsn(0)));
+        assert!(Fsn(0).less_than(Fsn(1)));
+        assert!(Fsn(44).greater_than(Fsn(0)));
+        assert!(Fsn(0).less_than(Fsn(44)));
+        assert!(Fsn(100).greater_than(Fsn(0)));
+        assert!(Fsn(0).less_than(Fsn(100)));
+        assert!(Fsn(100).greater_than(Fsn(44)));
+        assert!(Fsn(44).less_than(Fsn(100)));
+        assert!(Fsn(200).greater_than(Fsn(100)));
+        assert!(Fsn(100).less_than(Fsn(200)));
+        assert!(Fsn(255).greater_than(Fsn(200)));
+        assert!(Fsn(200).less_than(Fsn(255)));
+        assert!(Fsn(0).greater_than(Fsn(MAX_U32)));
+        assert!(Fsn(MAX_U32).less_than(Fsn(0)));
+        assert!(Fsn(100).greater_than(Fsn(MAX_U32)));
+        assert!(Fsn(MAX_U32).less_than(Fsn(100)));
+        assert!(Fsn(0).greater_than(Fsn(MAX_U32)));
+        assert!(Fsn(MAX_U32).less_than(Fsn(0)));
+        assert!(Fsn(44).greater_than(Fsn(MAX_U32)));
+        assert!(Fsn(MAX_U32).less_than(Fsn(44)));
     }
 }

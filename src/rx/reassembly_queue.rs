@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 use crate::api::Message;
 use crate::api::StreamId;
 use crate::api::handover::HandoverReadiness;
@@ -21,6 +20,7 @@ use crate::packet::data::Data;
 use crate::rx::interleaved_reassembly_streams::InterleavedReassemblyStreams;
 use crate::rx::reassembly_streams::ReassemblyStreams;
 use crate::rx::traditional_reassembly_streams::TraditionalReassemblyStreams;
+use crate::types::SerialNumber;
 use crate::types::Tsn;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -110,7 +110,7 @@ impl ReassemblyQueue {
     /// sanity checked by the caller, e.g. by the DataTracker.
     pub fn add(&mut self, tsn: Tsn, data: Data) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
-            if tsn > deferred_stream.sender_last_assigned_tsn
+            if tsn.greater_than(deferred_stream.sender_last_assigned_tsn)
                 && deferred_stream.streams.contains(&data.stream_key.id())
             {
                 self.deferred_bytes += data.payload.len();
@@ -149,7 +149,7 @@ impl ReassemblyQueue {
         skipped_streams: Vec<SkippedStream>,
     ) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
-            if new_cumulative_ack > deferred_stream.sender_last_assigned_tsn {
+            if new_cumulative_ack.greater_than(deferred_stream.sender_last_assigned_tsn) {
                 self.deferred_bytes += ReassemblyQueue::forward_tsn_cost(skipped_streams.len());
                 deferred_stream
                     .deferred_operations

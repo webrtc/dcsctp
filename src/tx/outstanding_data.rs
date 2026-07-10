@@ -27,7 +27,7 @@ use crate::types::SerialNumber;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use std::cmp::max;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
@@ -107,6 +107,34 @@ pub(crate) struct AckInfo {
 
     /// The set of lifecycle IDs that were acked, but had been abandoned.
     pub abandoned_lifecycle_ids: Vec<LifecycleId>,
+}
+
+/// A wrapper around a TSN that implements `Ord` and `PartialOrd`.
+///
+/// While RFC1982 arithmetic violates transitivity rules over the full circular sequence
+/// space, it's safe to implement and use `Ord`/`PartialOrd` in sorted containers here because
+/// we limit the "active" number space to half of the full range (the forward half-space).
+/// This restricts the elements to a slice of the circular number space where the sequence numbers
+/// do form a strict, transitive total order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrderedTsn(pub Tsn);
+
+impl PartialOrd for OrderedTsn {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedTsn {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.0 == other.0 {
+            Ordering::Equal
+        } else if other.0.greater_than(self.0) {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    }
 }
 
 /// State for DATA chunks (message fragments) in the queue - used in tests.
@@ -268,9 +296,9 @@ pub(crate) struct OutstandingData {
     // Payload, padding and DATA headers.
     unacked_packet_bytes: usize,
     unacked_items: usize,
-    to_be_fast_retransmitted: BTreeSet<Tsn>,
-    to_be_retransmitted: BTreeSet<Tsn>,
-    stream_reset_breakpoint_tsns: BTreeSet<Tsn>,
+    to_be_fast_retransmitted: BTreeSet<OrderedTsn>,
+    to_be_retransmitted: BTreeSet<OrderedTsn>,
+    stream_reset_breakpoint_tsns: BTreeSet<OrderedTsn>,
     unsent_messages_to_discard: Vec<(StreamId, OutgoingMessageId)>,
 }
 
@@ -297,7 +325,8 @@ impl OutstandingData {
         gap_ack_blocks: &[GapAckBlock],
         is_in_fast_recovery: bool,
     ) -> AckInfo {
-        let cumulative_tsn_ack_advanced = cumulative_tsn_ack > self.last_cumulative_tsn_ack;
+        let cumulative_tsn_ack_advanced =
+            cumulative_tsn_ack.greater_than(self.last_cumulative_tsn_ack);
 
         let mut ack_info = AckInfo {
             highest_tsn_acked: cumulative_tsn_ack,
@@ -326,7 +355,8 @@ impl OutstandingData {
     }
 
     fn remove_acked(&mut self, cumulative_tsn_ack: Tsn, ack_info: &mut AckInfo) {
-        while !self.outstanding_data.is_empty() && self.last_cumulative_tsn_ack < cumulative_tsn_ack
+        while !self.outstanding_data.is_empty()
+            && self.last_cumulative_tsn_ack.less_than(cumulative_tsn_ack)
         {
             let tsn = self.last_cumulative_tsn_ack + 1;
             self.ack_chunk(tsn, ack_info);
@@ -345,7 +375,7 @@ impl OutstandingData {
             self.outstanding_data.pop_front();
             self.last_cumulative_tsn_ack += 1;
         }
-        self.stream_reset_breakpoint_tsns.retain(|b| *b > cumulative_tsn_ack + 1);
+        self.stream_reset_breakpoint_tsns.retain(|b| b.0.greater_than(cumulative_tsn_ack + 1));
     }
 
     fn ack_gap_blocks(
@@ -364,9 +394,13 @@ impl OutstandingData {
         for block in gap_ack_blocks {
             let start = cumulative_tsn_ack.add_to(block.start as u32);
             let end = cumulative_tsn_ack.add_to(block.end as u32);
-            let start = start.max(self.last_cumulative_tsn_ack + 1);
+            let start = if start.greater_than(self.last_cumulative_tsn_ack + 1) {
+                start
+            } else {
+                self.last_cumulative_tsn_ack + 1
+            };
             let mut tsn = start;
-            while tsn <= end && tsn < self.next_tsn() {
+            while tsn.less_than_or_equal(end) && tsn.less_than(self.next_tsn()) {
                 self.ack_chunk(tsn, ack_info);
                 tsn += 1;
             }
@@ -408,11 +442,18 @@ impl OutstandingData {
         let mut prev_block_last_acked = cumulative_tsn_ack;
         for block in gap_ack_blocks {
             let cur_block_first_acked = cumulative_tsn_ack.add_to(block.start as u32);
-            let mut tsn = prev_block_last_acked.max(self.last_cumulative_tsn_ack) + 1;
+            let mut tsn = (if prev_block_last_acked.greater_than(self.last_cumulative_tsn_ack) {
+                prev_block_last_acked
+            } else {
+                self.last_cumulative_tsn_ack
+            }) + 1;
             let limit = self.next_tsn();
             // TSN comparisons lack transitivity; each upper bound must be evaluated individually to
             // safely handle serial arithmetic wrapping.
-            while tsn < cur_block_first_acked && tsn <= max_tsn_to_nack && tsn < limit {
+            while tsn.less_than(cur_block_first_acked)
+                && tsn.less_than_or_equal(max_tsn_to_nack)
+                && tsn.less_than(limit)
+            {
                 ack_info.has_packet_loss |= self.nack_chunk(tsn, false, !is_in_fast_recovery);
                 tsn += 1;
             }
@@ -443,9 +484,9 @@ impl OutstandingData {
             NackAction::Retransmit => {
                 debug_assert!(matches!(item.state, ItemState::QueuedForRetransmission { .. }));
                 if do_fast_retransmit {
-                    self.to_be_fast_retransmitted.insert(tsn);
+                    self.to_be_fast_retransmitted.insert(OrderedTsn(tsn));
                 } else {
-                    self.to_be_retransmitted.insert(tsn);
+                    self.to_be_retransmitted.insert(OrderedTsn(tsn));
                 }
                 true
             }
@@ -470,11 +511,15 @@ impl OutstandingData {
                 self.unacked_items -= 1;
             }
             if item.should_be_retransmitted() {
-                self.to_be_retransmitted.remove(&tsn);
-                self.to_be_fast_retransmitted.remove(&tsn);
+                self.to_be_retransmitted.remove(&OrderedTsn(tsn));
+                self.to_be_fast_retransmitted.remove(&OrderedTsn(tsn));
             }
             item.ack();
-            ack_info.highest_tsn_acked = max(ack_info.highest_tsn_acked, tsn);
+            ack_info.highest_tsn_acked = if tsn.greater_than(ack_info.highest_tsn_acked) {
+                tsn
+            } else {
+                ack_info.highest_tsn_acked
+            };
         }
     }
 
@@ -490,11 +535,11 @@ impl OutstandingData {
         &mut self,
         now: SocketTime,
         mut max_size: usize,
-        tsns: &mut BTreeSet<Tsn>,
+        tsns: &mut BTreeSet<OrderedTsn>,
     ) -> Vec<(Tsn, Data)> {
         let mut result: Vec<(Tsn, Data)> = vec![];
         for tsn in tsns.iter() {
-            let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
+            let index = tsn.0.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
 
             debug_assert!(item.should_be_retransmitted());
@@ -505,7 +550,7 @@ impl OutstandingData {
             let size = round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
             if size <= max_size {
                 item.mark_as_retransmitted(now);
-                result.push((*tsn, item.data.clone()));
+                result.push((tsn.0, item.data.clone()));
                 max_size -= size;
                 self.unacked_payload_bytes += item.data.payload.len();
                 self.unacked_packet_bytes += size;
@@ -516,7 +561,7 @@ impl OutstandingData {
             }
         }
         for (tsn, _) in &result {
-            tsns.remove(tsn);
+            tsns.remove(&OrderedTsn(*tsn));
         }
         result
     }
@@ -538,7 +583,7 @@ impl OutstandingData {
         //   fit in the sent datagram carrying K other TSNs are also marked as ineligible for a
         //   subsequent Fast Retransmit. However, as they are marked for retransmission, they will
         //   be retransmitted later on as soon as cwnd allows."
-        self.to_be_retransmitted.append(&mut tsns);
+        self.to_be_retransmitted.extend(tsns);
         chunks
     }
 
@@ -690,8 +735,8 @@ impl OutstandingData {
                 if !other.is_abandoned() {
                     let was_outstanding = other.is_outstanding();
                     if other.should_be_retransmitted() {
-                        self.to_be_fast_retransmitted.remove(&tsn);
-                        self.to_be_retransmitted.remove(&tsn);
+                        self.to_be_fast_retransmitted.remove(&OrderedTsn(tsn));
+                        self.to_be_retransmitted.remove(&OrderedTsn(tsn));
                     }
                     other.abandon();
                     if was_outstanding {
@@ -754,7 +799,7 @@ impl OutstandingData {
         let mut tsn = self.last_cumulative_tsn_ack;
         for item in &self.outstanding_data {
             tsn += 1;
-            if self.stream_reset_breakpoint_tsns.contains(&tsn)
+            if self.stream_reset_breakpoint_tsns.contains(&OrderedTsn(tsn))
                 || tsn != new_cumulative_tsn + 1
                 || !item.is_abandoned()
             {
@@ -765,7 +810,7 @@ impl OutstandingData {
             if item.data.stream_key.is_ordered() {
                 let entry =
                     skipped_per_ordered_stream.entry(item.data.stream_key.id()).or_insert(Ssn(0));
-                if item.data.ssn > *entry {
+                if item.data.ssn.greater_than(*entry) {
                     *entry = item.data.ssn;
                 }
             }
@@ -787,7 +832,7 @@ impl OutstandingData {
         let mut tsn = self.last_cumulative_tsn_ack;
         for item in &self.outstanding_data {
             tsn += 1;
-            if self.stream_reset_breakpoint_tsns.contains(&tsn)
+            if self.stream_reset_breakpoint_tsns.contains(&OrderedTsn(tsn))
                 || tsn != new_cumulative_tsn + 1
                 || !item.is_abandoned()
             {
@@ -796,7 +841,7 @@ impl OutstandingData {
             new_cumulative_tsn = tsn;
 
             let entry = skipped_per_stream.entry(item.data.stream_key).or_insert(Mid(0));
-            if item.data.mid > *entry {
+            if item.data.mid.greater_than(*entry) {
                 *entry = item.data.mid;
             }
         }
@@ -813,7 +858,7 @@ impl OutstandingData {
     /// sent and now. It takes into account Karn's algorithm, so if the chunk has ever been
     /// retransmitted, it will return `None`.
     pub fn measure_rtt(&mut self, now: SocketTime, tsn: Tsn) -> Option<Duration> {
-        if tsn > self.last_cumulative_tsn_ack && tsn < self.next_tsn() {
+        if tsn.greater_than(self.last_cumulative_tsn_ack) && tsn.less_than(self.next_tsn()) {
             let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
             return item.get_rtt_from(now);
@@ -854,7 +899,7 @@ impl OutstandingData {
     /// Called when an outgoing stream reset is sent, marking the last assigned TSN as a breakpoint
     /// that a FORWARD-TSN shouldn't cross.
     pub fn begin_reset_streams(&mut self) {
-        self.stream_reset_breakpoint_tsns.insert(self.next_tsn());
+        self.stream_reset_breakpoint_tsns.insert(OrderedTsn(self.next_tsn()));
     }
 }
 

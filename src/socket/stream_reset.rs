@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 use crate::api::ErrorKind;
 use crate::api::ResetStreamsError;
 use crate::api::SocketEvent;
@@ -29,6 +28,7 @@ use crate::socket::state::State;
 use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::socket::transmission_control_block::InflightResetRequest;
 use crate::socket::transmission_control_block::TransmissionControlBlock;
+use crate::types::SerialNumber;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReqSeqNbrValidationResult {
@@ -151,34 +151,36 @@ fn handle_outgoing_reset_request(
     }
 
     tcb.last_processed_req_seq_nbr = req.request_seq_nbr;
-    tcb.last_processed_req_result =
-        if req.sender_last_assigned_tsn > tcb.data_tracker.last_cumulative_acked_tsn() {
-            // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-            //
-            //   E2: If the Sender's Last Assigned TSN is greater than the
-            //   cumulative acknowledgment point, then the endpoint MUST enter
-            //   "deferred reset processing".
-            //
-            //   [...] If the endpoint enters "deferred reset processing", it MUST
-            //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
-            //   indicating "In progress" and MUST send the RE-CONFIG chunk.
-            tcb.reassembly_queue.enter_deferred_reset(req.sender_last_assigned_tsn, &req.streams);
-            ReconfigurationResponseResult::InProgress
-        } else {
-            // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
-            //
-            //   E3: If no stream numbers are listed in the parameter, then all
-            //   incoming streams MUST be reset to 0 as the next expected SSN. If
-            //   specific stream numbers are listed, then only these specific
-            //   streams MUST be reset to 0, and all other non-listed SSNs remain
-            //   unchanged.
-            //
-            //   E4: Any queued TSNs (queued at step E2) MUST now be released and
-            //   processed normally."
-            tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&req.streams);
-            ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(req.streams));
-            ReconfigurationResponseResult::SuccessPerformed
-        };
+    tcb.last_processed_req_result = if req
+        .sender_last_assigned_tsn
+        .greater_than(tcb.data_tracker.last_cumulative_acked_tsn())
+    {
+        // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+        //
+        //   E2: If the Sender's Last Assigned TSN is greater than the
+        //   cumulative acknowledgment point, then the endpoint MUST enter
+        //   "deferred reset processing".
+        //
+        //   [...] If the endpoint enters "deferred reset processing", it MUST
+        //   put a Re-configuration Response Parameter into a RE-CONFIG chunk
+        //   indicating "In progress" and MUST send the RE-CONFIG chunk.
+        tcb.reassembly_queue.enter_deferred_reset(req.sender_last_assigned_tsn, &req.streams);
+        ReconfigurationResponseResult::InProgress
+    } else {
+        // From <https://datatracker.ietf.org/doc/html/rfc6525#section-5.2.2>:
+        //
+        //   E3: If no stream numbers are listed in the parameter, then all
+        //   incoming streams MUST be reset to 0 as the next expected SSN. If
+        //   specific stream numbers are listed, then only these specific
+        //   streams MUST be reset to 0, and all other non-listed SSNs remain
+        //   unchanged.
+        //
+        //   E4: Any queued TSNs (queued at step E2) MUST now be released and
+        //   processed normally."
+        tcb.reassembly_queue.reset_streams_and_leave_deferred_reset(&req.streams);
+        ctx.events.borrow_mut().add(SocketEvent::OnIncomingStreamReset(req.streams));
+        ReconfigurationResponseResult::SuccessPerformed
+    };
     responses.push(Parameter::ReconfigurationResponse(ReconfigurationResponseParameter {
         response_seq_nbr: req.request_seq_nbr,
         result: tcb.last_processed_req_result,

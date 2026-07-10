@@ -30,10 +30,42 @@ use crate::types::StreamKey;
 use crate::types::Tsn;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A key used to sort chunks in the interleaved reassembly queue.
+///
+/// While RFC1982 arithmetic violates transitivity rules over the full circular sequence
+/// space, it's safe to implement and use `Ord`/`PartialOrd` in sorted containers here because
+/// we limit the "active" number space to half of the full range (the forward half-space).
+/// This restricts the elements to a slice of the circular number space where the math
+/// never wraps around, allowing sorting to happen safely. Within this restricted window,
+/// the sequence numbers do form a strict, transitive total order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterleavedKey {
     pub mid: Mid, // Primary sort key
     pub fsn: Fsn, // Secondary sort key
+}
+
+impl PartialOrd for InterleavedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for InterleavedKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.mid == other.mid {
+            if self.fsn == other.fsn {
+                std::cmp::Ordering::Equal
+            } else if other.fsn.greater_than(self.fsn) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        } else if other.mid.greater_than(self.mid) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    }
 }
 
 impl ReassemblyKey for InterleavedKey {
@@ -172,10 +204,11 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                             .entry(*stream_id)
                             .or_insert_with(|| OrderedStream::new(*stream_id, Mid(0)));
 
-                        self.queued_bytes -=
-                            stream.intervals.retain(|interval| interval.start.mid > *mid);
+                        self.queued_bytes -= stream
+                            .intervals
+                            .retain(|interval| interval.start.mid.greater_than(*mid));
 
-                        if stream.next_mid <= *mid {
+                        if stream.next_mid.less_than_or_equal(*mid) {
                             stream.next_mid = *mid + 1;
                         }
 
@@ -188,8 +221,9 @@ impl ReassemblyStreams for InterleavedReassemblyStreams {
                             .entry(*stream_id)
                             .or_insert_with(|| UnorderedStream::new(*stream_id));
 
-                        self.queued_bytes -=
-                            stream.intervals.retain(|interval| interval.start.mid > *mid);
+                        self.queued_bytes -= stream
+                            .intervals
+                            .retain(|interval| interval.start.mid.greater_than(*mid));
                     }
                 }
             }
