@@ -14,11 +14,14 @@
 
 use core::fmt;
 
+#[derive(Default)]
 pub enum HandoverSocketState {
+    #[default]
     Closed,
     Connected,
 }
 
+#[derive(Default)]
 pub struct HandoverCapabilities {
     pub partial_reliability: bool,
     pub message_interleaving: bool,
@@ -28,6 +31,7 @@ pub struct HandoverCapabilities {
     pub negotiated_maximum_outgoing_streams: u16,
 }
 
+#[derive(Default)]
 pub struct HandoverOutgoingStream {
     pub id: u16,
     pub next_ssn: u16,
@@ -36,6 +40,7 @@ pub struct HandoverOutgoingStream {
     pub priority: u16,
 }
 
+#[derive(Default)]
 pub struct HandoverTransmission {
     pub next_tsn: u32,
     pub next_reset_req_sn: u32,
@@ -46,15 +51,18 @@ pub struct HandoverTransmission {
     pub streams: Vec<HandoverOutgoingStream>,
 }
 
+#[derive(Default)]
 pub struct HandoverOrderedStream {
     pub id: u16,
     pub next_ssn: u32,
 }
 
+#[derive(Default)]
 pub struct HandoverUnorderedStream {
     pub id: u16,
 }
 
+#[derive(Default)]
 pub struct HandoverReceive {
     pub seen_packet: bool,
     pub last_cumulative_acked_tsn: u32,
@@ -69,6 +77,7 @@ pub struct HandoverReceive {
 // possibly in another process. This state should be treaded as opaque - the calling client should
 // not inspect or alter it except for serialization. Serialization is not provided by dcSCTP. If
 // needed it has to be implemented in the calling client.
+#[derive(Default)]
 pub struct SocketHandoverState {
     pub socket_state: HandoverSocketState,
 
@@ -83,46 +92,7 @@ pub struct SocketHandoverState {
     pub rx: HandoverReceive,
 }
 
-impl Default for SocketHandoverState {
-    fn default() -> Self {
-        Self {
-            socket_state: HandoverSocketState::Closed,
-            my_verification_tag: 0,
-            my_initial_tsn: 0,
-            peer_verification_tag: 0,
-            peer_initial_tsn: 0,
-            tie_tag: 0,
-            capabilities: HandoverCapabilities {
-                partial_reliability: false,
-                message_interleaving: false,
-                reconfig: false,
-                zero_checksum: false,
-                negotiated_maximum_incoming_streams: 0,
-                negotiated_maximum_outgoing_streams: 0,
-            },
-            tx: HandoverTransmission {
-                next_tsn: 0,
-                next_reset_req_sn: 0,
-                cwnd: 0,
-                a_rwnd: 0,
-                ssthresh: 0,
-                partial_bytes_acked: 0,
-                streams: vec![],
-            },
-            rx: HandoverReceive {
-                seen_packet: false,
-                last_cumulative_acked_tsn: 0,
-                last_assembled_tsn: 0,
-                last_completed_deferred_reset_req_sn: 0,
-                last_completed_reset_req_sn: 0,
-                ordered_streams: vec![],
-                unordered_streams: vec![],
-            },
-        }
-    }
-}
-
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct HandoverReadiness(pub u32);
 
 impl HandoverReadiness {
