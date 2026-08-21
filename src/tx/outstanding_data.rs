@@ -13,14 +13,18 @@
 // limitations under the License.
 
 use crate::api::LifecycleId;
+use crate::api::PpId;
 use crate::api::SocketTime;
 use crate::api::StreamId;
+use crate::api::handover::HandoverOutstandingData;
+use crate::api::handover::SocketHandoverState;
 use crate::math::round_up_to_4;
 use crate::packet::SkippedStream;
 use crate::packet::data::Data;
 use crate::packet::forward_tsn_chunk::ForwardTsnChunk;
 use crate::packet::iforward_tsn_chunk::IForwardTsnChunk;
 use crate::packet::sack_chunk::GapAckBlock;
+use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::OutgoingMessageId;
 use crate::types::SerialNumber;
@@ -894,6 +898,118 @@ impl OutstandingData {
     /// Sets the next TSN to be used. This is used in handover.
     pub fn reset_sequence_numbers(&mut self, last_cumulative_tsn: Tsn) {
         self.last_cumulative_tsn_ack = last_cumulative_tsn;
+    }
+
+    pub(crate) fn add_to_handover_state(&self, now: SocketTime, state: &mut SocketHandoverState) {
+        state.tx.last_cumulative_tsn_ack = self.last_cumulative_tsn_ack.0;
+        state.tx.outstanding_data = self
+            .outstanding_data
+            .iter()
+            .map(|item| {
+                let expires_in_ms = if item.expires_at == SocketTime::infinite_future() {
+                    None
+                } else {
+                    Some(i32::try_from((item.expires_at - now).as_millis()).unwrap_or(i32::MAX))
+                };
+                let time_since_sent_ms = item.state.time_sent().map_or(0, |time_sent| {
+                    i32::try_from((now - time_sent).as_millis()).unwrap_or(i32::MAX)
+                });
+                HandoverOutstandingData {
+                    mid: item.data.mid.0,
+                    stream_id: item.data.stream_key.id().0,
+                    ssn: item.data.ssn.0,
+                    fsn: item.data.fsn.0,
+                    ppid: item.data.ppid.0,
+                    payload: item.data.payload.clone(),
+                    expires_in_ms,
+                    max_retransmissions: item.max_retransmissions,
+                    is_beginning: item.data.is_beginning,
+                    is_end: item.data.is_end,
+                    is_unordered: item.data.stream_key.is_unordered(),
+                    lifecycle_id: item.lifecycle_id.map_or(0, |id| id.value()),
+                    time_since_sent_ms,
+                    retransmission_count: item.num_retransmissions,
+                    acked: item.is_acked(),
+                    is_abandoned: item.is_abandoned(),
+                    is_nacked: item.is_nacked(),
+                    // Forcefully retransmit any actively in-flight (outstanding) chunks.
+                    // Since the old network path is severed during handover, waiting for
+                    // their ACKs can cause a multi-second T3-rtx timeout stall.
+                    // Chunks already scheduled for retransmission remain so.
+                    is_to_be_retransmitted: item.should_be_retransmitted() || item.is_outstanding(),
+                    message_id: u64::from(item.message_id.0),
+                }
+            })
+            .collect();
+    }
+
+    pub(crate) fn restore_from_state(&mut self, now: SocketTime, state: &SocketHandoverState) {
+        if state.tx.outstanding_data.is_empty() {
+            self.last_cumulative_tsn_ack = Tsn(state.tx.next_tsn.wrapping_sub(1));
+        } else {
+            self.last_cumulative_tsn_ack = Tsn(state.tx.last_cumulative_tsn_ack);
+        }
+        self.outstanding_data.clear();
+        self.unacked_payload_bytes = 0;
+        self.unacked_packet_bytes = 0;
+        self.unacked_items = 0;
+        self.to_be_fast_retransmitted.clear();
+        self.to_be_retransmitted.clear();
+        self.stream_reset_breakpoint_tsns.clear();
+        self.unsent_messages_to_discard.clear();
+
+        for data in &state.tx.outstanding_data {
+            let expires_at = data.expires_in_ms.map_or(SocketTime::infinite_future(), |ms| {
+                now + Duration::from_millis(ms.max(0) as u64)
+            });
+            let time_sent = now - Duration::from_millis(data.time_since_sent_ms.max(0) as u64);
+            let item_state = if data.is_abandoned {
+                if data.acked { ItemState::AbandonedAndAcked } else { ItemState::Abandoned }
+            } else if data.acked {
+                ItemState::Acked
+            } else if data.is_to_be_retransmitted {
+                ItemState::QueuedForRetransmission { time_sent }
+            } else if data.is_nacked {
+                ItemState::ReportedMissing { time_sent, nack_count: 1 }
+            } else {
+                ItemState::InFlight { time_sent }
+            };
+
+            let item_data = Data {
+                stream_key: StreamKey::new(data.is_unordered, StreamId(data.stream_id)),
+                ssn: Ssn(data.ssn),
+                mid: Mid(data.mid),
+                fsn: Fsn(data.fsn),
+                ppid: PpId(data.ppid),
+                payload: data.payload.clone(),
+                is_beginning: data.is_beginning,
+                is_end: data.is_end,
+            };
+
+            let item = Item {
+                message_id: OutgoingMessageId(data.message_id as u32),
+                max_retransmissions: data.max_retransmissions,
+                expires_at,
+                lifecycle_id: LifecycleId::new(data.lifecycle_id),
+                data: item_data,
+                state: item_state,
+                num_retransmissions: data.retransmission_count,
+            };
+
+            let tsn = self.next_tsn();
+            if item.should_be_retransmitted() {
+                self.to_be_retransmitted.insert(OrderedTsn(tsn));
+            }
+
+            if item.is_outstanding() {
+                self.unacked_payload_bytes += item.data.payload.len();
+                self.unacked_packet_bytes +=
+                    round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
+                self.unacked_items += 1;
+            }
+
+            self.outstanding_data.push_back(item);
+        }
     }
 
     /// Called when an outgoing stream reset is sent, marking the last assigned TSN as a breakpoint
@@ -2077,5 +2193,181 @@ mod tests {
         // This shouldn't panic.
         let is_in_fast_recovery = true;
         buf.handle_sack(Tsn(u32::MAX / 2 - 1), &[GapAckBlock::new(2, 2)], is_in_fast_recovery);
+    }
+
+    #[test]
+    fn test_handover_restores_outstanding_data() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", ""));
+        insert(&mut buf, seq.ordered("c", "E"));
+
+        // Ack TSN 11 with gap ack block (so 10 is missing/nacked, 11 is acked, 12 is in flight)
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        assert_eq!(buf.unacked_payload_bytes(), 2);
+        assert_eq!(buf.unacked_items(), 2);
+
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(now(), &mut state);
+
+        assert_eq!(state.tx.last_cumulative_tsn_ack, 9);
+        assert_eq!(state.tx.outstanding_data.len(), 3);
+        assert!(!state.tx.outstanding_data[0].acked);
+        assert!(state.tx.outstanding_data[0].is_nacked);
+        assert!(!state.tx.outstanding_data[0].is_abandoned);
+        assert!(state.tx.outstanding_data[0].is_to_be_retransmitted);
+
+        assert!(state.tx.outstanding_data[1].acked);
+        assert!(!state.tx.outstanding_data[1].is_nacked);
+        assert!(!state.tx.outstanding_data[1].is_abandoned);
+        assert!(!state.tx.outstanding_data[1].is_to_be_retransmitted);
+
+        assert!(!state.tx.outstanding_data[2].acked);
+        assert!(!state.tx.outstanding_data[2].is_nacked);
+        assert!(!state.tx.outstanding_data[2].is_abandoned);
+        assert!(state.tx.outstanding_data[2].is_to_be_retransmitted);
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(now(), &state);
+
+        assert_eq!(buf2.last_cumulative_acked_tsn(), Tsn(9));
+        assert_eq!(buf2.highest_outstanding_tsn(), Tsn(12));
+        assert_eq!(buf2.next_tsn(), Tsn(13));
+        assert_eq!(buf2.unacked_payload_bytes(), 0);
+        assert_eq!(buf2.unacked_items(), 0);
+        assert!(buf2.has_data_to_be_retransmitted());
+
+        // Now SACK TSN 12 (completing all chunks)
+        let ack = buf2.handle_sack(Tsn(12), &[], false);
+        assert_eq!(ack.payload_bytes_acked, 2); // TSN 10 and 12 (11 was already acked)
+        assert_eq!(buf2.unacked_payload_bytes(), 0);
+        assert_eq!(buf2.unacked_items(), 0);
+        assert!(buf2.is_empty());
+    }
+
+    #[test]
+    fn test_handover_restores_retransmitted_data() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        insert(&mut buf, seq.ordered("a", "B"));
+        buf.nack_all();
+        assert!(buf.has_data_to_be_retransmitted());
+        assert_eq!(buf.unacked_items(), 0);
+
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(now(), &mut state);
+
+        assert_eq!(state.tx.outstanding_data.len(), 1);
+        assert!(state.tx.outstanding_data[0].is_to_be_retransmitted);
+        assert!(state.tx.outstanding_data[0].is_nacked);
+        assert!(!state.tx.outstanding_data[0].acked);
+        assert!(!state.tx.outstanding_data[0].is_abandoned);
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(now(), &state);
+
+        assert!(buf2.has_data_to_be_retransmitted());
+        assert_eq!(buf2.unacked_items(), 0);
+
+        let chunks = buf2.get_chunks_to_be_retransmitted(now(), 1500);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].0, Tsn(10));
+        assert!(!buf2.has_data_to_be_retransmitted());
+        assert_eq!(buf2.unacked_items(), 1);
+    }
+
+    #[test]
+    fn test_handover_restores_abandoned_data() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        insert_limited_rtx(&mut buf, seq.ordered("a", "BE"), 0);
+        buf.nack_all();
+        assert!(buf.should_send_forward_tsn());
+
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(now(), &mut state);
+
+        assert_eq!(state.tx.outstanding_data.len(), 1);
+        assert!(state.tx.outstanding_data[0].is_abandoned);
+        assert!(!state.tx.outstanding_data[0].acked);
+        assert!(!state.tx.outstanding_data[0].is_to_be_retransmitted);
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(now(), &state);
+
+        assert!(buf2.should_send_forward_tsn());
+        let fwd_tsn = buf2.create_forward_tsn();
+        assert_eq!(fwd_tsn.new_cumulative_tsn, Tsn(10));
+    }
+
+    #[test]
+    fn test_handover_restores_nacked_data() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        insert(&mut buf, seq.ordered("a", "B"));
+        insert(&mut buf, seq.ordered("b", "E"));
+
+        // Ack TSN 11 with gap ack block (10 is nacked 1 time, 11 is acked)
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        assert!(!buf.has_data_to_be_retransmitted());
+
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(now(), &mut state);
+
+        assert_eq!(state.tx.outstanding_data.len(), 2);
+        assert!(state.tx.outstanding_data[0].is_nacked);
+        assert!(state.tx.outstanding_data[0].is_to_be_retransmitted);
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(now(), &state);
+
+        assert_eq!(
+            buf2.get_chunk_states_for_testing(),
+            [
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::Acked),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_handover_restores_abandoned_and_acked_data() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+
+        insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
+        insert_limited_rtx(&mut buf, seq.ordered("b", "E"), 0);
+        buf.nack_all();
+        assert!(buf.should_send_forward_tsn());
+
+        // Ack TSN 10 using gap ack block.
+        buf.handle_sack(Tsn(9), &[GapAckBlock::new(1, 1)], false);
+
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(now(), &mut state);
+
+        assert_eq!(state.tx.outstanding_data.len(), 2);
+        assert!(state.tx.outstanding_data[0].is_abandoned);
+        assert!(state.tx.outstanding_data[0].acked);
+        assert!(state.tx.outstanding_data[1].is_abandoned);
+        assert!(!state.tx.outstanding_data[1].acked);
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(now(), &state);
+
+        assert!(buf2.should_send_forward_tsn());
+        let fwd_tsn = buf2.create_forward_tsn();
+        assert_eq!(fwd_tsn.new_cumulative_tsn, Tsn(11));
+
+        // When cumulative TSN ack reaches 11, all should be removed.
+        let ack = buf2.handle_sack(Tsn(11), &[], false);
+        assert_eq!(ack.payload_bytes_acked, 1); // TSN 11 was newly acked
+        assert!(buf2.is_empty());
     }
 }

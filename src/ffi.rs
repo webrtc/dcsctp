@@ -33,8 +33,10 @@ use crate::api::StreamId;
 use crate::api::handover::HandoverCapabilities as DcSctpHandoverCapabilities;
 use crate::api::handover::HandoverOrderedStream as DcSctpHandoverOrderedStream;
 use crate::api::handover::HandoverOutgoingStream as DcSctpHandoverOutgoingStream;
+use crate::api::handover::HandoverOutstandingData as DcSctpHandoverOutstandingData;
 use crate::api::handover::HandoverReceive as DcSctpHandoverReceive;
 use crate::api::handover::HandoverSocketState as DcSctpHandoverSocketState;
+use crate::api::handover::HandoverStreamMessage as DcSctpHandoverStreamMessage;
 use crate::api::handover::HandoverTransmission as DcSctpHandoverTransmission;
 use crate::api::handover::HandoverUnorderedStream as DcSctpHandoverUnorderedStream;
 use crate::api::handover::SocketHandoverState as DcSctpSocketHandoverState;
@@ -194,14 +196,61 @@ mod bridge {
     }
 
     #[derive(Debug, Default)]
+    struct HandoverStreamMessage {
+        stream_id: u16,
+        ppid: u32,
+        payload: Vec<u8>,
+        has_expires_in_ms: bool,
+        expires_in_ms: i32,
+        max_retransmissions: u16,
+        unordered: bool,
+        lifecycle_id: u64,
+        message_id: u64,
+        remaining_offset: usize,
+        has_mid: bool,
+        mid: u32,
+        has_ssn: bool,
+        ssn: u16,
+        fsn: u32,
+    }
+
+    #[derive(Debug, Default)]
+    struct HandoverOutstandingData {
+        mid: u32,
+        stream_id: u16,
+        ssn: u16,
+        fsn: u32,
+        ppid: u32,
+        payload: Vec<u8>,
+        has_expires_in_ms: bool,
+        expires_in_ms: i32,
+        max_retransmissions: u16,
+        is_beginning: bool,
+        is_end: bool,
+        is_unordered: bool,
+        lifecycle_id: u64,
+        time_since_sent_ms: i32,
+        retransmission_count: u16,
+        acked: bool,
+        is_abandoned: bool,
+        is_nacked: bool,
+        is_to_be_retransmitted: bool,
+        message_id: u64,
+    }
+
+    #[derive(Debug, Default)]
     struct HandoverTransmission {
         next_tsn: u32,
+        next_outgoing_message_id: u64,
         next_reset_req_sn: u32,
         cwnd: u32,
-        a_rwnd: u32,
+        rwnd: u32,
         ssthresh: u32,
         partial_bytes_acked: u32,
         streams: Vec<HandoverOutgoingStream>,
+        queued_messages: Vec<HandoverStreamMessage>,
+        outstanding_data: Vec<HandoverOutstandingData>,
+        last_cumulative_tsn_ack: u32,
     }
 
     #[derive(Debug, Default)]
@@ -278,6 +327,7 @@ mod bridge {
         heartbeat_interval_include_rtt: bool,
         zero_checksum_alternate_error_detection_method: u32,
         disable_checksum_verification: bool,
+        enable_handover_with_outstanding_data: bool,
     }
 
     extern "Rust" {
@@ -418,16 +468,114 @@ impl From<&bridge::HandoverOutgoingStream> for DcSctpHandoverOutgoingStream {
     }
 }
 
+impl From<DcSctpHandoverStreamMessage> for bridge::HandoverStreamMessage {
+    fn from(value: DcSctpHandoverStreamMessage) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            ppid: value.ppid,
+            payload: value.payload,
+            has_expires_in_ms: value.expires_in_ms.is_some(),
+            expires_in_ms: value.expires_in_ms.unwrap_or(0),
+            max_retransmissions: value.max_retransmissions,
+            unordered: value.unordered,
+            lifecycle_id: value.lifecycle_id,
+            message_id: value.message_id,
+            remaining_offset: value.remaining_offset,
+            has_mid: value.mid.is_some(),
+            mid: value.mid.unwrap_or(0),
+            has_ssn: value.ssn.is_some(),
+            ssn: value.ssn.unwrap_or(0),
+            fsn: value.fsn,
+        }
+    }
+}
+
+impl From<&bridge::HandoverStreamMessage> for DcSctpHandoverStreamMessage {
+    fn from(value: &bridge::HandoverStreamMessage) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            ppid: value.ppid,
+            payload: value.payload.clone(),
+            expires_in_ms: value.has_expires_in_ms.then_some(value.expires_in_ms),
+            max_retransmissions: value.max_retransmissions,
+            unordered: value.unordered,
+            lifecycle_id: value.lifecycle_id,
+            message_id: value.message_id,
+            remaining_offset: value.remaining_offset,
+            mid: value.has_mid.then_some(value.mid),
+            ssn: value.has_ssn.then_some(value.ssn),
+            fsn: value.fsn,
+        }
+    }
+}
+
+impl From<DcSctpHandoverOutstandingData> for bridge::HandoverOutstandingData {
+    fn from(value: DcSctpHandoverOutstandingData) -> Self {
+        Self {
+            mid: value.mid,
+            stream_id: value.stream_id,
+            ssn: value.ssn,
+            fsn: value.fsn,
+            ppid: value.ppid,
+            payload: value.payload,
+            has_expires_in_ms: value.expires_in_ms.is_some(),
+            expires_in_ms: value.expires_in_ms.unwrap_or(0),
+            max_retransmissions: value.max_retransmissions,
+            is_beginning: value.is_beginning,
+            is_end: value.is_end,
+            is_unordered: value.is_unordered,
+            lifecycle_id: value.lifecycle_id,
+            time_since_sent_ms: value.time_since_sent_ms,
+            retransmission_count: value.retransmission_count,
+            acked: value.acked,
+            is_abandoned: value.is_abandoned,
+            is_nacked: value.is_nacked,
+            is_to_be_retransmitted: value.is_to_be_retransmitted,
+            message_id: value.message_id,
+        }
+    }
+}
+
+impl From<&bridge::HandoverOutstandingData> for DcSctpHandoverOutstandingData {
+    fn from(value: &bridge::HandoverOutstandingData) -> Self {
+        Self {
+            mid: value.mid,
+            stream_id: value.stream_id,
+            ssn: value.ssn,
+            fsn: value.fsn,
+            ppid: value.ppid,
+            payload: value.payload.clone(),
+            expires_in_ms: value.has_expires_in_ms.then_some(value.expires_in_ms),
+            max_retransmissions: value.max_retransmissions,
+            is_beginning: value.is_beginning,
+            is_end: value.is_end,
+            is_unordered: value.is_unordered,
+            lifecycle_id: value.lifecycle_id,
+            time_since_sent_ms: value.time_since_sent_ms,
+            retransmission_count: value.retransmission_count,
+            acked: value.acked,
+            is_abandoned: value.is_abandoned,
+            is_nacked: value.is_nacked,
+            is_to_be_retransmitted: value.is_to_be_retransmitted,
+            message_id: value.message_id,
+        }
+    }
+}
+
 impl From<DcSctpHandoverTransmission> for bridge::HandoverTransmission {
     fn from(value: DcSctpHandoverTransmission) -> Self {
         Self {
             next_tsn: value.next_tsn,
+            next_outgoing_message_id: value.next_outgoing_message_id,
             next_reset_req_sn: value.next_reset_req_sn,
             cwnd: value.cwnd,
-            a_rwnd: value.a_rwnd,
+            rwnd: value.rwnd,
             ssthresh: value.ssthresh,
             partial_bytes_acked: value.partial_bytes_acked,
             streams: value.streams.into_iter().map(Into::into).collect(),
+            queued_messages: value.queued_messages.into_iter().map(Into::into).collect(),
+            outstanding_data: value.outstanding_data.into_iter().map(Into::into).collect(),
+            last_cumulative_tsn_ack: value.last_cumulative_tsn_ack,
         }
     }
 }
@@ -436,12 +584,16 @@ impl From<&bridge::HandoverTransmission> for DcSctpHandoverTransmission {
     fn from(value: &bridge::HandoverTransmission) -> Self {
         Self {
             next_tsn: value.next_tsn,
+            next_outgoing_message_id: value.next_outgoing_message_id,
             next_reset_req_sn: value.next_reset_req_sn,
             cwnd: value.cwnd,
-            a_rwnd: value.a_rwnd,
+            rwnd: value.rwnd,
             ssthresh: value.ssthresh,
             partial_bytes_acked: value.partial_bytes_acked,
             streams: value.streams.iter().map(Into::into).collect(),
+            queued_messages: value.queued_messages.iter().map(Into::into).collect(),
+            outstanding_data: value.outstanding_data.iter().map(Into::into).collect(),
+            last_cumulative_tsn_ack: value.last_cumulative_tsn_ack,
         }
     }
 }
@@ -669,6 +821,7 @@ impl From<DcSctpOptions> for bridge::Options {
             heartbeat_interval_include_rtt,
             zero_checksum_alternate_error_detection_method,
             disable_checksum_verification,
+            enable_handover_with_outstanding_data,
         } = value;
 
         Self {
@@ -710,6 +863,7 @@ impl From<DcSctpOptions> for bridge::Options {
             zero_checksum_alternate_error_detection_method:
                 zero_checksum_alternate_error_detection_method.0,
             disable_checksum_verification,
+            enable_handover_with_outstanding_data,
         }
     }
 }
@@ -759,6 +913,7 @@ impl From<&bridge::Options> for DcSctpOptions {
                     val.zero_checksum_alternate_error_detection_method,
                 ),
             disable_checksum_verification: val.disable_checksum_verification,
+            enable_handover_with_outstanding_data: val.enable_handover_with_outstanding_data,
         }
     }
 }

@@ -236,7 +236,7 @@ impl TransmissionControlBlock {
             | self.retransmission_queue.get_handover_readiness()
     }
 
-    pub(crate) fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
+    pub(crate) fn add_to_handover_state(&self, now: SocketTime, state: &mut SocketHandoverState) {
         state.capabilities = HandoverCapabilities {
             partial_reliability: self.capabilities.partial_reliability,
             message_interleaving: self.capabilities.message_interleaving,
@@ -261,15 +261,15 @@ impl TransmissionControlBlock {
 
         self.data_tracker.add_to_handover_state(state);
         self.reassembly_queue.add_to_handover_state(state);
-        self.retransmission_queue.add_to_handover_state(state);
+        self.retransmission_queue.add_to_handover_state(now, state);
     }
 
-    pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
+    pub(crate) fn restore_from_state(&mut self, now: SocketTime, state: &SocketHandoverState) {
         self.last_processed_req_seq_nbr = state.rx.last_completed_reset_req_sn;
         self.next_outgoing_reset_req_seq_nbr = state.tx.next_reset_req_sn;
 
         self.data_tracker.restore_from_state(state);
         self.reassembly_queue.restore_from_state(state);
-        self.retransmission_queue.restore_from_state(state);
+        self.retransmission_queue.restore_from_state(now, state);
     }
 }

@@ -16,6 +16,7 @@
 mod tests {
     use crate::api::DcSctpSocket;
     use crate::api::ErrorKind;
+    use crate::api::HandoverReadiness;
     use crate::api::LifecycleId;
     use crate::api::Message;
     use crate::api::Options;
@@ -162,23 +163,26 @@ mod tests {
     }
 
     fn handover_socket(from_socket: &mut Socket, to_socket: &mut Socket) {
-        assert!(matches!(to_socket.state(), SocketState::Closed));
-        expect_no_event!(from_socket.poll_event());
+        assert_eq!(to_socket.state(), SocketState::Closed);
         assert!(from_socket.get_handover_readiness().is_ready());
         let is_closed = matches!(from_socket.state(), SocketState::Closed);
 
         let handover_state = from_socket.get_handover_state_and_close().unwrap();
 
         if !is_closed {
-            expect_on_closed!(from_socket.poll_event());
+            loop {
+                match from_socket.poll_event() {
+                    Some(SocketEvent::OnClosed()) => break,
+                    Some(SocketEvent::SendPacket(_)) => continue,
+                    other => panic!("Expected OnClosed, got {other:?}"),
+                }
+            }
         }
-        expect_no_event!(from_socket.poll_event());
 
         to_socket.restore_from_state(&handover_state).unwrap();
         if !is_closed {
             expect_on_connected!(to_socket.poll_event());
         }
-        expect_no_event!(to_socket.poll_event());
     }
 
     #[test]
@@ -4377,5 +4381,250 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn handover_with_outstanding_data_fails_by_default() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+
+        let _packet = expect_sent_packet!(socket_a.poll_event());
+
+        assert_eq!(
+            socket_a.get_handover_readiness(),
+            HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
+        );
+    }
+
+    #[test]
+    fn handover_persists_queued_messages_and_delivers_them() {
+        let options = Options {
+            enable_message_interleaving: true,
+            enable_handover_with_outstanding_data: true,
+            ..default_options()
+        };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a.set_stream_priority(StreamId(1), 100);
+        socket_a.set_stream_priority(StreamId(2), 200);
+
+        // Fill cwnd with a large message on stream 1.
+        let large_payload = vec![1u8; 15 * options.mtu];
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(101), large_payload.clone()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        // Enqueue a message on stream 2 which will remain in SendQueue due to cwnd exhaustion.
+        socket_a
+            .send(
+                Message::new(StreamId(2), PpId(201), b"stream2-msg1".to_vec()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        // Collect in-flight packets from A.
+        let mut in_flight_packets = Vec::new();
+        while let Some(ev) = socket_a.poll_event() {
+            if let SocketEvent::SendPacket(p) = ev {
+                in_flight_packets.push(p);
+            }
+        }
+        assert!(!in_flight_packets.is_empty());
+
+        let mut socket_a2 = Socket::new("A2", &options);
+        handover_socket(&mut socket_a, &mut socket_a2);
+
+        // Deliver the in-flight packets to Z.
+        for p in in_flight_packets {
+            socket_z.handle_input(&p);
+        }
+
+        // Exchange all remaining packets between A2 and Z.
+        exchange_packets(&mut socket_a2, &mut socket_z);
+
+        let msg1 = socket_z.get_next_message().unwrap();
+        let msg2 = socket_z.get_next_message().unwrap();
+        assert!(socket_z.get_next_message().is_none());
+
+        assert_eq!(msg1.stream_id, StreamId(2));
+        assert_eq!(msg1.payload, b"stream2-msg1");
+        assert_eq!(msg2.stream_id, StreamId(1));
+        assert_eq!(msg2.payload, large_payload);
+    }
+
+    #[test]
+    fn handover_persists_outstanding_data_and_continues_flow() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..default_options() };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Send a message on A.
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(51), b"outstanding-payload".to_vec()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        // A sends packet to Z (Z does not process it yet).
+        let packet = expect_sent_packet!(socket_a.poll_event());
+
+        // Now A has outstanding data in flight. Handover A -> A2.
+        let mut socket_a2 = Socket::new("A2", &options);
+        handover_socket(&mut socket_a, &mut socket_a2);
+
+        // Deliver the in-flight packet to Z.
+        socket_z.handle_input(&packet);
+
+        let msg = socket_z.get_next_message().unwrap();
+        assert_eq!(msg.stream_id, StreamId(1));
+        assert_eq!(msg.payload, b"outstanding-payload");
+
+        // Z sends SACK to A2.
+        let sack_packet = expect_sent_packet!(socket_z.poll_event());
+        socket_a2.handle_input(&sack_packet);
+
+        // Now verify both directions can send further messages without issue.
+        socket_a2
+            .send(
+                Message::new(StreamId(1), PpId(52), b"after-handover-from-a".to_vec()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+        socket_z
+            .send(
+                Message::new(StreamId(1), PpId(53), b"from-z-to-a2".to_vec()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        exchange_packets(&mut socket_a2, &mut socket_z);
+
+        let msg_from_a = socket_z.get_next_message().unwrap();
+        assert_eq!(msg_from_a.ppid, PpId(52));
+        assert_eq!(msg_from_a.payload, b"after-handover-from-a");
+
+        let msg_from_z = socket_a2.get_next_message().unwrap();
+        assert_eq!(msg_from_z.ppid, PpId(53));
+        assert_eq!(msg_from_z.payload, b"from-z-to-a2");
+    }
+
+    #[test]
+    fn handover_persists_partially_sent_large_message() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..default_options() };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let payload = vec![42u8; 20 * options.mtu];
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), payload.clone()), &SendOptions::default())
+            .unwrap();
+
+        // Collect all initial packets emitted within cwnd.
+        let mut in_flight_packets = Vec::new();
+        while let Some(ev) = socket_a.poll_event() {
+            if let SocketEvent::SendPacket(p) = ev {
+                in_flight_packets.push(p);
+            }
+        }
+        assert!(!in_flight_packets.is_empty());
+
+        // Handover A -> A2 while message is partially sent and partially queued.
+        let mut socket_a2 = Socket::new("A2", &options);
+        handover_socket(&mut socket_a, &mut socket_a2);
+
+        // Deliver the in-flight packets to Z.
+        for p in in_flight_packets {
+            socket_z.handle_input(&p);
+        }
+
+        // Exchange all remaining packets.
+        exchange_packets(&mut socket_a2, &mut socket_z);
+
+        let msg = socket_z.get_next_message().unwrap();
+        assert_eq!(msg.stream_id, StreamId(1));
+        assert_eq!(msg.payload, payload);
+        assert!(socket_z.get_next_message().is_none());
+    }
+
+    #[test]
+    fn handover_restores_from_state_without_outstanding_data() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Exchange a message so TSNs advance.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+        exchange_packets(&mut socket_a, &mut socket_z);
+        assert_eq!(socket_z.get_next_message().unwrap().payload, b"hello");
+
+        // Now socket_a is idle. Get handover state and strip out new fields to simulate an older
+        // version state.
+        let mut state = socket_a.get_handover_state_and_close().unwrap();
+        state.tx.outstanding_data.clear();
+        state.tx.queued_messages.clear();
+        state.tx.last_cumulative_tsn_ack = 0;
+
+        let mut socket_a2 = Socket::new("A2", &options);
+        socket_a2.restore_from_state(&state).unwrap();
+
+        // Verify socket_a2 continues cleanly.
+        socket_a2
+            .send(
+                Message::new(StreamId(1), PpId(52), b"after-restore".to_vec()),
+                &SendOptions::default(),
+            )
+            .unwrap();
+        socket_z
+            .send(Message::new(StreamId(1), PpId(53), b"from-z".to_vec()), &SendOptions::default())
+            .unwrap();
+
+        exchange_packets(&mut socket_a2, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().payload, b"after-restore");
+        assert_eq!(socket_a2.get_next_message().unwrap().payload, b"from-z");
+    }
+
+    #[test]
+    fn retransmits_outstanding_data_directly_after_handover() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..default_options() };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Send a message, but never deliver it to Z, so that it stays outstanding
+        // (unacknowledged) on A when the socket is handed over.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(53), vec![1, 2]), &SendOptions::default())
+            .unwrap();
+        let packet =
+            SctpPacket::from_bytes(&expect_sent_packet!(socket_a.poll_event()), &options).unwrap();
+        assert!(matches!(packet.chunks.as_slice(), [Chunk::Data(_)]));
+
+        let mut socket_a2 = Socket::new("A2", &options);
+        handover_socket(&mut socket_a, &mut socket_a2);
+
+        // The restored socket must retransmit the outstanding data immediately. If it
+        // doesn't, the connection would stall until the T3-RTX timer expires, one RTO
+        // (a second, by default) later.
+        let packet =
+            SctpPacket::from_bytes(&expect_sent_packet!(socket_a2.poll_event()), &options).unwrap();
+        assert!(matches!(packet.chunks.as_slice(), [Chunk::Data(_)]));
     }
 }

@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Added
+
+ - Support persisting queued and outstanding data across socket handover.
+
 ### Fixed
 
  - Defer incoming data for all streams when resetting all streams with an empty stream list
