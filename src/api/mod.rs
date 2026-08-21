@@ -66,15 +66,8 @@ impl Sub<SocketTime> for SocketTime {
 /// lifecycle events will be generated, and eventually [`SocketEvent::OnLifecycleEnd`] will be
 /// generated to indicate that the lifecycle isn't tracked any longer. The value zero (0) is not a
 /// valid lifecycle identifier, and will be interpreted as not having it set.
-#[derive(Clone)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LifecycleId(NonZeroU64);
-
-impl PartialEq for LifecycleId {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-impl Eq for LifecycleId {}
 
 impl fmt::Debug for LifecycleId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

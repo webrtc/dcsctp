@@ -121,10 +121,10 @@ struct ThresholdWatcher<'a> {
     low_cb: Box<dyn Fn() + 'a>,
 }
 
-fn add_lifecycle_events(events: &Rc<RefCell<dyn EventSink>>, lifecycle_id: &Option<LifecycleId>) {
-    if let Some(lid) = &lifecycle_id {
-        events.borrow_mut().add(SocketEvent::OnLifecycleMessageExpired(lid.clone()));
-        events.borrow_mut().add(SocketEvent::OnLifecycleEnd(lid.clone()));
+fn add_lifecycle_events(events: &Rc<RefCell<dyn EventSink>>, lifecycle_id: Option<LifecycleId>) {
+    if let Some(lid) = lifecycle_id {
+        events.borrow_mut().add(SocketEvent::OnLifecycleMessageExpired(lid));
+        events.borrow_mut().add(SocketEvent::OnLifecycleEnd(lid));
     }
 }
 
@@ -249,7 +249,7 @@ impl SendQueue {
                 // Oops, this entire message has already expired. Try the next one.
                 self.buffered_amount -= item.remaining_size;
                 stream.buffered_amount -= item.remaining_size;
-                add_lifecycle_events(&self.events, &item.attributes.lifecycle_id);
+                add_lifecycle_events(&self.events, item.attributes.lifecycle_id);
                 stream.items.pop_front();
                 let priority = self.enable_message_interleaving.then_some(stream.priority);
                 self.scheduler.set_bytes_remaining(
@@ -286,7 +286,7 @@ impl SendQueue {
             expires_at: now
                 + send_options.lifetime.unwrap_or(DEFAULT_EXPIRY)
                 + Duration::from_millis(1),
-            lifecycle_id: send_options.lifecycle_id.clone(),
+            lifecycle_id: send_options.lifecycle_id,
         };
         let stream_id = message.stream_id;
         let stream = self.streams.entry(stream_id).or_insert_with(|| {
@@ -330,7 +330,7 @@ impl SendQueue {
         let is_beginning = item.remaining_offset == 0;
         let is_end = size == item.remaining_size;
         let fsn = item.current_fsn;
-        let lifecycle_id = if is_end { item.attributes.lifecycle_id.clone() } else { None };
+        let lifecycle_id = if is_end { item.attributes.lifecycle_id } else { None };
         item.current_fsn += 1;
         let payload = item
             .message
@@ -394,7 +394,7 @@ impl SendQueue {
         }
         self.buffered_amount -= item.remaining_size;
         stream.buffered_amount -= item.remaining_size;
-        add_lifecycle_events(&self.events, &item.attributes.lifecycle_id);
+        add_lifecycle_events(&self.events, item.attributes.lifecycle_id);
         stream.items.pop_front();
 
         let priority = self.enable_message_interleaving.then_some(stream.priority);
@@ -444,7 +444,7 @@ impl SendQueue {
             if i.remaining_offset == 0 {
                 stream.buffered_amount -= i.remaining_size;
                 self.buffered_amount -= i.remaining_size;
-                add_lifecycle_events(&self.events, &i.attributes.lifecycle_id);
+                add_lifecycle_events(&self.events, i.attributes.lifecycle_id);
                 return false;
             }
             true
