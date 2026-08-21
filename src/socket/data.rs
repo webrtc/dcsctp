@@ -185,10 +185,10 @@ pub(crate) fn validate_send(
     message: &Message,
     send_options: &SendOptions,
 ) -> Result<(), SendError> {
-    let lifecycle_id = &send_options.lifecycle_id;
+    let lifecycle_id = send_options.lifecycle_id;
     let add_error_events = |kind, msg: &str| {
         if let Some(id) = lifecycle_id {
-            ctx.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id.clone()));
+            ctx.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(id));
         }
         ctx.events.borrow_mut().add(SocketEvent::OnError(kind, msg.to_string()));
     };

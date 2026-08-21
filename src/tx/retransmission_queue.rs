@@ -353,11 +353,11 @@ impl RetransmissionQueue {
 
         // Add lifecycle events for delivered messages.
         for lid in ack_info.acked_lifecycle_ids {
-            self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageDelivered(lid.clone()));
+            self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageDelivered(lid));
             self.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(lid));
         }
         for lid in ack_info.abandoned_lifecycle_ids {
-            self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageMaybeExpired(lid.clone()));
+            self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageMaybeExpired(lid));
             self.events.borrow_mut().add(SocketEvent::OnLifecycleEnd(lid));
         }
 
@@ -579,7 +579,7 @@ impl RetransmissionQueue {
                     now,
                     max_retransmissions,
                     expires_at,
-                    chunk.lifecycle_id.clone(),
+                    chunk.lifecycle_id,
                 ) {
                     if let Some(lid) = chunk.lifecycle_id {
                         self.events.borrow_mut().add(SocketEvent::OnLifecycleMessageFullySent(lid));

@@ -2133,7 +2133,7 @@ mod tests {
         };
         let mut socket = Socket::new("A", &options);
         let lifecycle_id = LifecycleId::from(123);
-        let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
+        let s = SendOptions { lifecycle_id: Some(lifecycle_id), ..Default::default() };
 
         socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s).unwrap();
         socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s).unwrap();
@@ -2141,7 +2141,7 @@ mod tests {
             socket.send(Message::new(StreamId(1), PpId(53), vec![0; 600]), &s),
             Err(SendError::ResourceExhaustion)
         );
-        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
+        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id);
         assert_eq!(expect_on_error!(socket.poll_event()), ErrorKind::ResourceExhaustion);
 
         // The per-stream limit for SID=1 is reached, but not SID=2.
@@ -2151,7 +2151,7 @@ mod tests {
             socket.send(Message::new(StreamId(2), PpId(53), vec![0; 600]), &s),
             Err(SendError::ResourceExhaustion)
         );
-        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
+        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id);
         assert_eq!(expect_on_error!(socket.poll_event()), ErrorKind::ResourceExhaustion);
     }
 
@@ -2160,13 +2160,13 @@ mod tests {
         let mut socket = Socket::new("A", &default_options());
 
         let lifecycle_id = LifecycleId::from(123);
-        let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
+        let s = SendOptions { lifecycle_id: Some(lifecycle_id), ..Default::default() };
         assert_eq!(
             socket.send(Message::new(StreamId(1), PpId(53), vec![]), &s),
             Err(SendError::EmptyPayload)
         );
 
-        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
+        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id);
         assert_eq!(expect_on_error!(socket.poll_event()), ErrorKind::ProtocolViolation);
     }
 
@@ -2176,13 +2176,13 @@ mod tests {
         let mut socket = Socket::new("A", &options);
 
         let lifecycle_id = LifecycleId::from(123);
-        let s = SendOptions { lifecycle_id: Some(lifecycle_id.clone()), ..Default::default() };
+        let s = SendOptions { lifecycle_id: Some(lifecycle_id), ..Default::default() };
         assert!(matches!(
             socket.send(Message::new(StreamId(1), PpId(53), vec![0; 101]), &s),
             Err(SendError::MessageTooLarge { .. })
         ));
 
-        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id.clone());
+        assert_eq!(expect_on_lifecycle_end!(socket.poll_event()), lifecycle_id);
         assert_eq!(expect_on_error!(socket.poll_event()), ErrorKind::ProtocolViolation);
     }
 

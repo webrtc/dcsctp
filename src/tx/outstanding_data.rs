@@ -363,12 +363,12 @@ impl OutstandingData {
 
             let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
-            if let Some(lifecycle_id) = &item.lifecycle_id {
+            if let Some(lifecycle_id) = item.lifecycle_id {
                 debug_assert!(item.data.is_end);
                 if item.is_abandoned() {
-                    ack_info.abandoned_lifecycle_ids.push(lifecycle_id.clone());
+                    ack_info.abandoned_lifecycle_ids.push(lifecycle_id);
                 } else {
-                    ack_info.acked_lifecycle_ids.push(lifecycle_id.clone());
+                    ack_info.acked_lifecycle_ids.push(lifecycle_id);
                 }
             }
 
