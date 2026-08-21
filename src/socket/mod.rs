@@ -846,12 +846,15 @@ impl DcSctpSocket for Socket {
     fn restore_from_state(&mut self, state: &SocketHandoverState) -> Result<(), RestoreError> {
         if !matches!(self.state, State::Closed) {
             return Err(RestoreError::SocketNotClosed);
-        } else if matches!(state.socket_state, HandoverSocketState::Closed) {
+        }
+        if matches!(state.socket_state, HandoverSocketState::Closed) {
             // Nothing to do.
             return Ok(());
         }
 
-        self.ctx.send_queue.restore_from_state(state);
+        let now = *self.now.borrow();
+        self.ctx.send_queue.enable_message_interleaving(state.capabilities.message_interleaving);
+        self.ctx.send_queue.restore_from_state(now, state);
 
         let capabilities = Capabilities {
             partial_reliability: state.capabilities.partial_reliability,
@@ -876,14 +879,15 @@ impl DcSctpSocket for Socket {
             state.peer_verification_tag,
             Tsn(state.peer_initial_tsn),
             state.tie_tag,
-            /* rwnd */ 0,
+            state.tx.rwnd,
             capabilities,
             Rc::clone(&self.ctx.events),
         );
-        tcb.restore_from_state(state);
+        tcb.restore_from_state(now, state);
 
         self.state = State::Established(tcb);
         self.ctx.events.borrow_mut().add(SocketEvent::OnConnected());
+        self.ctx.send_buffered_packets(&mut self.state, now);
         Ok(())
     }
 
@@ -893,12 +897,13 @@ impl DcSctpSocket for Socket {
             return Err(HandoverError::NotReady(readiness));
         }
 
+        let now = *self.now.borrow();
         let mut handover_state = SocketHandoverState::default();
 
         if let State::Established(tcb) = &self.state {
             handover_state.socket_state = HandoverSocketState::Connected;
-            self.ctx.send_queue.add_to_handover_state(&mut handover_state);
-            tcb.add_to_handover_state(&mut handover_state);
+            self.ctx.send_queue.add_to_handover_state(now, &mut handover_state);
+            tcb.add_to_handover_state(now, &mut handover_state);
             self.ctx.events.borrow_mut().add(SocketEvent::OnClosed());
             self.state = State::Closed;
         }

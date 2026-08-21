@@ -32,6 +32,45 @@ pub struct HandoverCapabilities {
 }
 
 #[derive(Default)]
+pub struct HandoverStreamMessage {
+    pub stream_id: u16,
+    pub ppid: u32,
+    pub payload: Vec<u8>,
+    pub expires_in_ms: Option<i32>,
+    pub max_retransmissions: u16,
+    pub unordered: bool,
+    pub lifecycle_id: u64,
+    pub message_id: u64,
+    pub remaining_offset: usize,
+    pub mid: Option<u32>,
+    pub ssn: Option<u16>,
+    pub fsn: u32,
+}
+
+#[derive(Default)]
+pub struct HandoverOutstandingData {
+    pub mid: u32,
+    pub stream_id: u16,
+    pub ssn: u16,
+    pub fsn: u32,
+    pub ppid: u32,
+    pub payload: Vec<u8>,
+    pub expires_in_ms: Option<i32>,
+    pub max_retransmissions: u16,
+    pub is_beginning: bool,
+    pub is_end: bool,
+    pub is_unordered: bool,
+    pub lifecycle_id: u64,
+    pub time_since_sent_ms: i32,
+    pub retransmission_count: u16,
+    pub acked: bool,
+    pub is_abandoned: bool,
+    pub is_nacked: bool,
+    pub is_to_be_retransmitted: bool,
+    pub message_id: u64,
+}
+
+#[derive(Default)]
 pub struct HandoverOutgoingStream {
     pub id: u16,
     pub next_ssn: u16,
@@ -43,12 +82,16 @@ pub struct HandoverOutgoingStream {
 #[derive(Default)]
 pub struct HandoverTransmission {
     pub next_tsn: u32,
+    pub next_outgoing_message_id: u64,
     pub next_reset_req_sn: u32,
     pub cwnd: u32,
-    pub a_rwnd: u32,
+    pub rwnd: u32,
     pub ssthresh: u32,
     pub partial_bytes_acked: u32,
     pub streams: Vec<HandoverOutgoingStream>,
+    pub queued_messages: Vec<HandoverStreamMessage>,
+    pub outstanding_data: Vec<HandoverOutstandingData>,
+    pub last_cumulative_tsn_ack: u32,
 }
 
 #[derive(Default)]

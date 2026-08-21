@@ -16,12 +16,14 @@ use crate::EventSink;
 use crate::api::LifecycleId;
 use crate::api::Message;
 use crate::api::Options;
+use crate::api::PpId;
 use crate::api::SendOptions;
 use crate::api::SocketEvent;
 use crate::api::SocketTime;
 use crate::api::StreamId;
 use crate::api::handover::HandoverOutgoingStream;
 use crate::api::handover::HandoverReadiness;
+use crate::api::handover::HandoverStreamMessage;
 use crate::api::handover::SocketHandoverState;
 use crate::packet::data::Data;
 use crate::tx::stream_scheduler::StreamScheduler;
@@ -37,8 +39,6 @@ use std::ops::AddAssign;
 use std::ops::SubAssign;
 use std::rc::Rc;
 use std::time::Duration;
-
-const DEFAULT_EXPIRY: Duration = Duration::from_secs(3600);
 
 pub(crate) struct DataToSend {
     pub message_id: OutgoingMessageId,
@@ -186,6 +186,7 @@ impl<'a> OutgoingStream<'a> {
 
 pub struct SendQueue {
     enable_message_interleaving: bool,
+    enable_handover_with_outstanding_data: bool,
     default_priority: u16,
     default_low_buffered_amount_low_threshold: usize,
     buffered_amount: ThresholdWatcher<'static>,
@@ -204,6 +205,7 @@ impl SendQueue {
         let buffered_amount_low_events = Rc::clone(&events);
         Self {
             enable_message_interleaving: false,
+            enable_handover_with_outstanding_data: options.enable_handover_with_outstanding_data,
             default_priority: options.default_stream_priority,
             default_low_buffered_amount_low_threshold: options
                 .default_stream_buffered_amount_low_threshold,
@@ -283,9 +285,9 @@ impl SendQueue {
         let attributes = MessageAttributes {
             unordered: send_options.unordered,
             max_retransmissions: send_options.max_retransmissions.unwrap_or(u16::MAX),
-            expires_at: now
-                + send_options.lifetime.unwrap_or(DEFAULT_EXPIRY)
-                + Duration::from_millis(1),
+            expires_at: send_options.lifetime.map_or(SocketTime::infinite_future(), |lifetime| {
+                now + lifetime + Duration::from_millis(1)
+            }),
             lifecycle_id: send_options.lifecycle_id,
         };
         let stream_id = message.stream_id;
@@ -531,6 +533,10 @@ impl SendQueue {
         self.buffered_amount.value
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buffered_amount.value == 0
+    }
+
     pub fn buffered_amount_low_threshold(&self, stream_id: StreamId) -> usize {
         match self.streams.get(&stream_id) {
             Some(stream) => stream.buffered_amount.low_threshold,
@@ -570,18 +576,22 @@ impl SendQueue {
     }
 
     pub fn get_handover_readiness(&self) -> HandoverReadiness {
-        if self.total_buffered_amount() == 0 {
-            HandoverReadiness::READY
+        if !self.enable_handover_with_outstanding_data {
+            HandoverReadiness::SEND_QUEUE_NOT_EMPTY & !self.is_empty()
         } else {
-            HandoverReadiness::SEND_QUEUE_NOT_EMPTY
+            HandoverReadiness::READY
         }
     }
 
-    pub(crate) fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
-        state.tx.streams = self
-            .streams
+    pub(crate) fn add_to_handover_state(&self, now: SocketTime, state: &mut SocketHandoverState) {
+        state.tx.next_outgoing_message_id = u64::from(self.current_message_id.0);
+
+        let mut sorted_streams: Vec<_> = self.streams.iter().collect();
+        sorted_streams.sort_by_key(|&(stream_id, _)| *stream_id);
+
+        state.tx.streams = sorted_streams
             .iter()
-            .map(|(stream_id, s)| HandoverOutgoingStream {
+            .map(|&(stream_id, s)| HandoverOutgoingStream {
                 id: stream_id.0,
                 next_ssn: s.next_ssn.0,
                 next_unordered_mid: s.next_unordered_mid.0,
@@ -589,10 +599,45 @@ impl SendQueue {
                 priority: s.priority,
             })
             .collect();
+
+        state.tx.queued_messages = sorted_streams
+            .iter()
+            .flat_map(|&(stream_id, stream)| {
+                stream.items.iter().map(move |item| {
+                    let expires_in_ms =
+                        if item.attributes.expires_at == SocketTime::infinite_future() {
+                            None
+                        } else {
+                            Some(
+                                i32::try_from((item.attributes.expires_at - now).as_millis())
+                                    .unwrap_or(i32::MAX),
+                            )
+                        };
+                    HandoverStreamMessage {
+                        stream_id: stream_id.0,
+                        ppid: item.message.ppid.0,
+                        payload: item.message.payload.clone(),
+                        expires_in_ms,
+                        max_retransmissions: item.attributes.max_retransmissions,
+                        unordered: item.attributes.unordered,
+                        lifecycle_id: item.attributes.lifecycle_id.map_or(0, |id| id.value()),
+                        message_id: u64::from(item.message_id.0),
+                        remaining_offset: item.remaining_offset,
+                        mid: item.mid.map(|m| m.0),
+                        ssn: item.ssn.map(|s| s.0),
+                        fsn: item.current_fsn.0,
+                    }
+                })
+            })
+            .collect();
     }
 
-    pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
-        state.tx.streams.iter().for_each(|s| {
+    pub(crate) fn restore_from_state(&mut self, now: SocketTime, state: &SocketHandoverState) {
+        self.current_message_id = OutgoingMessageId(state.tx.next_outgoing_message_id as u32);
+        self.streams.clear();
+        self.buffered_amount.value = 0;
+
+        for s in &state.tx.streams {
             let stream_id = StreamId(s.id);
             let mut stream = SendQueue::make_stream(
                 stream_id,
@@ -604,7 +649,56 @@ impl SendQueue {
             stream.next_unordered_mid = Mid(s.next_unordered_mid);
             stream.next_ordered_mid = Mid(s.next_ordered_mid);
             self.streams.insert(stream_id, stream);
-        });
+        }
+
+        for msg in &state.tx.queued_messages {
+            let stream_id = StreamId(msg.stream_id);
+            let stream = self.streams.entry(stream_id).or_insert_with(|| {
+                SendQueue::make_stream(
+                    stream_id,
+                    self.default_priority,
+                    self.default_low_buffered_amount_low_threshold,
+                    Rc::clone(&self.events),
+                )
+            });
+
+            let expires_at = msg.expires_in_ms.map_or(SocketTime::infinite_future(), |ms| {
+                now + Duration::from_millis(ms.max(0) as u64)
+            });
+
+            let attributes = MessageAttributes {
+                unordered: msg.unordered,
+                max_retransmissions: msg.max_retransmissions,
+                expires_at,
+                lifecycle_id: LifecycleId::new(msg.lifecycle_id),
+            };
+
+            let payload_len = msg.payload.len();
+            let remaining_offset = msg.remaining_offset.min(payload_len);
+            let remaining_size = payload_len.saturating_sub(remaining_offset);
+
+            let item = Item {
+                message_id: OutgoingMessageId(msg.message_id as u32),
+                message: Message::new(stream_id, PpId(msg.ppid), msg.payload.clone()),
+                attributes,
+                remaining_offset,
+                remaining_size,
+                mid: msg.mid.map(Mid),
+                ssn: msg.ssn.map(Ssn),
+                current_fsn: Fsn(msg.fsn),
+            };
+
+            stream.buffered_amount += remaining_size;
+            self.buffered_amount += remaining_size;
+            stream.items.push_back(item);
+        }
+
+        for (stream_id, stream) in &self.streams {
+            if let Some(first_item) = stream.items.front() {
+                let priority = self.enable_message_interleaving.then_some(stream.priority);
+                self.scheduler.set_bytes_remaining(*stream_id, first_item.remaining_size, priority);
+            }
+        }
     }
 }
 
@@ -1401,10 +1495,14 @@ mod tests {
         assert!(q.get_handover_readiness().is_ready());
 
         let mut state = SocketHandoverState::default();
-        q.add_to_handover_state(&mut state);
+        q.add_to_handover_state(START_TIME, &mut state);
 
-        let mut q = SendQueue::new(MTU, &Options::default(), events);
-        q.restore_from_state(&state);
+        let mut q = SendQueue::new(
+            MTU,
+            &Options { enable_handover_with_outstanding_data: true, ..Options::default() },
+            events,
+        );
+        q.restore_from_state(START_TIME, &state);
         q
     }
 
@@ -1435,6 +1533,85 @@ mod tests {
 
         q.produce(START_TIME, MTU);
         assert!(q.get_handover_readiness().is_ready());
+    }
+
+    #[test]
+    fn is_handover_ready_with_pending_data_when_enabled() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..Options::default() };
+        let mut q = SendQueue::new(MTU, &options, make_events());
+        assert!(q.get_handover_readiness().is_ready());
+
+        add(&mut q, StreamId(2), PpId(53), vec![0; 1]);
+        assert!(q.get_handover_readiness().is_ready());
+
+        q.produce(START_TIME, MTU);
+        assert!(q.get_handover_readiness().is_ready());
+    }
+
+    #[test]
+    fn handover_persists_queued_messages() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..Options::default() };
+        let mut q = SendQueue::new(MTU, &options, make_events());
+        add(&mut q, StreamId(1), PpId(53), vec![1, 2, 3]);
+        add(&mut q, StreamId(2), PpId(54), vec![4, 5, 6, 7]);
+
+        let mut q2 = handover_queue(q, make_events());
+        assert_eq!(q2.total_buffered_amount(), 7);
+
+        let chunk1 = q2.produce(START_TIME, MTU).unwrap();
+        assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
+        assert_eq!(chunk1.data.ppid, PpId(53));
+        assert_eq!(chunk1.data.payload, vec![1, 2, 3]);
+        assert!(chunk1.data.is_beginning);
+        assert!(chunk1.data.is_end);
+
+        let chunk2 = q2.produce(START_TIME, MTU).unwrap();
+        assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(2)));
+        assert_eq!(chunk2.data.ppid, PpId(54));
+        assert_eq!(chunk2.data.payload, vec![4, 5, 6, 7]);
+        assert!(chunk2.data.is_beginning);
+        assert!(chunk2.data.is_end);
+
+        assert!(q2.produce(START_TIME, MTU).is_none());
+        assert_eq!(q2.total_buffered_amount(), 0);
+    }
+
+    #[test]
+    fn handover_persists_partially_produced_message() {
+        let options = Options { enable_handover_with_outstanding_data: true, ..Options::default() };
+        let mut q = SendQueue::new(MTU, &options, make_events());
+        add(&mut q, StreamId(1), PpId(53), vec![1, 2, 3, 4, 5, 6]);
+
+        let chunk1 = q.produce(START_TIME, 2).unwrap();
+        assert_eq!(chunk1.data.stream_key, StreamKey::Ordered(StreamId(1)));
+        assert_eq!(chunk1.data.payload, vec![1, 2]);
+        assert!(chunk1.data.is_beginning);
+        assert!(!chunk1.data.is_end);
+        assert_eq!(chunk1.data.fsn, Fsn(0));
+
+        let mut q2 = handover_queue(q, make_events());
+        assert_eq!(q2.total_buffered_amount(), 4);
+
+        let chunk2 = q2.produce(START_TIME, 2).unwrap();
+        assert_eq!(chunk2.data.stream_key, StreamKey::Ordered(StreamId(1)));
+        assert_eq!(chunk2.data.payload, vec![3, 4]);
+        assert!(!chunk2.data.is_beginning);
+        assert!(!chunk2.data.is_end);
+        assert_eq!(chunk2.data.fsn, Fsn(1));
+        assert_eq!(chunk2.data.mid, chunk1.data.mid);
+        assert_eq!(chunk2.data.ssn, chunk1.data.ssn);
+
+        let chunk3 = q2.produce(START_TIME, MTU).unwrap();
+        assert_eq!(chunk3.data.stream_key, StreamKey::Ordered(StreamId(1)));
+        assert_eq!(chunk3.data.payload, vec![5, 6]);
+        assert!(!chunk3.data.is_beginning);
+        assert!(chunk3.data.is_end);
+        assert_eq!(chunk3.data.fsn, Fsn(2));
+        assert_eq!(chunk3.data.mid, chunk1.data.mid);
+        assert_eq!(chunk3.data.ssn, chunk1.data.ssn);
+
+        assert!(q2.produce(START_TIME, MTU).is_none());
+        assert_eq!(q2.total_buffered_amount(), 0);
     }
 
     #[test]
@@ -1559,7 +1736,7 @@ mod tests {
         assert_eq!(chunk.data.ssn, Ssn(0));
 
         let mut state = SocketHandoverState::default();
-        q.add_to_handover_state(&mut state);
+        q.add_to_handover_state(START_TIME, &mut state);
 
         assert_eq!(state.tx.streams.len(), 1);
         let s = &state.tx.streams[0];
@@ -1567,7 +1744,7 @@ mod tests {
         assert_eq!(s.next_ssn, 1);
 
         let mut q2 = SendQueue::new(MTU, &Options::default(), make_events());
-        q2.restore_from_state(&state);
+        q2.restore_from_state(START_TIME, &state);
 
         // On the restored queue, consuming a new message should yield the next ssn.
         q2.add(

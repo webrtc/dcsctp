@@ -46,8 +46,6 @@ enum CongestionAlgorithmPhase {
     CongestionAvoidance,
 }
 
-const MAX_EXPIRY: Duration = Duration::from_secs(3600);
-
 #[derive(Debug, PartialEq)]
 pub enum HandleSackResult {
     Invalid,
@@ -95,6 +93,8 @@ pub struct RetransmissionQueue {
     /// Note that it also contains chunks that have been acked in gap ack blocks.
     outstanding_data: OutstandingData,
 
+    enable_handover_with_outstanding_data: bool,
+
     t3_rtx: Timer,
 
     events: Rc<RefCell<dyn EventSink>>,
@@ -129,6 +129,7 @@ impl RetransmissionQueue {
             rtx_bytes_count: 0,
             fast_recovery_exit_tsn: None,
             outstanding_data: OutstandingData::new(data_chunk_header_size, my_initial_tsn - 1),
+            enable_handover_with_outstanding_data: options.enable_handover_with_outstanding_data,
             t3_rtx: Timer::new(
                 options.rto_initial,
                 timer::BackoffAlgorithm::Exponential,
@@ -572,7 +573,7 @@ impl RetransmissionQueue {
                 max_bytes -= chunk_size;
 
                 let max_retransmissions = self.chunk_max_retransmissions(&chunk);
-                let expires_at = self.chunk_expires_at(now, &chunk);
+                let expires_at = self.chunk_expires_at(&chunk);
                 if let Some(tsn) = self.outstanding_data.insert(
                     chunk.message_id,
                     &chunk.data,
@@ -622,8 +623,8 @@ impl RetransmissionQueue {
         if self.partial_reliability { chunk.max_retransmissions } else { u16::MAX }
     }
 
-    fn chunk_expires_at(&self, now: SocketTime, chunk: &DataToSend) -> SocketTime {
-        if self.partial_reliability { chunk.expires_at } else { now + MAX_EXPIRY }
+    fn chunk_expires_at(&self, chunk: &DataToSend) -> SocketTime {
+        if self.partial_reliability { chunk.expires_at } else { SocketTime::infinite_future() }
     }
 
     /// Returns the internal state of all queued chunks. This is only used in unit-tests.
@@ -714,27 +715,39 @@ impl RetransmissionQueue {
     }
 
     pub(crate) fn get_handover_readiness(&self) -> HandoverReadiness {
-        HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA & !self.outstanding_data.is_empty()
-            | (HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
-                & self.fast_recovery_exit_tsn.is_some())
-            | (HandoverReadiness::RETRANSMISSION_QUEUE_NOT_EMPTY
-                & self.outstanding_data.has_data_to_be_retransmitted())
+        if !self.enable_handover_with_outstanding_data {
+            (HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
+                & !self.outstanding_data.is_empty())
+                | (HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
+                    & self.fast_recovery_exit_tsn.is_some())
+                | (HandoverReadiness::RETRANSMISSION_QUEUE_NOT_EMPTY
+                    & self.outstanding_data.has_data_to_be_retransmitted())
+        } else {
+            HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
+                & self.fast_recovery_exit_tsn.is_some()
+        }
     }
 
-    pub(crate) fn add_to_handover_state(&self, state: &mut SocketHandoverState) {
+    pub(crate) fn add_to_handover_state(&self, now: SocketTime, state: &mut SocketHandoverState) {
         state.tx.next_tsn = self.next_tsn().0;
         state.tx.cwnd = self.cwnd as u32;
-        state.tx.a_rwnd = self.a_rwnd as u32;
+        state.tx.rwnd = self.a_rwnd as u32;
         state.tx.ssthresh = self.ssthresh as u32;
         state.tx.partial_bytes_acked = self.partial_bytes_acked as u32;
+        self.outstanding_data.add_to_handover_state(now, state);
     }
 
-    pub(crate) fn restore_from_state(&mut self, state: &SocketHandoverState) {
-        self.outstanding_data.reset_sequence_numbers(Tsn(state.tx.next_tsn.wrapping_sub(1)));
+    pub(crate) fn restore_from_state(&mut self, now: SocketTime, state: &SocketHandoverState) {
         self.cwnd = state.tx.cwnd as usize;
-        self.a_rwnd = state.tx.a_rwnd as usize;
+        self.a_rwnd = state.tx.rwnd as usize;
         self.ssthresh = state.tx.ssthresh as usize;
         self.partial_bytes_acked = state.tx.partial_bytes_acked as usize;
+        if self.enable_handover_with_outstanding_data {
+            self.outstanding_data.restore_from_state(now, state);
+            self.start_t3_rtx_if_outstanding_data(now);
+        } else {
+            self.outstanding_data.reset_sequence_numbers(Tsn(state.tx.next_tsn.wrapping_sub(1)));
+        }
     }
 }
 
@@ -768,7 +781,8 @@ mod tests {
         Rc::new(RefCell::new(Events::new()))
     }
 
-    fn create_queue(
+    fn create_queue_with_options(
+        options: &Options,
         supports_partial_reliability: bool,
         use_message_interleaving: bool,
         events: Rc<RefCell<Events>>,
@@ -777,9 +791,22 @@ mod tests {
             events,
             Tsn(10),
             A_RWND,
-            &Options::default(),
+            options,
             supports_partial_reliability,
             use_message_interleaving,
+        )
+    }
+
+    fn create_queue(
+        supports_partial_reliability: bool,
+        use_message_interleaving: bool,
+        events: Rc<RefCell<Events>>,
+    ) -> RetransmissionQueue {
+        create_queue_with_options(
+            &Options { enable_handover_with_outstanding_data: true, ..Options::default() },
+            supports_partial_reliability,
+            use_message_interleaving,
+            events,
         )
     }
 
@@ -2381,6 +2408,39 @@ mod tests {
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+        let mut rtx = create_queue_with_options(
+            &Options::default(),
+            /* supports_partial_reliability */ true,
+            false,
+            events,
+        );
+
+        assert!(rtx.get_handover_readiness().is_ready());
+        add_message(&mut sq, now);
+
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, 1500, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10)]
+        );
+        assert_eq!(
+            rtx.get_handover_readiness(),
+            HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
+        );
+
+        handle_sack(&mut rtx, now, Tsn(10));
+        assert!(rtx.get_handover_readiness().is_ready());
+    }
+
+    #[test]
+    fn ready_for_handover_with_outstanding_data() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(
+            MTU,
+            &Options { enable_handover_with_outstanding_data: true, ..Options::default() },
+            events_clone,
+        );
         let mut rtx = create_queue(/* supports_partial_reliability */ true, false, events);
 
         assert!(rtx.get_handover_readiness().is_ready());
@@ -2390,10 +2450,7 @@ mod tests {
             get_tsns(&rtx.get_chunks_to_send(now, 1500, |bytes, _| sq.produce(now, bytes))),
             [Tsn(10)]
         );
-        assert!(
-            rtx.get_handover_readiness()
-                .contains(HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA)
-        );
+        assert!(rtx.get_handover_readiness().is_ready());
 
         handle_sack(&mut rtx, now, Tsn(10));
         assert!(rtx.get_handover_readiness().is_ready());
@@ -2416,10 +2473,7 @@ mod tests {
             get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
             [Tsn(10), Tsn(11), Tsn(12), Tsn(13), Tsn(14), Tsn(15), Tsn(16), Tsn(17)]
         );
-        assert_eq!(
-            rtx.get_handover_readiness(),
-            HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
-        );
+        assert!(rtx.get_handover_readiness().is_ready());
 
         // Send more chunks, but leave some as gaps to force retransmission after three NACKs.
         add_message(&mut sq, now);
@@ -2477,18 +2531,15 @@ mod tests {
 
         assert_eq!(
             rtx.get_handover_readiness(),
-            HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
-                | HandoverReadiness::RETRANSMISSION_QUEUE_NOT_EMPTY
-                | HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
+            HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
         );
 
         // This will trigger "fast retransmit" mode and only chunks 13 and 16 will be resent.
-        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), vec![Tsn(13), Tsn(16)]);
+        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), [Tsn(13), Tsn(16)]);
 
         assert_eq!(
             rtx.get_handover_readiness(),
-            HandoverReadiness::RETRANSMISSION_QUEUE_OUTSTANDING_DATA
-                | HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
+            HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY
         );
 
         handle_sack(&mut rtx, now, Tsn(20));
@@ -2497,14 +2548,15 @@ mod tests {
 
     fn handover_queue(
         rtx: RetransmissionQueue,
+        now: SocketTime,
         events: Rc<RefCell<Events>>,
     ) -> RetransmissionQueue {
         assert!(rtx.get_handover_readiness().is_ready());
         let mut state = SocketHandoverState::default();
-        rtx.add_to_handover_state(&mut state);
+        rtx.add_to_handover_state(now, &mut state);
 
         let mut rtx = create_queue(false, false, events);
-        rtx.restore_from_state(&state);
+        rtx.restore_from_state(now, &state);
         rtx
     }
 
@@ -2528,7 +2580,7 @@ mod tests {
 
         handle_sack(&mut rtx, now, Tsn(11));
 
-        let mut rtx = handover_queue(rtx, Rc::clone(&events));
+        let mut rtx = handover_queue(rtx, now, Rc::clone(&events));
         add_message(&mut sq, now);
         add_message(&mut sq, now);
         add_message(&mut sq, now);
@@ -2543,6 +2595,85 @@ mod tests {
             rtx.get_chunk_states_for_testing(),
             [(Tsn(13), ChunkState::Acked), (Tsn(14), ChunkState::InFlight),]
         );
+    }
+
+    #[test]
+    fn handover_persists_unacked_outstanding_data() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let options = Options { enable_handover_with_outstanding_data: true, ..Options::default() };
+        let mut sq = SendQueue::new(MTU, &options, events_clone);
+        let mut rtx = create_queue(false, false, Rc::clone(&events));
+
+        add_message(&mut sq, now);
+        add_message(&mut sq, now);
+
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10), Tsn(11)]
+        );
+        assert_eq!(rtx.unacked_items(), 2);
+
+        let mut rtx = handover_queue(rtx, now, Rc::clone(&events));
+        assert_eq!(rtx.unacked_items(), 0);
+        assert_eq!(
+            rtx.get_chunk_states_for_testing(),
+            [
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::ToBeRetransmitted)
+            ]
+        );
+
+        handle_sack(&mut rtx, now, Tsn(11));
+        assert_eq!(rtx.unacked_items(), 0);
+        assert_eq!(rtx.get_chunk_states_for_testing(), [(Tsn(11), ChunkState::Acked)]);
+    }
+
+    #[test]
+    fn handover_persists_nacked_and_retransmitted_outstanding_data() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let options = Options { enable_handover_with_outstanding_data: true, ..Options::default() };
+        let mut sq = SendQueue::new(MTU, &options, events_clone);
+        let mut rtx = create_queue(false, false, Rc::clone(&events));
+
+        add_message(&mut sq, now);
+        add_message(&mut sq, now);
+        add_message(&mut sq, now);
+
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10), Tsn(11), Tsn(12)]
+        );
+
+        // Ack TSN 11 with gap ack block (10 is nacked, 11 is acked, 12 in flight)
+        rtx.handle_sack(
+            now,
+            &SackChunk {
+                cumulative_tsn_ack: Tsn(9),
+                a_rwnd: A_RWND,
+                gap_ack_blocks: vec![GapAckBlock::new(2, 2)],
+                duplicate_tsns: vec![],
+            },
+        );
+
+        let mut rtx = handover_queue(rtx, now, Rc::clone(&events));
+        assert_eq!(
+            rtx.get_chunk_states_for_testing(),
+            [
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::Acked),
+                (Tsn(12), ChunkState::ToBeRetransmitted)
+            ]
+        );
+
+        handle_sack(&mut rtx, now, Tsn(12));
+        assert_eq!(rtx.unacked_items(), 0);
+        assert!(rtx.outstanding_data.is_empty());
     }
 
     #[test]
