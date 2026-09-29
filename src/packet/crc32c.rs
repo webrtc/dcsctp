@@ -64,11 +64,11 @@ impl Crc32c {
 
     pub fn digest(&mut self, data: &[u8]) {
         let mut crc = self.0;
-        let mut iter = data.chunks_exact(8);
+        let (chunks, remainder) = data.as_chunks::<8>();
 
         // Process 8 bytes at a time.
-        for chunk in iter.by_ref() {
-            let current_chunk = u64::from_le_bytes(chunk.try_into().unwrap());
+        for &chunk in chunks {
+            let current_chunk = u64::from_le_bytes(chunk);
             let idx = (crc as u64) ^ current_chunk;
 
             crc = CRC32C_LOOKUP_TABLE[7][(idx as u8) as usize]
@@ -82,7 +82,7 @@ impl Crc32c {
         }
 
         // Process remaining bytes.
-        for &byte in iter.remainder() {
+        for &byte in remainder {
             crc = (crc >> 8) ^ CRC32C_LOOKUP_TABLE[0][((crc ^ byte as u32) & 0xff) as usize];
         }
 

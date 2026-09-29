@@ -66,7 +66,9 @@ impl TryFrom<RawChunk<'_>> for ForwardTsnChunk {
         let new_cumulative_tsn = Tsn(read_u32_be!(&raw.value[0..4]));
 
         let skipped_streams = raw.value[4..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| {
                 let stream_id = StreamId(read_u16_be!(&c[0..2]));
                 let ssn = Ssn(read_u16_be!(&c[2..4]));
@@ -83,8 +85,8 @@ impl SerializableTlv for ForwardTsnChunk {
         let value = write_chunk_header(CHUNK_TYPE, 0, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.new_cumulative_tsn.0);
 
-        let mut chunks = value[4..].chunks_exact_mut(4);
-        for (skipped, chunk) in self.skipped_streams.iter().zip(&mut chunks) {
+        let (chunks, _) = value[4..].as_chunks_mut::<4>();
+        for (skipped, chunk) in self.skipped_streams.iter().zip(chunks) {
             match skipped {
                 SkippedStream::ForwardTsn(stream_id, ssn) => {
                     write_u16_be!(&mut chunk[0..2], stream_id.0);

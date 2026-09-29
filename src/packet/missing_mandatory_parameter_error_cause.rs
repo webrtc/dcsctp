@@ -61,7 +61,8 @@ impl TryFrom<RawParameter<'_>> for MissingMandatoryParameterErrorCause {
         let num_params = read_u32_be!(&raw.value[0..4]) as usize;
         ensure!(raw.value.len() == 4 + num_params * 2, ChunkParseError::InvalidLength);
 
-        let missing_parameters = raw.value[4..].chunks_exact(2).map(|c| read_u16_be!(c)).collect();
+        let missing_parameters =
+            raw.value[4..].as_chunks::<2>().0.iter().map(|c| read_u16_be!(c)).collect();
         Ok(Self { missing_parameters })
     }
 }
@@ -70,7 +71,7 @@ impl SerializableTlv for MissingMandatoryParameterErrorCause {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_parameter_header(CAUSE_CODE, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.missing_parameters.len() as u32);
-        let chunks = value[4..].chunks_exact_mut(2);
+        let (chunks, _) = value[4..].as_chunks_mut::<2>();
         for (&param_type, chunk) in self.missing_parameters.iter().zip(chunks) {
             write_u16_be!(chunk, param_type);
         }

@@ -66,7 +66,8 @@ impl TryFrom<RawParameter<'_>> for OutgoingSsnResetRequestParameter {
             ChunkParseError::InvalidLength
         );
 
-        let streams = raw.value[12..].chunks_exact(2).map(|c| StreamId(read_u16_be!(c))).collect();
+        let streams =
+            raw.value[12..].as_chunks::<2>().0.iter().map(|c| StreamId(read_u16_be!(c))).collect();
 
         Ok(Self {
             request_seq_nbr: read_u32_be!(&raw.value[0..4]),
@@ -83,8 +84,8 @@ impl SerializableTlv for OutgoingSsnResetRequestParameter {
         write_u32_be!(&mut value[0..4], self.request_seq_nbr);
         write_u32_be!(&mut value[4..8], self.response_seq_nbr);
         write_u32_be!(&mut value[8..12], self.sender_last_assigned_tsn.0);
-        let mut chunks = value[12..].chunks_exact_mut(2);
-        for (stream_id, chunk) in self.streams.iter().zip(&mut chunks) {
+        let (chunks, _) = value[12..].as_chunks_mut::<2>();
+        for (stream_id, chunk) in self.streams.iter().zip(chunks) {
             write_u16_be!(chunk, stream_id.0);
         }
     }
