@@ -60,7 +60,8 @@ impl TryFrom<RawParameter<'_>> for IncomingSsnResetRequestParameter {
         );
 
         let request_seq_nbr = read_u32_be!(&raw.value[0..4]);
-        let streams = raw.value[4..].chunks_exact(2).map(|c| StreamId(read_u16_be!(c))).collect();
+        let streams =
+            raw.value[4..].as_chunks::<2>().0.iter().map(|c| StreamId(read_u16_be!(c))).collect();
 
         Ok(Self { request_seq_nbr, streams })
     }
@@ -70,8 +71,8 @@ impl SerializableTlv for IncomingSsnResetRequestParameter {
     fn serialize_to(&self, output: &mut [u8]) {
         let value = write_parameter_header(PARAMETER_TYPE, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.request_seq_nbr);
-        let mut chunks = value[4..].chunks_exact_mut(2);
-        for (stream_id, chunk) in self.streams.iter().zip(&mut chunks) {
+        let (chunks, _) = value[4..].as_chunks_mut::<2>();
+        for (stream_id, chunk) in self.streams.iter().zip(chunks) {
             write_u16_be!(chunk, stream_id.0);
         }
     }

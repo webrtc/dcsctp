@@ -99,7 +99,9 @@ impl TryFrom<RawChunk<'_>> for SackChunk {
         let duplicate_tsns_data = &raw.value[gap_blocks_end..];
 
         let gap_ack_blocks = gap_ack_blocks_data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| {
                 let start = read_u16_be!(&c[0..2]);
                 let end = read_u16_be!(&c[2..4]);
@@ -108,7 +110,7 @@ impl TryFrom<RawChunk<'_>> for SackChunk {
             .collect();
 
         let duplicate_tsns =
-            duplicate_tsns_data.chunks_exact(4).map(|c| Tsn(read_u32_be!(c))).collect();
+            duplicate_tsns_data.as_chunks::<4>().0.iter().map(|c| Tsn(read_u32_be!(c))).collect();
 
         Ok(Self { cumulative_tsn_ack, a_rwnd, gap_ack_blocks, duplicate_tsns })
     }
@@ -124,14 +126,14 @@ impl SerializableTlv for SackChunk {
 
         let gap_blocks_end = 12 + self.gap_ack_blocks.len() * 4;
 
-        let mut chunks = value[12..gap_blocks_end].chunks_exact_mut(4);
-        for (block, chunk) in self.gap_ack_blocks.iter().zip(&mut chunks) {
+        let (chunks, _) = value[12..gap_blocks_end].as_chunks_mut::<4>();
+        for (block, chunk) in self.gap_ack_blocks.iter().zip(chunks) {
             write_u16_be!(&mut chunk[0..2], block.start);
             write_u16_be!(&mut chunk[2..4], block.end);
         }
 
-        let mut chunks = value[gap_blocks_end..].chunks_exact_mut(4);
-        for (dup_tsn, chunk) in self.duplicate_tsns.iter().zip(&mut chunks) {
+        let (chunks, _) = value[gap_blocks_end..].as_chunks_mut::<4>();
+        for (dup_tsn, chunk) in self.duplicate_tsns.iter().zip(chunks) {
             write_u32_be!(chunk, dup_tsn.0);
         }
     }
