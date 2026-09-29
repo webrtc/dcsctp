@@ -4056,6 +4056,7 @@ mod tests {
                 is_end: true,
                 ..Default::default()
             },
+            immediate_ack: false,
         }))
         .build();
         socket_a.handle_input(&packet);
@@ -4108,6 +4109,7 @@ mod tests {
                 is_end: true,
                 ..Default::default()
             },
+            immediate_ack: false,
         }))
         .build();
         socket_a.handle_input(&packet);
@@ -4207,5 +4209,52 @@ mod tests {
         // would have jumped, and this legitimate DATA packet would have been dropped as duplicate.
         let msg = socket_a.get_next_message().expect("Message should be received");
         assert_eq!(msg.payload, b"hello");
+    }
+
+    #[test]
+    fn sends_immediate_sack_when_i_bit_is_set() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // First DATA chunk triggers an immediate SACK.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), b"hello".to_vec()), &SendOptions::default())
+            .unwrap();
+        let packet1 = expect_sent_packet!(socket_a.poll_event());
+        socket_z.handle_input(&packet1);
+        let sack1 = expect_sent_packet!(socket_z.poll_event());
+        let sack1_parsed = SctpPacket::from_bytes(&sack1, &options).unwrap();
+        assert!(matches!(sack1_parsed.chunks[0], Chunk::Sack(_)));
+        socket_a.handle_input(&sack1);
+
+        // Second DATA chunk would normally delay the SACK, but setting immediate_ack: true
+        // triggers an immediate SACK.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), b"world".to_vec()), &SendOptions::default())
+            .unwrap();
+        let packet2 = expect_sent_packet!(socket_a.poll_event());
+        let mut packet2_parsed = SctpPacket::from_bytes(&packet2, &options).unwrap();
+        let Chunk::Data(mut data_chunk) = packet2_parsed.chunks.remove(0) else {
+            panic!("Expected DATA chunk");
+        };
+        assert!(!data_chunk.immediate_ack);
+        data_chunk.immediate_ack = true;
+
+        let packet2_with_i_bit = SctpPacketBuilder::new(
+            socket_z.verification_tag(),
+            options.local_port,
+            options.remote_port,
+            options.mtu,
+        )
+        .add(&Chunk::Data(data_chunk))
+        .build();
+
+        socket_z.handle_input(&packet2_with_i_bit);
+        let sack2 = expect_sent_packet!(socket_z.poll_event());
+        let sack2_parsed = SctpPacket::from_bytes(&sack2, &options).unwrap();
+        assert!(matches!(sack2_parsed.chunks[0], Chunk::Sack(_)));
+        assert_eq!(socket_z.poll_timeout(), SocketTime::infinite_future());
     }
 }

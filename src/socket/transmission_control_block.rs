@@ -149,9 +149,9 @@ impl TransmissionControlBlock {
 
     pub fn make_data_chunk(&self, tsn: Tsn, data: Data) -> Chunk {
         if self.capabilities.message_interleaving {
-            Chunk::IData(IDataChunk { data, tsn })
+            Chunk::IData(IDataChunk { data, tsn, immediate_ack: false })
         } else {
-            Chunk::Data(DataChunk { data, tsn })
+            Chunk::Data(DataChunk { data, tsn, immediate_ack: false })
         }
     }
 
