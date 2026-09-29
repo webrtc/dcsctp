@@ -13,28 +13,28 @@ libfuzzer-sys = { workspace = true }
 workspace = true
 
 [[bin]]
-name = "parse_parameters"
+name = "parse-parameters"
 path = "fuzz_targets/parse_parameters.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "parse_error_causes"
+name = "parse-error-causes"
 path = "fuzz_targets/parse_error_causes.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "parse_packet"
+name = "parse-packet"
 path = "fuzz_targets/parse_packet.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_outstanding_data"
+name = "fuzz-outstanding-data"
 path = "fuzz_targets/fuzz_outstanding_data.rs"
 test = false
 doc = false
