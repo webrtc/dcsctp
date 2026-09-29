@@ -57,11 +57,13 @@ pub(crate) const HEADER_SIZE: usize = 16;
 pub struct DataChunk {
     pub tsn: Tsn,
     pub data: Data,
+    pub immediate_ack: bool,
 }
 
 const FLAGS_BIT_END: i8 = 0;
 const FLAGS_BIT_BEGINNING: i8 = 1;
 const FLAGS_BIT_UNORDERED: i8 = 2;
+const FLAGS_BIT_IMMEDIATE_ACK: i8 = 3;
 
 impl TryFrom<RawChunk<'_>> for DataChunk {
     type Error = ChunkParseError;
@@ -82,8 +84,9 @@ impl TryFrom<RawChunk<'_>> for DataChunk {
             is_end: (raw.flags & (1 << FLAGS_BIT_END)) != 0,
             ..Default::default()
         };
+        let immediate_ack = (raw.flags & (1 << FLAGS_BIT_IMMEDIATE_ACK)) != 0;
 
-        Ok(Self { tsn, data })
+        Ok(Self { tsn, data, immediate_ack })
     }
 }
 
@@ -98,6 +101,9 @@ impl SerializableTlv for DataChunk {
         }
         if self.data.stream_key.is_unordered() {
             flags |= 1 << FLAGS_BIT_UNORDERED;
+        }
+        if self.immediate_ack {
+            flags |= 1 << FLAGS_BIT_IMMEDIATE_ACK;
         }
         let value = write_chunk_header(CHUNK_TYPE, flags, self.value_size(), output);
         write_u32_be!(&mut value[0..4], self.tsn.0);
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(c.data.ppid, PpId(53));
         assert!(c.data.is_beginning);
         assert!(c.data.is_end);
+        assert!(!c.immediate_ack);
         assert_eq!(c.data.payload, vec![0, 1, 2, 3]);
     }
 
@@ -176,6 +183,7 @@ mod tests {
                 payload: vec![1, 2, 3, 4, 5],
                 ..Default::default()
             },
+            immediate_ack: true,
         };
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
@@ -187,6 +195,7 @@ mod tests {
         assert_eq!(deserialized.data.ssn, Ssn(789));
         assert_eq!(deserialized.data.ppid, PpId(9090));
         assert_eq!(deserialized.data.payload, vec![1, 2, 3, 4, 5]);
+        assert!(deserialized.immediate_ack);
 
         assert_eq!(
             deserialized.to_string(),

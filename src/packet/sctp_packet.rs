@@ -475,6 +475,7 @@ mod tests {
                 payload: vec![1, 2, 3, 4, 5],
                 ..Default::default()
             },
+            immediate_ack: false,
         }));
         b.add(&Chunk::Data(DataChunk {
             tsn: Tsn(124),
@@ -485,6 +486,7 @@ mod tests {
                 payload: vec![5, 4, 3, 2, 1],
                 ..Default::default()
             },
+            immediate_ack: false,
         }));
         let serialized = b.build();
 
@@ -571,6 +573,7 @@ mod tests {
         builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(1),
             data: Data { payload: payload.clone(), ..Default::default() },
+            immediate_ack: false,
         }));
         let chunk1_size = round_up_to_4!(data_chunk::HEADER_SIZE + payload.len());
         assert_eq!(
@@ -583,6 +586,7 @@ mod tests {
         builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(2),
             data: Data { payload: payload.clone(), ..Default::default() },
+            immediate_ack: false,
         }));
         let chunk2_size = round_up_to_4!(data_chunk::HEADER_SIZE + payload.len());
         assert_eq!(

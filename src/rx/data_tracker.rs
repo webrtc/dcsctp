@@ -774,6 +774,32 @@ mod tests {
     }
 
     #[test]
+    fn sends_sack_when_immediate_ack_is_set() {
+        let now = START_TIME;
+        let mut d = DataTracker::new(INITIAL_TSN, &Options::default());
+
+        d.observe(now, Tsn(11), false);
+        d.observe_packet_end(now);
+        assert!(d.next_timeout().is_none());
+        assert!(d.should_send_ack(now, false));
+
+        d.observe(now, Tsn(12), true);
+        d.observe_packet_end(now);
+        assert!(d.next_timeout().is_none());
+        assert!(d.should_send_ack(now, false));
+
+        d.observe(now, Tsn(13), false);
+        d.observe_packet_end(now);
+        assert!(d.next_timeout().is_some());
+        assert!(!d.should_send_ack(now, false));
+
+        d.observe(now, Tsn(14), true);
+        d.observe_packet_end(now);
+        assert!(d.next_timeout().is_none());
+        assert!(d.should_send_ack(now, false));
+    }
+
+    #[test]
     fn sends_sack_every_packet_on_packet_loss() {
         let now = START_TIME;
         let mut d = DataTracker::new(INITIAL_TSN, &Options::default());

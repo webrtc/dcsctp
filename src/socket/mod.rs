@@ -511,9 +511,16 @@ impl DcSctpSocket for Socket {
                         break;
                     }
                     match chunk {
-                        Chunk::Data(DataChunk { tsn, data })
-                        | Chunk::IData(IDataChunk { tsn, data }) => {
-                            handle_data(&mut self.state, &mut self.ctx, now, tsn, data);
+                        Chunk::Data(DataChunk { tsn, data, immediate_ack })
+                        | Chunk::IData(IDataChunk { tsn, data, immediate_ack }) => {
+                            handle_data(
+                                &mut self.state,
+                                &mut self.ctx,
+                                now,
+                                tsn,
+                                data,
+                                immediate_ack,
+                            );
                         }
                         Chunk::Init(c) => handle_init(&mut self.state, &mut self.ctx, c),
                         Chunk::InitAck(c) => {

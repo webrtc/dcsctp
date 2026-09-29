@@ -39,6 +39,7 @@ pub(crate) fn handle_data(
     now: SocketTime,
     tsn: Tsn,
     data: Data,
+    immediate_ack: bool,
 ) {
     if data.payload.is_empty() {
         ctx.events.borrow_mut().add(SocketEvent::OnError(
@@ -78,7 +79,7 @@ pub(crate) fn handle_data(
         // TODO: Implement
         return;
     }
-    if tcb.data_tracker.observe(now, tsn, false) {
+    if tcb.data_tracker.observe(now, tsn, immediate_ack) {
         tcb.reassembly_queue.add(tsn, data);
     }
 }
