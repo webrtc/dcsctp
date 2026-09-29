@@ -171,7 +171,7 @@ fn maybe_send_fast_retransmit(state: &mut State, ctx: &mut Context, now: SocketT
     let chunks =
         tcb.retransmission_queue.get_chunks_for_fast_retransmit(now, builder.bytes_remaining());
     for (tsn, data) in chunks {
-        builder.add(&tcb.make_data_chunk(tsn, data));
+        builder.add(&tcb.make_data_chunk(tsn, data, false));
     }
 
     debug_assert!(!builder.is_empty());

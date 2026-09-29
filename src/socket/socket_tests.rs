@@ -4257,4 +4257,125 @@ mod tests {
         assert!(matches!(sack2_parsed.chunks[0], Chunk::Sack(_)));
         assert_eq!(socket_z.poll_timeout(), SocketTime::infinite_future());
     }
+
+    #[test]
+    fn low_congestion_window_sets_isack_bit() {
+        // This test verifies the option `immediate_sack_under_cwnd_mtus`.
+        let options = Options {
+            cwnd_mtus_initial: 4,
+            immediate_sack_under_cwnd_mtus: 2,
+            ..default_options()
+        };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &default_options());
+
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(
+            socket_a.get_metrics().unwrap().cwnd_bytes,
+            options.cwnd_mtus_initial * options.mtu
+        );
+
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 1]), &SendOptions::default())
+            .unwrap();
+
+        // Drop the first packet, and let T3-rtx fire, which lowers cwnd.
+        let packet1 = expect_sent_packet!(socket_a.poll_event());
+        let packet1 = SctpPacket::from_bytes(&packet1, &options).unwrap();
+        assert_eq!(packet1.chunks.len(), 1);
+        assert!(matches!(
+            &packet1.chunks[0],
+            Chunk::Data(DataChunk {
+                data: Data { stream_key: StreamKey::Ordered(StreamId(1)), .. },
+                immediate_ack: false,
+                ..
+            })
+        ));
+
+        let now = SocketTime::zero() + options.rto_initial;
+        socket_a.advance_time(now);
+        socket_z.advance_time(now);
+        assert_eq!(socket_a.get_metrics().unwrap().cwnd_bytes, options.mtu);
+
+        // Observe that the retransmission will have the I-SACK bit set.
+        let packet2 = expect_sent_packet!(socket_a.poll_event());
+        socket_z.handle_input(&packet2);
+        let packet2 = SctpPacket::from_bytes(&packet2, &options).unwrap();
+        assert_eq!(packet2.chunks.len(), 1);
+        assert!(matches!(
+            &packet2.chunks[0],
+            Chunk::Data(DataChunk {
+                data: Data { stream_key: StreamKey::Ordered(StreamId(1)), .. },
+                immediate_ack: true,
+                ..
+            })
+        ));
+
+        // The receiver immediately SACKS. It would even without this bit set.
+        let packet3 = expect_sent_packet!(socket_z.poll_event());
+        socket_a.handle_input(&packet3);
+        let packet3 = SctpPacket::from_bytes(&packet3, &options).unwrap();
+        assert_eq!(packet3.chunks.len(), 1);
+        assert!(matches!(&packet3.chunks[0], Chunk::Sack(_)));
+
+        // Next sent chunk will also have the i-sack set, as cwnd is low.
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![0; 20 * options.mtu]),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 1]), &SendOptions::default())
+            .unwrap();
+
+        // Observe that the retransmission will have the I-SACK bit set.
+        let packet4 = expect_sent_packet!(socket_a.poll_event());
+        socket_z.handle_input(&packet4);
+        let packet4 = SctpPacket::from_bytes(&packet4, &options).unwrap();
+        assert_eq!(packet4.chunks.len(), 1);
+        assert!(matches!(
+            &packet4.chunks[0],
+            Chunk::Data(DataChunk {
+                data: Data { stream_key: StreamKey::Ordered(StreamId(1)), .. },
+                immediate_ack: true,
+                ..
+            })
+        ));
+
+        // The receiver would normally delay this sack, but now it's sent directly.
+        let packet5 = expect_sent_packet!(socket_z.poll_event());
+        socket_a.handle_input(&packet5);
+        let packet5 = SctpPacket::from_bytes(&packet5, &options).unwrap();
+        assert_eq!(packet5.chunks.len(), 1);
+        assert!(matches!(&packet5.chunks[0], Chunk::Sack(_)));
+
+        // Transfer the rest of the message.
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        // This will grow the cwnd, as the message was large.
+        assert!(
+            socket_a.get_metrics().unwrap().cwnd_bytes
+                > options.immediate_sack_under_cwnd_mtus * options.mtu
+        );
+
+        // Future chunks will then not have the I-SACK bit set.
+        socket_a
+            .send(Message::new(StreamId(1), PpId(51), vec![0; 1]), &SendOptions::default())
+            .unwrap();
+
+        let packet6 = expect_sent_packet!(socket_a.poll_event());
+        let packet6 = SctpPacket::from_bytes(&packet6, &options).unwrap();
+        assert_eq!(packet6.chunks.len(), 1);
+        assert!(matches!(
+            &packet6.chunks[0],
+            Chunk::Data(DataChunk {
+                data: Data { stream_key: StreamKey::Ordered(StreamId(1)), .. },
+                immediate_ack: false,
+                ..
+            })
+        ));
+    }
 }

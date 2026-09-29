@@ -396,6 +396,14 @@ pub struct Options {
     /// creating small fragmented packets.
     pub avoid_fragmentation_cwnd_mtus: usize,
 
+    /// When the congestion window is below this number of MTUs, sent data chunks will have the "I"
+    /// (Immediate SACK - RFC 7053) bit set. That will prevent the receiver from delaying the SACK,
+    /// which results in shorter time until the sender can send the next packet as it's driven by
+    /// SACKs. This can reduce latency for low utilized and lossy connections.
+    ///
+    /// Default value set to be same as initial congestion window. Set to zero to disable.
+    pub immediate_sack_under_cwnd_mtus: usize,
+
     /// The number of packets that may be sent at once. This is limited to avoid bursts that too
     /// quickly fill the send buffer. Typically in a a socket in its "slow start" phase (when it
     /// sends as much as it can), it will send up to three packets for every SACK received, so the
@@ -473,6 +481,7 @@ impl Default for Options {
             cwnd_mtus_initial: 10,
             cwnd_mtus_min: 4,
             avoid_fragmentation_cwnd_mtus: 6,
+            immediate_sack_under_cwnd_mtus: 10,
             max_burst: 4,
             max_retransmissions: Some(10),
             max_init_retransmits: Some(8),

@@ -152,8 +152,10 @@ impl Context {
                     self.heartbeat_interval.start(now);
                 }
 
+                let set_immediate_sack_bit = tcb.retransmission_queue.cwnd()
+                    < (self.options.immediate_sack_under_cwnd_mtus * self.options.mtu);
                 for (tsn, data) in chunks {
-                    builder.add(&tcb.make_data_chunk(tsn, data));
+                    builder.add(&tcb.make_data_chunk(tsn, data, set_immediate_sack_bit));
                 }
             }
 
