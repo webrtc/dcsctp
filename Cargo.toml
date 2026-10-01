@@ -12,7 +12,7 @@ cxx = "1.0"
 cxx-build = "1.0"
 dcsctp = { path = "." }
 fastrand = "2.3"
-itertools = "0.14"
+itertools = "0.15"
 libfuzzer-sys = "0.4"
 log = "0.4"
 thiserror = "2.0"
