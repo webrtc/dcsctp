@@ -44,7 +44,7 @@ impl SocketTime {
 impl Add<Duration> for SocketTime {
     type Output = SocketTime;
     fn add(self, rhs: Duration) -> SocketTime {
-        SocketTime(self.0 + rhs)
+        SocketTime(self.0.saturating_add(rhs))
     }
 }
 

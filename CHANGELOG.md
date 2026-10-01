@@ -11,6 +11,7 @@ and this project adheres to
 ### Fixed
 
  - Defer incoming data for all streams when resetting all streams with an empty stream list
+ - Prevent potential integer overflows and underflows in various places
 
 ## 0.1.15 - 2026-10-01
 
