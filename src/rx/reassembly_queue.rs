@@ -111,7 +111,8 @@ impl ReassemblyQueue {
     pub fn add(&mut self, tsn: Tsn, data: Data) {
         if let Some(deferred_stream) = &mut self.deferred_reset_streams {
             if tsn.greater_than(deferred_stream.sender_last_assigned_tsn)
-                && deferred_stream.streams.contains(&data.stream_key.id())
+                && (deferred_stream.streams.is_empty()
+                    || deferred_stream.streams.contains(&data.stream_key.id()))
             {
                 self.deferred_bytes += data.payload.len();
                 deferred_stream.deferred_operations.push(DeferredOperation::Data(tsn, data));

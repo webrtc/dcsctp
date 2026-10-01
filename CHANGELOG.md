@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
+ - Defer incoming data for all streams when resetting all streams with an empty stream list
+
 ## 0.1.15 - 2026-10-01
 
 ### Added
