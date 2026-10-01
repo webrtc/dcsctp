@@ -42,7 +42,7 @@ impl TxErrorCounter {
     pub fn increment(&mut self) {
         match self.limit {
             Some(limit) if self.error_counter <= limit => {
-                self.error_counter += 1;
+                self.error_counter = self.error_counter.saturating_add(1);
             }
             _ => {}
         }
@@ -153,7 +153,7 @@ impl Context {
                 }
 
                 let set_immediate_sack_bit = tcb.retransmission_queue.cwnd()
-                    < (self.options.immediate_sack_under_cwnd_mtus * self.options.mtu);
+                    < self.options.immediate_sack_under_cwnd_mtus.saturating_mul(self.options.mtu);
                 for (tsn, data) in chunks {
                     builder.add(&tcb.make_data_chunk(tsn, data, set_immediate_sack_bit));
                 }

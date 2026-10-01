@@ -200,9 +200,9 @@ impl SctpPacketBuilder {
     pub fn bytes_remaining(&self) -> usize {
         if self.data.is_empty() {
             // The common packet header hasn't been written yet.
-            return self.max_packet_size - COMMON_HEADER_SIZE;
+            return self.max_packet_size.saturating_sub(COMMON_HEADER_SIZE);
         }
-        self.max_packet_size - self.data.len()
+        self.max_packet_size.saturating_sub(self.data.len())
     }
 
     pub fn is_empty(&self) -> bool {

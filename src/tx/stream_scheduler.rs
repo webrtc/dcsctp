@@ -63,11 +63,11 @@ impl ActiveStreamInfo {
     fn calculate_vt(&self, bytes: usize) -> u64 {
         let increment = match self.parameters {
             SchedulingParameters::WeightedFairQueuing { weight } => {
-                (bytes as u64 * 1_000_000) / (weight as u64).max(1)
+                (bytes as u64).saturating_mul(1_000_000) / (weight as u64).max(1)
             }
             SchedulingParameters::RoundRobin => 1,
         };
-        self.virtual_start_time + increment
+        self.virtual_start_time.saturating_add(increment)
     }
 
     /// Projects the virtual finish time for the next expected chunk of data.

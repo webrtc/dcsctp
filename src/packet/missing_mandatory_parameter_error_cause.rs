@@ -59,10 +59,10 @@ impl TryFrom<RawParameter<'_>> for MissingMandatoryParameterErrorCause {
         ensure!(raw.value.len() >= 4, ChunkParseError::InvalidLength);
 
         let num_params = read_u32_be!(&raw.value[0..4]) as usize;
-        ensure!(raw.value.len() == 4 + num_params * 2, ChunkParseError::InvalidLength);
+        let (chunks, remainder) = raw.value[4..].as_chunks::<2>();
+        ensure!(remainder.is_empty() && chunks.len() == num_params, ChunkParseError::InvalidLength);
 
-        let missing_parameters =
-            raw.value[4..].as_chunks::<2>().0.iter().map(|c| read_u16_be!(c)).collect();
+        let missing_parameters = chunks.iter().map(|c| read_u16_be!(c)).collect();
         Ok(Self { missing_parameters })
     }
 }
@@ -104,5 +104,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(error.missing_parameters, vec![7, 13]);
+    }
+
+    #[test]
+    fn fail_to_deserialize_on_num_params_overflow() {
+        for num_params in [0x8000_0000u32, u32::MAX] {
+            let mut value = [0u8; 6];
+            write_u32_be!(&mut value[0..4], num_params);
+            let raw = RawParameter { typ: CAUSE_CODE, value: &value };
+            assert_eq!(
+                MissingMandatoryParameterErrorCause::try_from(raw),
+                Err(ChunkParseError::InvalidLength)
+            );
+        }
     }
 }

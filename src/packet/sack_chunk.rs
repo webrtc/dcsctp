@@ -89,18 +89,15 @@ impl TryFrom<RawChunk<'_>> for SackChunk {
         let nbr_of_gap_blocks = read_u16_be!(&raw.value[8..10]) as usize;
         let nbr_of_dup_tsns = read_u16_be!(&raw.value[10..12]) as usize;
 
+        let (chunks, remainder) = raw.value[12..].as_chunks::<4>();
         ensure!(
-            raw.value.len() == 12 + nbr_of_gap_blocks * 4 + nbr_of_dup_tsns * 4,
+            remainder.is_empty() && chunks.len() == nbr_of_gap_blocks + nbr_of_dup_tsns,
             ChunkParseError::InvalidLength
         );
 
-        let gap_blocks_end = 12 + nbr_of_gap_blocks * 4;
-        let gap_ack_blocks_data = &raw.value[12..gap_blocks_end];
-        let duplicate_tsns_data = &raw.value[gap_blocks_end..];
+        let (gap_ack_blocks_data, duplicate_tsns_data) = chunks.split_at(nbr_of_gap_blocks);
 
         let gap_ack_blocks = gap_ack_blocks_data
-            .as_chunks::<4>()
-            .0
             .iter()
             .map(|c| {
                 let start = read_u16_be!(&c[0..2]);
@@ -109,8 +106,7 @@ impl TryFrom<RawChunk<'_>> for SackChunk {
             })
             .collect();
 
-        let duplicate_tsns =
-            duplicate_tsns_data.as_chunks::<4>().0.iter().map(|c| Tsn(read_u32_be!(c))).collect();
+        let duplicate_tsns = duplicate_tsns_data.iter().map(|c| Tsn(read_u32_be!(c))).collect();
 
         Ok(Self { cumulative_tsn_ack, a_rwnd, gap_ack_blocks, duplicate_tsns })
     }
