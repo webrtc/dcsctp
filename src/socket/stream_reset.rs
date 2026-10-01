@@ -804,6 +804,88 @@ mod tests {
     }
 
     #[test]
+    fn reset_all_streams_deferred() {
+        // Per RFC 6525 Section 4.1 / 5.2.2 (E3), an empty list of stream numbers in an
+        // Outgoing SSN Reset Request parameter indicates that all streams shall be reset.
+        let my_initial_tsn = Tsn(0);
+        let peer_initial_tsn = Tsn(10);
+        let (mut state, mut ctx, events) = create_test_objects(my_initial_tsn, peer_initial_tsn);
+        let mut seq1 = DataSequencer::new(StreamId(1));
+
+        // TSN 10 (SSN 0) is received and delivered, advancing Stream 1's expected SSN to 1.
+        let tcb = state.tcb_mut().unwrap();
+        tcb.data_tracker.observe(SocketTime::zero(), Tsn(10), false);
+        tcb.reassembly_queue.add(Tsn(10), seq1.ordered("1111", "BE"));
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1111");
+
+        // TSN 11 (SSN 1) is sent before the reset, but delayed in the network.
+        let delayed_tsn11 = seq1.ordered("2222", "BE");
+
+        // Receive a reset request for ALL streams (`streams: vec![]`) with
+        // `sender_last_assigned_tsn = 11`. Since TSN 11 has not arrived yet, this enters
+        // deferred reset processing.
+        handle_reconfig(
+            &mut state,
+            &mut ctx,
+            SocketTime::zero(),
+            ReConfigChunk {
+                parameters: vec![Parameter::OutgoingSsnResetRequest(
+                    OutgoingSsnResetRequestParameter {
+                        request_seq_nbr: 10,
+                        response_seq_nbr: 3,
+                        sender_last_assigned_tsn: Tsn(11),
+                        streams: vec![],
+                    },
+                )],
+            },
+        );
+        let response = expect_sent_reconfig_response(&events, &ctx.options);
+        assert_eq!(response.result, ReconfigurationResponseResult::InProgress);
+
+        // Post-reset message TSN 12 (SSN 0) arrives BEFORE TSN 11. Because it has TSN > 11,
+        // it must be deferred until the stream reset is performed.
+        let mut seq1_post_reset = DataSequencer::new(StreamId(1));
+        let tcb = state.tcb_mut().unwrap();
+        tcb.data_tracker.observe(SocketTime::zero(), Tsn(12), false);
+        tcb.reassembly_queue.add(Tsn(12), seq1_post_reset.ordered("1-new", "BE"));
+        assert!(tcb.reassembly_queue.get_next_message().is_none());
+
+        // Now the delayed pre-reset TSN 11 (SSN 1) arrives and is delivered.
+        tcb.data_tracker.observe(SocketTime::zero(), Tsn(11), false);
+        tcb.reassembly_queue.add(Tsn(11), delayed_tsn11);
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"2222");
+
+        // Drain any SACK events emitted earlier.
+        while events.borrow_mut().next_event().is_some() {}
+
+        // Peer retransmits the reset request now that TSN 11 has been received.
+        handle_reconfig(
+            &mut state,
+            &mut ctx,
+            SocketTime::zero(),
+            ReConfigChunk {
+                parameters: vec![Parameter::OutgoingSsnResetRequest(
+                    OutgoingSsnResetRequestParameter {
+                        request_seq_nbr: 10,
+                        response_seq_nbr: 3,
+                        sender_last_assigned_tsn: Tsn(11),
+                        streams: vec![],
+                    },
+                )],
+            },
+        );
+
+        expect_incoming_stream_reset_event(&events, vec![]);
+        let response = expect_sent_reconfig_response(&events, &ctx.options);
+        assert_eq!(response.result, ReconfigurationResponseResult::SuccessPerformed);
+
+        // The deferred post-reset message (TSN 12, SSN 0) should now be reassembled and delivered.
+        let tcb = state.tcb_mut().unwrap();
+        assert_eq!(tcb.reassembly_queue.get_next_message().unwrap().payload, b"1-new");
+        assert!(tcb.reassembly_queue.get_next_message().is_none());
+    }
+
+    #[test]
     fn reset_streams_defers_forward_tsn() {
         // This test verifies that FORWARD-TSNs are deferred if they want to move
         // the cumulative ack TSN point past sender's last assigned TSN.
