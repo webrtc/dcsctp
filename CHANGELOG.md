@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.15 - 2026-10-01
+
 ### Added
 
  - Support DATA/I-DATA I-bit (RFC 7053, RFC 9260).
