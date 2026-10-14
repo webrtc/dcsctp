@@ -347,6 +347,7 @@ impl RetransmissionQueue {
         self.maybe_exit_fast_recovery(sack.cumulative_tsn_ack);
 
         let ack_info = self.outstanding_data.handle_sack(
+            now,
             sack.cumulative_tsn_ack,
             &sack.gap_ack_blocks,
             self.is_in_fast_recovery(),
@@ -444,7 +445,7 @@ impl RetransmissionQueue {
         //   Note: Any DATA chunks that were sent to the address for which the T3-rtx timer expired
         //   but did not fit in one MTU (rule E3 above) should be marked for retransmission and sent
         //   as soon as cwnd allows (normally, when a SACK arrives).
-        self.outstanding_data.nack_all();
+        self.outstanding_data.nack_all(now);
 
         // From <https://datatracker.ietf.org/doc/html/rfc9260#section-6.3.3>:
         //

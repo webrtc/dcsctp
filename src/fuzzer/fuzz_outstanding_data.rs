@@ -120,6 +120,7 @@ pub fn fuzz_outstanding_data(data: &[u8]) {
                 let gap_blocks: Vec<GapAckBlock> =
                     gap_ack_blocks.into_iter().map(|(s, e)| GapAckBlock::new(s, e)).collect();
                 outstanding_data.handle_sack(
+                    current_time,
                     Tsn(cumulative_tsn_ack),
                     &gap_blocks,
                     is_in_fast_recovery,
@@ -129,7 +130,7 @@ pub fn fuzz_outstanding_data(data: &[u8]) {
                 outstanding_data.expire_outstanding_chunks(current_time);
             }
             Command::NackAll => {
-                outstanding_data.nack_all();
+                outstanding_data.nack_all(current_time);
             }
             Command::GetChunksToBeFastRetransmitted { max_size } => {
                 outstanding_data.get_chunks_to_be_fast_retransmitted(current_time, max_size);
