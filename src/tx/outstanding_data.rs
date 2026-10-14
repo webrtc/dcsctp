@@ -235,7 +235,11 @@ impl Item {
         }
     }
 
-    pub fn nack(&mut self, retransmit_now: bool) -> NackAction {
+    /// Nacks an item. If it has been nacked enough times, or if `retransmit_now` is set, it might
+    /// be marked for retransmission. If the item has reached its max retransmission value or
+    /// has expired at `now`, it will instead be abandoned. The action performed is indicated as
+    /// return value.
+    pub fn nack(&mut self, now: SocketTime, retransmit_now: bool) -> NackAction {
         let (time_sent, nack_count) = match self.state {
             ItemState::InFlight { time_sent } => (time_sent, 0),
             ItemState::ReportedMissing { time_sent, nack_count } => (time_sent, nack_count),
@@ -245,7 +249,7 @@ impl Item {
         let new_nack_count = nack_count.saturating_add(1);
 
         if retransmit_now || new_nack_count >= NUMBER_OF_NACKS_FOR_RETRANSMISSION {
-            if self.num_retransmissions < self.max_retransmissions {
+            if self.num_retransmissions < self.max_retransmissions && !self.has_expired(now) {
                 self.state = ItemState::QueuedForRetransmission { time_sent };
                 NackAction::Retransmit
             } else {
@@ -325,6 +329,7 @@ impl OutstandingData {
     // Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
     pub fn handle_sack(
         &mut self,
+        now: SocketTime,
         cumulative_tsn_ack: Tsn,
         gap_ack_blocks: &[GapAckBlock],
         is_in_fast_recovery: bool,
@@ -349,6 +354,7 @@ impl OutstandingData {
 
         // NACK and possibly mark for retransmit chunks that weren't acked.
         self.nack_between_ack_blocks(
+            now,
             cumulative_tsn_ack,
             gap_ack_blocks,
             is_in_fast_recovery,
@@ -413,6 +419,7 @@ impl OutstandingData {
 
     fn nack_between_ack_blocks(
         &mut self,
+        now: SocketTime,
         cumulative_tsn_ack: Tsn,
         gap_ack_blocks: &[GapAckBlock],
         is_in_fast_recovery: bool,
@@ -458,7 +465,7 @@ impl OutstandingData {
                 && tsn.less_than_or_equal(max_tsn_to_nack)
                 && tsn.less_than(limit)
             {
-                ack_info.has_packet_loss |= self.nack_chunk(tsn, false, !is_in_fast_recovery);
+                ack_info.has_packet_loss |= self.nack_chunk(now, tsn, false, !is_in_fast_recovery);
                 tsn += 1;
             }
             prev_block_last_acked = cumulative_tsn_ack.add_to(block.end as u32);
@@ -469,12 +476,21 @@ impl OutstandingData {
         // (see above) should be considered when NACKing.
     }
 
-    fn nack_chunk(&mut self, tsn: Tsn, retransmit_now: bool, do_fast_retransmit: bool) -> bool {
+    /// Nacks the chunk with the given `tsn`, possibly marking it for retransmission or abandoning
+    /// it. Returns true if the chunk was marked for retransmission or abandoned, indicating packet
+    /// loss.
+    fn nack_chunk(
+        &mut self,
+        now: SocketTime,
+        tsn: Tsn,
+        retransmit_now: bool,
+        do_fast_retransmit: bool,
+    ) -> bool {
         let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
         let item = self.outstanding_data.get_mut(index as usize).unwrap();
         let was_outstanding = item.is_outstanding();
 
-        let action = item.nack(retransmit_now);
+        let action = item.nack(now, retransmit_now);
 
         if was_outstanding && !item.is_outstanding() {
             self.unacked_payload_bytes -= item.data.payload.len();
@@ -535,6 +551,9 @@ impl OutstandingData {
         std::mem::take(&mut self.unsent_messages_to_discard)
     }
 
+    /// Extracts chunks from `tsns` that can fit within `max_size` bytes, marking them as
+    /// retransmitted. Any chunk encountered that has expired at `now` is abandoned (along with all
+    /// other fragments of its message) instead of being returned.
     fn extract_chunks_that_can_fit(
         &mut self,
         now: SocketTime,
@@ -542,14 +561,33 @@ impl OutstandingData {
         tsns: &mut BTreeSet<OrderedTsn>,
     ) -> Vec<(Tsn, Data)> {
         let mut result: Vec<(Tsn, Data)> = vec![];
+        // As `tsns` has been taken out of `self`, `abandon_all_for` can't remove abandoned chunks
+        // from it directly. They are collected here and removed once the iteration is done.
+        let mut abandoned: Vec<OrderedTsn> = vec![];
         for tsn in tsns.iter() {
+            // No point in continuing if the packet is full.
+            if max_size <= self.data_chunk_header_size {
+                break;
+            }
             let index = tsn.0.distance_to(self.last_cumulative_tsn_ack) - 1;
             let item = self.outstanding_data.get_mut(index as usize).unwrap();
 
+            if item.is_abandoned() {
+                // Abandoned together with an earlier, expired fragment of the same message.
+                debug_assert!(!abandoned.is_empty());
+                abandoned.push(*tsn);
+                continue;
+            }
+
             debug_assert!(item.should_be_retransmitted());
             debug_assert!(!item.is_outstanding());
-            debug_assert!(!item.is_abandoned());
             debug_assert!(!item.is_acked());
+
+            if item.has_expired(now) {
+                self.abandon_all_for(tsn.0);
+                abandoned.push(*tsn);
+                continue;
+            }
 
             let size = round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
             if size <= max_size {
@@ -560,9 +598,9 @@ impl OutstandingData {
                 self.unacked_packet_bytes += size;
                 self.unacked_items += 1;
             }
-            if max_size <= self.data_chunk_header_size {
-                break;
-            }
+        }
+        for tsn in &abandoned {
+            tsns.remove(tsn);
         }
         for (tsn, _) in &result {
             tsns.remove(&OrderedTsn(*tsn));
@@ -571,8 +609,11 @@ impl OutstandingData {
     }
 
     /// Returns as many of the chunks that are eligible for fast retransmissions and that would fit
-    /// in a single packet of `max_size`. The eligible chunks that didn't fit will be marked for
+    /// in a single packet of `max_size`. Any chunks encountered that have expired at `now` are
+    /// abandoned instead of being returned. The eligible chunks that didn't fit will be marked for
     /// (normal) retransmission and will not be returned if this method is called again.
+    ///
+    /// Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
     pub fn get_chunks_to_be_fast_retransmitted(
         &mut self,
         now: SocketTime,
@@ -591,7 +632,9 @@ impl OutstandingData {
         chunks
     }
 
-    /// Given `max_size` of space left in a packet, which chunks can be added to it?
+    /// Given `max_size` of space left in a packet, returns the chunks that can be added to it. Any
+    /// chunks encountered that have expired at `now` are abandoned (along with all other fragments
+    /// of the same message) instead of being returned.
     ///
     /// Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
     pub fn get_chunks_to_be_retransmitted(
@@ -623,7 +666,7 @@ impl OutstandingData {
     pub fn expire_outstanding_chunks(&mut self, now: SocketTime) {
         let mut tsns_to_expire: Vec<Tsn> = Vec::new();
         let mut tsn = self.last_cumulative_tsn_ack;
-        for item in &mut self.outstanding_data {
+        for item in &self.outstanding_data {
             tsn += 1;
             // Chunks that are nacked can be expired. Care should be taken not to expire unacked
             // (in-flight) chunks as they might have been received, but the SACK is either delayed
@@ -631,19 +674,22 @@ impl OutstandingData {
             if item.is_abandoned() {
                 // Already abandoned.
             } else if item.is_nacked() && item.has_expired(now) {
-                log::debug!(
-                    "Marking nacked chunk {} and message {} as expired",
-                    tsn,
-                    item.data.mid
-                );
                 tsns_to_expire.push(tsn);
             } else {
-                // A non-expired chunk. No need to iterate any further.
+                // A non-expired chunk means there's no need to continue as no FORWARD-TSN can be
+                // sent past this point anyway.
                 break;
             }
         }
         for tsn in tsns_to_expire {
-            self.abandon_all_for(tsn);
+            // Note that the TSNs in `tsns_to_expire` may already have been abandoned by
+            // `abandon_all_for` (being a fragment of the same message as a previously
+            // expired chunk).
+            let index = tsn.distance_to(self.last_cumulative_tsn_ack) - 1;
+            let item = &self.outstanding_data[index as usize];
+            if !item.is_abandoned() {
+                self.abandon_all_for(tsn);
+            }
         }
     }
 
@@ -776,11 +822,12 @@ impl OutstandingData {
         self.unsent_messages_to_discard.push((stream_key.id(), message_id));
     }
 
-    /// Nacks all outstanding data.
+    /// Nacks all outstanding data. Chunks that have expired at `now` are abandoned instead of being
+    /// marked for retransmission.
     ///
     /// Note: This may discard unsent messages - call `get_unsent_messages_to_discard`.
-    pub fn nack_all(&mut self) {
-        // A two-pass algorithm is needed, as NackItem will invalidate iterators.
+    pub fn nack_all(&mut self, now: SocketTime) {
+        // A two-pass algorithm is needed, as `nack_chunk` may modify `outstanding_data`.
         let mut tsns_to_nack: Vec<Tsn> = Vec::new();
         let mut tsn = self.last_cumulative_tsn_ack;
         for item in &self.outstanding_data {
@@ -791,7 +838,7 @@ impl OutstandingData {
         }
 
         for tsn in &tsns_to_nack {
-            self.nack_chunk(*tsn, true, false);
+            self.nack_chunk(now, *tsn, true, false);
         }
     }
 
@@ -1130,7 +1177,7 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
         let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
-        let ack = buf.handle_sack(Tsn(10), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(10), &[], false);
 
         assert_eq!(ack.payload_bytes_acked, 1);
         assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
@@ -1153,7 +1200,7 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
         let tsn = insert(&mut buf, seq.ordered("a", "BE"));
         assert_eq!(tsn, Tsn(10));
-        let ack = buf.handle_sack(Tsn(9), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[], false);
 
         assert_eq!(ack.payload_bytes_acked, 0);
         assert_eq!(ack.packet_bytes_acked, 0);
@@ -1180,7 +1227,7 @@ mod tests {
         insert(&mut buf, seq.ordered("a", "B"));
         insert(&mut buf, seq.ordered("b", "E"));
 
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
 
         assert_eq!(ack.payload_bytes_acked, 1);
         assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
@@ -1211,9 +1258,9 @@ mod tests {
         insert(&mut buf, seq.ordered("a", "B"));
         insert(&mut buf, seq.ordered("b", "E"));
 
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1234,12 +1281,12 @@ mod tests {
         insert(&mut buf, seq.ordered("c", ""));
         insert(&mut buf, seq.ordered("d", "E"));
 
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert_eq!(ack.payload_bytes_acked, 1);
         assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
@@ -1267,12 +1314,12 @@ mod tests {
         insert_limited_rtx(&mut buf, seq.ordered("c", ""), 0);
         insert_limited_rtx(&mut buf, seq.ordered("d", "E"), 0);
 
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert_eq!(ack.payload_bytes_acked, 1);
         assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
@@ -1304,7 +1351,7 @@ mod tests {
         }
 
         for i in 0..FRAGMENT_COUNT {
-            buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2 + i)], false);
+            buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2 + i)], false);
         }
     }
 
@@ -1317,12 +1364,12 @@ mod tests {
         insert_limited_rtx(&mut buf, seq.ordered("c", ""), 0);
         insert_limited_rtx(&mut buf, seq.ordered("d", ""), 0);
 
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
-        assert!(!buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
+        assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
         assert!(!buf.has_unsent_messages_to_discard());
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert_eq!(ack.payload_bytes_acked, 1);
         assert_eq!(ack.packet_bytes_acked, DATA_CHUNK_HEADER_SIZE + round_up_to_4!(1));
         assert_eq!(ack.highest_tsn_acked, Tsn(13));
@@ -1469,7 +1516,7 @@ mod tests {
         insert_limited_rtx(&mut buf, seq.ordered("b", ""), 0);
         insert_limited_rtx(&mut buf, seq.ordered("c", "E"), 0);
 
-        buf.nack_all();
+        buf.nack_all(now());
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1514,7 +1561,7 @@ mod tests {
             ]
         );
 
-        buf.handle_sack(Tsn(12), &[GapAckBlock::new(2, 3), GapAckBlock::new(5, 5)], false);
+        buf.handle_sack(now(), Tsn(12), &[GapAckBlock::new(2, 3), GapAckBlock::new(5, 5)], false);
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1572,13 +1619,13 @@ mod tests {
             insert_limited_rtx(&mut buf, seq.ordered("a", flags), /* max_retransmissions */ 1);
         }
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert!(ack.has_packet_loss);
         assert!(buf.has_data_to_be_retransmitted());
 
@@ -1586,11 +1633,11 @@ mod tests {
         // doesn't allow it to be retransmitted yet. It does however get more SACKs indicating
         // packet loss.
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 5)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 5)], false);
         assert!(buf.has_data_to_be_retransmitted());
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 6)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 6)], false);
         assert!(buf.has_data_to_be_retransmitted());
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 7)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 7)], false);
         assert!(!ack.has_packet_loss);
         assert!(buf.has_data_to_be_retransmitted());
 
@@ -1600,11 +1647,11 @@ mod tests {
         assert!(buf.get_chunks_to_be_retransmitted(now(), 1000).is_empty());
 
         // And obviously lost, as it will get NACKed and abandoned.
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 8)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 8)], false);
         assert!(!buf.has_data_to_be_retransmitted());
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 9)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 9)], false);
         assert!(!buf.has_data_to_be_retransmitted());
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 10)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 10)], false);
         assert!(ack.has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
     }
@@ -1639,10 +1686,10 @@ mod tests {
             LifecycleId::new(44),
         );
 
-        let ack = buf.handle_sack(Tsn(11), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(11), &[], false);
         assert_eq!(ack.acked_lifecycle_ids, &[LifecycleId::from(42), LifecycleId::from(43)]);
 
-        let ack = buf.handle_sack(Tsn(12), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(12), &[], false);
         assert_eq!(ack.acked_lifecycle_ids, &[LifecycleId::from(44)]);
     }
 
@@ -1684,13 +1731,13 @@ mod tests {
             LifecycleId::new(42),
         );
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert!(ack.has_packet_loss);
         assert!(ack.abandoned_lifecycle_ids.is_empty());
 
@@ -1698,7 +1745,7 @@ mod tests {
         let fwd = buf.create_forward_tsn();
         assert_eq!(fwd.new_cumulative_tsn, Tsn(13));
 
-        let ack = buf.handle_sack(Tsn(13), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(13), &[], false);
         assert!(!ack.has_packet_loss);
         assert_eq!(ack.abandoned_lifecycle_ids, &[LifecycleId::from(42)]);
     }
@@ -1752,7 +1799,7 @@ mod tests {
             ]
         );
 
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
         assert_eq!(
@@ -1767,7 +1814,7 @@ mod tests {
         );
 
         // T3-rtx triggered.
-        buf.nack_all();
+        buf.nack_all(now());
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1785,7 +1832,7 @@ mod tests {
         let fwd = buf.create_forward_tsn();
         assert_eq!(fwd.new_cumulative_tsn, Tsn(13));
 
-        let ack = buf.handle_sack(Tsn(13), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(13), &[], false);
         assert!(!ack.has_packet_loss);
         assert_eq!(ack.abandoned_lifecycle_ids, &[LifecycleId::from(42)]);
     }
@@ -1824,8 +1871,8 @@ mod tests {
         assert_eq!(seq.add(&mut buf, StreamId(3), "g", "BE"), Tsn(16));
 
         assert!(!buf.should_send_forward_tsn());
-        buf.handle_sack(Tsn(11), &[], false);
-        buf.nack_all();
+        buf.handle_sack(now(), Tsn(11), &[], false);
+        buf.nack_all(now());
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1845,28 +1892,28 @@ mod tests {
         assert_eq!(fwd.skipped_streams, vec!(SkippedStream::ForwardTsn(StreamId(1), Ssn(2))));
 
         // Ack 12, allowing a FORWARD-TSN that spans to TSN=14 to be created.
-        buf.handle_sack(Tsn(12), &[], false);
+        buf.handle_sack(now(), Tsn(12), &[], false);
         assert!(buf.should_send_forward_tsn());
         let fwd = buf.create_forward_tsn();
         assert_eq!(fwd.new_cumulative_tsn, Tsn(14));
         assert_eq!(fwd.skipped_streams, vec!(SkippedStream::ForwardTsn(StreamId(2), Ssn(1))));
 
         // Ack 13, allowing a FORWARD-TSN that spans to TSN=14 to be created.
-        buf.handle_sack(Tsn(13), &[], false);
+        buf.handle_sack(now(), Tsn(13), &[], false);
         assert!(buf.should_send_forward_tsn());
         let fwd = buf.create_forward_tsn();
         assert_eq!(fwd.new_cumulative_tsn, Tsn(14));
         assert_eq!(fwd.skipped_streams, vec!(SkippedStream::ForwardTsn(StreamId(2), Ssn(1))));
 
         // Ack 14, allowing a FORWARD-TSN that spans to TSN=15 to be created.
-        buf.handle_sack(Tsn(14), &[], false);
+        buf.handle_sack(now(), Tsn(14), &[], false);
         assert!(buf.should_send_forward_tsn());
         let fwd = buf.create_forward_tsn();
         assert_eq!(fwd.new_cumulative_tsn, Tsn(15));
         assert_eq!(fwd.skipped_streams, vec!(SkippedStream::ForwardTsn(StreamId(3), Ssn(0))));
 
         // Ack 15, nothing more will be skipped.
-        buf.handle_sack(Tsn(15), &[], false);
+        buf.handle_sack(now(), Tsn(15), &[], false);
         assert!(!buf.should_send_forward_tsn());
     }
 
@@ -1893,7 +1940,7 @@ mod tests {
             GapAckBlock::new(4, 4), // TSN 14
             GapAckBlock::new(6, 6), // TSN 16
         ];
-        buf.handle_sack(Tsn(10), &gab1, /* is_in_fast_recovery= */ false);
+        buf.handle_sack(now(), Tsn(10), &gab1, /* is_in_fast_recovery= */ false);
 
         // SACK 2: Cumulative Ack advances to 11. Same gap blocks (12, 14, 16).
         // Endpoint is now in Fast Recovery (is_in_fast_recovery = true). Because the Cumulative TSN
@@ -1903,7 +1950,7 @@ mod tests {
             GapAckBlock::new(3, 3), // TSN 14
             GapAckBlock::new(5, 5), // TSN 16
         ];
-        buf.handle_sack(Tsn(11), &gab2, /* is_in_fast_recovery= */ true);
+        buf.handle_sack(now(), Tsn(11), &gab2, /* is_in_fast_recovery= */ true);
 
         // SACK 3: Cumulative Ack advances to 12.
         // Note: TSN 12 was already acked via gap block, so this just advances the Cumulative Ack.
@@ -1912,7 +1959,7 @@ mod tests {
             GapAckBlock::new(2, 2), // TSN 14
             GapAckBlock::new(4, 4), // TSN 16
         ];
-        buf.handle_sack(Tsn(12), &gab3, /* is_in_fast_recovery= */ true);
+        buf.handle_sack(now(), Tsn(12), &gab3, /* is_in_fast_recovery= */ true);
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -1939,9 +1986,9 @@ mod tests {
         generator.add(&mut buf, StreamId(1), "e", "BE"); // TSN 14
 
         // Nack three times to trigger fast retransmit.
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 2)], false);
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 3)], false);
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 4)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 4)], false);
         assert!(buf.has_data_to_be_retransmitted());
 
         assert_eq!(
@@ -1975,9 +2022,9 @@ mod tests {
         buf.insert(OutgoingMessageId(5), &generator.ordered("e", "BE"), now, 1, no_expiry(), None); // TSN 14
 
         // Ack 9, 12-14, three times, to trigger retransmission.
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 3)], false);
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 4)], false);
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(3, 5)], false);
+        buf.handle_sack(now, Tsn(9), &[GapAckBlock::new(3, 3)], false);
+        buf.handle_sack(now, Tsn(9), &[GapAckBlock::new(3, 4)], false);
+        buf.handle_sack(now, Tsn(9), &[GapAckBlock::new(3, 5)], false);
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -2025,7 +2072,7 @@ mod tests {
 
         // Ack TSN=9,11,13 - 11 and 13 are newly acked, reflected in bytes_acked.
         let ack1 =
-            buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2), GapAckBlock::new(4, 4)], false);
+            buf.handle_sack(now, Tsn(9), &[GapAckBlock::new(2, 2), GapAckBlock::new(4, 4)], false);
         assert_eq!(ack1.payload_bytes_acked, 2);
         assert_eq!(ack1.packet_bytes_acked, chunk_size * 2);
 
@@ -2044,7 +2091,7 @@ mod tests {
         );
 
         // Receive a SACK advancing the Cumulative TSN to 13.
-        let ack2 = buf.handle_sack(Tsn(13), &[], false);
+        let ack2 = buf.handle_sack(now, Tsn(13), &[], false);
 
         // Only TSN 10 and 12 should be counted as "newly acked" bytes.
         assert_eq!(ack2.payload_bytes_acked, 2);
@@ -2060,7 +2107,7 @@ mod tests {
         buf.insert(MESSAGE_ID, &seq.ordered("a", "B"), now(), 0, no_expiry(), None);
 
         // Abandon the message, which adds a placeholder fragment (TSN=11).
-        buf.nack_all();
+        buf.nack_all(now());
 
         assert_eq!(
             buf.get_chunk_states_for_testing(),
@@ -2072,7 +2119,7 @@ mod tests {
         );
 
         // A FORWARD-TSN is sent, which is then acked with TSN=11.
-        let ack = buf.handle_sack(Tsn(11), &[], false);
+        let ack = buf.handle_sack(now(), Tsn(11), &[], false);
 
         // Only the actual data (TSN 10) should contribute to bytes_acked, not TSN=11.
         assert_eq!(ack.payload_bytes_acked, 1);
@@ -2094,11 +2141,11 @@ mod tests {
         generator.add(&mut buf, StreamId(1), "e", "BE"); // TSN 14
 
         // 2. TSN 12 is gap-acked early.
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 2)], false);
 
         // 3. Trigger Fast Retransmit for TSN 11 by 3 miss indications.
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 3)], false);
-        buf.handle_sack(Tsn(10), &[GapAckBlock::new(2, 4)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 3)], false);
+        buf.handle_sack(now(), Tsn(10), &[GapAckBlock::new(2, 4)], false);
 
         assert!(buf.has_data_to_be_fast_retransmitted());
 
@@ -2132,15 +2179,15 @@ mod tests {
         insert(&mut buf, seq.ordered("e", "E"));
 
         // Nack TSN 10 three consecutive times using Gap Ack Blocks
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 3)], false);
-        let ack = buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 4)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 3)], false);
+        let ack = buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 4)], false);
 
         assert!(ack.has_packet_loss);
         assert!(buf.has_data_to_be_retransmitted());
 
         // Acknowledge all chunks - the delayed packet arrived.
-        buf.handle_sack(Tsn(14), &[], false);
+        buf.handle_sack(now(), Tsn(14), &[], false);
 
         // There are no chunks marked for retransmissions.
         assert!(buf.get_chunks_to_be_fast_retransmitted(now(), 1000).is_empty());
@@ -2160,7 +2207,7 @@ mod tests {
 
         // Ack TSN 11, 15 (which is not sent yet, so malformed).
         let gab = vec![GapAckBlock::new(4, 4)];
-        buf.handle_sack(Tsn(11), &gab, true);
+        buf.handle_sack(now(), Tsn(11), &gab, true);
     }
 
     #[test]
@@ -2175,7 +2222,7 @@ mod tests {
         insert(&mut buf, seq.ordered("d", "E"));
 
         // Ack everything up to TSN 13.
-        buf.handle_sack(Tsn(13), &[], false);
+        buf.handle_sack(now(), Tsn(13), &[], false);
 
         // Insert TSN 14, 15.
         insert(&mut buf, seq.ordered("e", "B"));
@@ -2183,7 +2230,7 @@ mod tests {
 
         // Assume a valid (but old) SACK is received, acking TSN 5, 15.
         let gab = vec![GapAckBlock::new(10, 10)];
-        buf.handle_sack(Tsn(5), &gab, false);
+        buf.handle_sack(now(), Tsn(5), &gab, false);
     }
 
     #[test]
@@ -2192,7 +2239,12 @@ mod tests {
 
         // This shouldn't panic.
         let is_in_fast_recovery = true;
-        buf.handle_sack(Tsn(u32::MAX / 2 - 1), &[GapAckBlock::new(2, 2)], is_in_fast_recovery);
+        buf.handle_sack(
+            now(),
+            Tsn(u32::MAX / 2 - 1),
+            &[GapAckBlock::new(2, 2)],
+            is_in_fast_recovery,
+        );
     }
 
     #[test]
@@ -2205,7 +2257,7 @@ mod tests {
         insert(&mut buf, seq.ordered("c", "E"));
 
         // Ack TSN 11 with gap ack block (so 10 is missing/nacked, 11 is acked, 12 is in flight)
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
         assert_eq!(buf.unacked_payload_bytes(), 2);
         assert_eq!(buf.unacked_items(), 2);
 
@@ -2240,7 +2292,7 @@ mod tests {
         assert!(buf2.has_data_to_be_retransmitted());
 
         // Now SACK TSN 12 (completing all chunks)
-        let ack = buf2.handle_sack(Tsn(12), &[], false);
+        let ack = buf2.handle_sack(now(), Tsn(12), &[], false);
         assert_eq!(ack.payload_bytes_acked, 2); // TSN 10 and 12 (11 was already acked)
         assert_eq!(buf2.unacked_payload_bytes(), 0);
         assert_eq!(buf2.unacked_items(), 0);
@@ -2253,7 +2305,7 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         insert(&mut buf, seq.ordered("a", "B"));
-        buf.nack_all();
+        buf.nack_all(now());
         assert!(buf.has_data_to_be_retransmitted());
         assert_eq!(buf.unacked_items(), 0);
 
@@ -2285,7 +2337,7 @@ mod tests {
         let mut seq = DataSequencer::new(StreamId(1));
 
         insert_limited_rtx(&mut buf, seq.ordered("a", "BE"), 0);
-        buf.nack_all();
+        buf.nack_all(now());
         assert!(buf.should_send_forward_tsn());
 
         let mut state = SocketHandoverState::default();
@@ -2313,7 +2365,7 @@ mod tests {
         insert(&mut buf, seq.ordered("b", "E"));
 
         // Ack TSN 11 with gap ack block (10 is nacked 1 time, 11 is acked)
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(2, 2)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 2)], false);
         assert!(!buf.has_data_to_be_retransmitted());
 
         let mut state = SocketHandoverState::default();
@@ -2343,11 +2395,11 @@ mod tests {
 
         insert_limited_rtx(&mut buf, seq.ordered("a", "B"), 0);
         insert_limited_rtx(&mut buf, seq.ordered("b", "E"), 0);
-        buf.nack_all();
+        buf.nack_all(now());
         assert!(buf.should_send_forward_tsn());
 
         // Ack TSN 10 using gap ack block.
-        buf.handle_sack(Tsn(9), &[GapAckBlock::new(1, 1)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(1, 1)], false);
 
         let mut state = SocketHandoverState::default();
         buf.add_to_handover_state(now(), &mut state);
@@ -2366,8 +2418,392 @@ mod tests {
         assert_eq!(fwd_tsn.new_cumulative_tsn, Tsn(11));
 
         // When cumulative TSN ack reaches 11, all should be removed.
-        let ack = buf2.handle_sack(Tsn(11), &[], false);
+        let ack = buf2.handle_sack(now(), Tsn(11), &[], false);
         assert_eq!(ack.payload_bytes_acked, 1); // TSN 11 was newly acked
         assert!(buf2.is_empty());
+    }
+
+    #[test]
+    fn expires_chunk_before_retransmitting_when_behind_non_expired_chunk() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered("a", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 and 12 have a limited lifetime.
+        buf.insert(OutgoingMessageId(2), &seq.ordered("b", "B"), now(), u16::MAX, expiry, None);
+        buf.insert(OutgoingMessageId(2), &seq.ordered("c", "E"), now(), u16::MAX, expiry, None);
+
+        buf.nack_all(now());
+
+        // `expire_outstanding_chunks` stops at the first non-expired chunk (TSN 10).
+        buf.expire_outstanding_chunks(expiry);
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::ToBeRetransmitted),
+                (Tsn(12), ChunkState::ToBeRetransmitted),
+            ]
+        );
+
+        // When extracting chunks for retransmission, TSN 11 and 12 are expired and abandoned
+        // instead of being retransmitted.
+        let chunks = buf.get_chunks_to_be_retransmitted(expiry, 1000);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
+        assert!(!buf.has_unsent_messages_to_discard());
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::InFlight),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Abandoned),
+            ]
+        );
+        assert!(!buf.should_send_forward_tsn());
+
+        // Once TSN 10 is acknowledged, FORWARD-TSN can be sent for TSN 11 and 12.
+        buf.handle_sack(expiry, Tsn(10), &[], false);
+        assert!(buf.should_send_forward_tsn());
+        assert_eq!(buf.create_forward_tsn().new_cumulative_tsn, Tsn(12));
+    }
+
+    #[test]
+    fn expires_chunk_on_nack_all() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered("a", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 and 12 have a limited lifetime.
+        buf.insert(OutgoingMessageId(2), &seq.ordered("b", "B"), now(), u16::MAX, expiry, None);
+        buf.insert(OutgoingMessageId(2), &seq.ordered("c", "E"), now(), u16::MAX, expiry, None);
+
+        buf.nack_all(expiry);
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Abandoned),
+            ]
+        );
+        assert!(!buf.has_unsent_messages_to_discard());
+    }
+
+    #[test]
+    fn expires_chunk_when_nacked_three_times() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered("a", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 has a limited lifetime.
+        buf.insert(OutgoingMessageId(2), &seq.ordered("b", "BE"), now(), u16::MAX, expiry, None);
+        // TSN 12, 13, 14 are used to trigger 3 miss indications.
+        buf.insert(
+            OutgoingMessageId(3),
+            &seq.ordered("c", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(
+            OutgoingMessageId(4),
+            &seq.ordered("d", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(
+            OutgoingMessageId(5),
+            &seq.ordered("e", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+
+        buf.handle_sack(
+            now() + Duration::from_millis(10),
+            Tsn(9),
+            &[GapAckBlock::new(3, 3)],
+            false,
+        );
+        buf.handle_sack(
+            now() + Duration::from_millis(20),
+            Tsn(9),
+            &[GapAckBlock::new(3, 4)],
+            false,
+        );
+        // The third miss indication arrives when TSN 11 has expired.
+        buf.handle_sack(expiry, Tsn(9), &[GapAckBlock::new(3, 5)], false);
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::ToBeRetransmitted),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked),
+            ]
+        );
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(expiry, 1000);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
+    }
+
+    #[test]
+    fn expired_chunk_does_not_consume_retransmission_budget() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+        let payload = "x".repeat(100);
+
+        // TSN 10 has a limited lifetime.
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            expiry,
+            None,
+        );
+        // TSN 11 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(2),
+            &seq.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+
+        buf.nack_all(now());
+
+        // Budget fits exactly one chunk. TSN 10 should be expired without consuming budget,
+        // allowing TSN 11 to be returned.
+        let one_chunk_budget = DATA_CHUNK_HEADER_SIZE + payload.len();
+        let chunks = buf.get_chunks_to_be_retransmitted(expiry, one_chunk_budget);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(11)]);
+
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::InFlight),
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_expire_chunk_before_expiry_timestamp() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered("a", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 and 12 have a limited lifetime.
+        buf.insert(OutgoingMessageId(2), &seq.ordered("b", "B"), now(), u16::MAX, expiry, None);
+        buf.insert(OutgoingMessageId(2), &seq.ordered("c", "E"), now(), u16::MAX, expiry, None);
+
+        buf.nack_all(now());
+
+        // At 1ms before expiry, all three chunks are still valid and returned.
+        let chunks = buf.get_chunks_to_be_retransmitted(expiry - Duration::from_millis(1), 1000);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10), Tsn(11), Tsn(12)]);
+    }
+
+    #[test]
+    fn expires_fast_retransmit_leftover_chunk_on_normal_retransmit() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+        let payload = "x".repeat(100);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 has a limited lifetime.
+        buf.insert(
+            OutgoingMessageId(2),
+            &seq.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            expiry,
+            None,
+        );
+        // TSN 12, 13, 14 are used to trigger 3 miss indications.
+        buf.insert(
+            OutgoingMessageId(3),
+            &seq.ordered("c", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(
+            OutgoingMessageId(4),
+            &seq.ordered("d", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(
+            OutgoingMessageId(5),
+            &seq.ordered("e", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+
+        buf.handle_sack(
+            now() + Duration::from_millis(10),
+            Tsn(9),
+            &[GapAckBlock::new(3, 3)],
+            false,
+        );
+        buf.handle_sack(
+            now() + Duration::from_millis(20),
+            Tsn(9),
+            &[GapAckBlock::new(3, 4)],
+            false,
+        );
+        // The third miss indication arrives before TSN 11 has expired.
+        let t3 = now() + Duration::from_millis(30);
+        buf.handle_sack(t3, Tsn(9), &[GapAckBlock::new(3, 5)], false);
+
+        // Only TSN 10 fits in the fast-retransmit packet; TSN 11 is moved to the set of chunks
+        // to be (normally) retransmitted.
+        let one_chunk_budget = DATA_CHUNK_HEADER_SIZE + payload.len();
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(t3, one_chunk_budget);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
+
+        // Later, TSN 11 has expired and is abandoned when extracted.
+        assert!(buf.get_chunks_to_be_retransmitted(expiry, 1000).is_empty());
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::InFlight),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Acked),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked),
+            ]
+        );
+    }
+
+    #[test]
+    fn expires_chunk_before_retransmitting_with_placeholder() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        // TSN 10 is reliable (never expires).
+        buf.insert(
+            OutgoingMessageId(1),
+            &seq.ordered("a", "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        // TSN 11 is the beginning of a multi-fragment message with a limited lifetime, with
+        // remaining unsent fragments still in the send queue.
+        buf.insert(OutgoingMessageId(2), &seq.ordered("b", "B"), now(), u16::MAX, expiry, None);
+
+        buf.nack_all(now());
+
+        let chunks = buf.get_chunks_to_be_retransmitted(expiry, 1000);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
+
+        // An unsent end placeholder was appended at TSN 12 and marked abandoned.
+        assert_eq!(buf.next_tsn(), Tsn(13));
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::InFlight),
+                (Tsn(11), ChunkState::Abandoned),
+                (Tsn(12), ChunkState::Abandoned),
+            ]
+        );
+        assert_eq!(buf.get_unsent_messages_to_discard(), vec![(StreamId(1), OutgoingMessageId(2))]);
+    }
+
+    #[test]
+    fn expires_restored_chunk_before_retransmitting() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq = DataSequencer::new(StreamId(1));
+        let expiry = now() + Duration::from_millis(50);
+
+        buf.insert(MESSAGE_ID, &seq.ordered("a", "BE"), now(), u16::MAX, expiry, None);
+        buf.nack_all(now());
+
+        // The handover happens after the chunk has expired.
+        let handover_time = expiry + Duration::from_millis(10);
+        let mut state = SocketHandoverState::default();
+        buf.add_to_handover_state(handover_time, &mut state);
+        assert_eq!(state.tx.outstanding_data.len(), 1);
+        assert_eq!(state.tx.outstanding_data[0].expires_in_ms, Some(0));
+
+        let mut buf2 = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(0));
+        buf2.restore_from_state(handover_time, &state);
+
+        assert!(buf2.get_chunks_to_be_retransmitted(handover_time, 1000).is_empty());
+        assert_eq!(
+            buf2.get_chunk_states_for_testing(),
+            vec![(Tsn(9), ChunkState::Acked), (Tsn(10), ChunkState::Abandoned)]
+        );
     }
 }

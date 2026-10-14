@@ -185,6 +185,19 @@ mod tests {
         }
     }
 
+    /// Returns the PPIDs of the chunks in `packet`, which is expected to only contain DATA chunks.
+    fn data_chunk_ppids(packet: &[u8], options: &Options) -> Vec<PpId> {
+        SctpPacket::from_bytes(packet, options)
+            .unwrap()
+            .chunks
+            .iter()
+            .map(|chunk| match chunk {
+                Chunk::Data(DataChunk { data, .. }) => data.ppid,
+                other => panic!("Expected DATA chunk, got {other:?}"),
+            })
+            .collect()
+    }
+
     #[test]
     fn establish_connection() {
         let options = default_options();
@@ -3142,6 +3155,141 @@ mod tests {
         let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
         assert!(events_a.iter().any(is_lifecycle_message_expired(LifecycleId::from(41))));
         assert!(events_a.iter().any(is_lifecycle_end(LifecycleId::from(41))));
+    }
+
+    #[test]
+    fn does_not_retransmit_expired_message_behind_unacknowledged_reliable_message_on_rto() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(51), vec![0; 10]),
+                &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
+            )
+            .unwrap();
+        socket_a
+            .send(
+                Message::new(StreamId(2), PpId(52), vec![0; 10]),
+                &SendOptions {
+                    lifetime: Some(Duration::from_millis(50)),
+                    lifecycle_id: LifecycleId::new(2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Both initial packets are lost.
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&packet, &options), [PpId(51)]);
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&packet, &options), [PpId(52)]);
+        expect_no_event!(socket_a.poll_event());
+
+        // Let T3-rtx expire (after the second message's 50ms lifetime has elapsed).
+        let now = SocketTime::zero() + options.rto_initial;
+        socket_a.advance_time(now);
+        socket_z.advance_time(now);
+
+        // Only the first (reliable) message should be retransmitted; the second message has
+        // expired even though a FORWARD-TSN cannot be sent for it yet.
+        let rtx_packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&rtx_packet, &options), [PpId(51)]);
+        expect_no_event!(socket_a.poll_event());
+
+        socket_z.handle_input(&rtx_packet);
+        let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
+        assert!(events_a.iter().any(is_lifecycle_message_delivered(LifecycleId::from(1))));
+        assert!(events_a.iter().any(is_lifecycle_end(LifecycleId::from(1))));
+        assert!(events_a.iter().any(is_lifecycle_message_maybe_expired(LifecycleId::from(2))));
+        assert!(events_a.iter().any(is_lifecycle_end(LifecycleId::from(2))));
+
+        assert_eq!(socket_z.get_next_message().unwrap().ppid, PpId(51));
+        assert!(socket_z.get_next_message().is_none());
+    }
+
+    #[test]
+    fn does_not_fast_retransmit_expired_message_behind_unacknowledged_reliable_message() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(51), vec![0; 10]),
+                &SendOptions { lifecycle_id: LifecycleId::new(1), ..Default::default() },
+            )
+            .unwrap();
+        socket_a
+            .send(
+                Message::new(StreamId(2), PpId(52), vec![0; 10]),
+                &SendOptions {
+                    lifetime: Some(Duration::from_millis(50)),
+                    lifecycle_id: LifecycleId::new(2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for (stream_id, ppid) in [(3, 53), (4, 54), (5, 55)] {
+            socket_a
+                .send(
+                    Message::new(StreamId(stream_id), PpId(ppid), vec![0; 10]),
+                    &SendOptions::default(),
+                )
+                .unwrap();
+        }
+
+        // The first two packets (PPID 51 and 52) are lost.
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&packet, &options), [PpId(51)]);
+        expect_on_lifecycle_message_fully_sent!(socket_a.poll_event());
+        let packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&packet, &options), [PpId(52)]);
+
+        let packet3 = expect_sent_packet!(socket_a.poll_event());
+        let packet4 = expect_sent_packet!(socket_a.poll_event());
+        let packet5 = expect_sent_packet!(socket_a.poll_event());
+        expect_no_event!(socket_a.poll_event());
+
+        // Advance time past the second message's 50ms lifetime, but before `rto_initial` so that
+        // T3-rtx does not fire.
+        let now = SocketTime::zero() + Duration::from_millis(60);
+        assert!(now < SocketTime::zero() + options.rto_initial);
+        socket_a.advance_time(now);
+        socket_z.advance_time(now);
+        expect_no_event!(socket_a.poll_event());
+
+        // Deliver packets 3, 4, 5 and feed the resulting SACKs back to A, to trigger fast
+        // retransmit via three miss indications.
+        for packet in [packet3, packet4, packet5] {
+            socket_z.handle_input(&packet);
+            socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        }
+
+        // Only the first (reliable) message should be fast-retransmitted; the second message has
+        // expired and no FORWARD-TSN can be sent for it yet.
+        let fast_rtx_packet = expect_sent_packet!(socket_a.poll_event());
+        assert_eq!(data_chunk_ppids(&fast_rtx_packet, &options), [PpId(51)]);
+        expect_no_event!(socket_a.poll_event());
+
+        socket_z.handle_input(&fast_rtx_packet);
+        let (events_a, _) = exchange_packets(&mut socket_a, &mut socket_z);
+        assert!(events_a.iter().any(is_lifecycle_message_delivered(LifecycleId::from(1))));
+        assert!(events_a.iter().any(is_lifecycle_end(LifecycleId::from(1))));
+        assert!(events_a.iter().any(is_lifecycle_message_maybe_expired(LifecycleId::from(2))));
+        assert!(events_a.iter().any(is_lifecycle_end(LifecycleId::from(2))));
+
+        let mut received_ppids = Vec::new();
+        while let Some(message) = socket_z.get_next_message() {
+            received_ppids.push(message.ppid);
+        }
+        assert_eq!(received_ppids, [PpId(53), PpId(54), PpId(55), PpId(51)]);
     }
 
     #[test]
