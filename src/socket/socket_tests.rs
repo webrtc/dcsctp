@@ -2539,6 +2539,41 @@ mod tests {
     }
 
     #[test]
+    fn retransmits_lost_packet_only_once_in_large_burst() {
+        let options = default_options();
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // A message large enough that many packets are still in flight when the second packet is
+        // detected as lost and fast retransmitted. The SACKs for those in-flight packets reach A
+        // before the retransmission reaches Z, and they must not cause the lost packet to be
+        // retransmitted again.
+        let payload_size = options.mtu * 20;
+        socket_a
+            .send(
+                Message::new(StreamId(1), PpId(53), vec![0; payload_size]),
+                &SendOptions::default(),
+            )
+            .unwrap();
+
+        // Receive first packet, drop second, receive the rest in order.
+        // A -> DATA -> Z
+        socket_z.handle_input(&expect_sent_packet!(socket_a.poll_event()));
+        // A -> DATA -> /lost/ Z
+        expect_sent_packet!(socket_a.poll_event());
+        exchange_packets(&mut socket_a, &mut socket_z);
+
+        assert_eq!(socket_z.get_next_message().unwrap().payload.len(), payload_size);
+        let metrics = socket_a.get_metrics().unwrap();
+        assert_eq!(metrics.rtx_packets_count, 1);
+        assert_eq!(
+            metrics.rtx_bytes_count,
+            round_down_to_4!(options.mtu - sctp_packet::COMMON_HEADER_SIZE) as u64
+        );
+    }
+
+    #[test]
     fn retransmission_metrics_are_set_for_normal_retransmit() {
         let options = default_options();
         let mut socket_a = Socket::new("A", &options);
