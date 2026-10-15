@@ -2305,57 +2305,78 @@ mod tests {
 
     #[test]
     fn abandons_rtx_limit2_when_nacked_nine_times() {
-        // Sends a lot of messages with max_retransmissions=2, then let one message become nacked 9
-        // times, which will make it abandon at that time.
+        // TSN 10 is sent with max_retransmissions=2 and is lost on every transmission. Nine chunks
+        // (TSN 11..19) are sent in three batches of three (one batch after each transmission of
+        // TSN 10) so that their SACKs produce 3 miss indications per transmission (9 NACKs in
+        // total), triggering two retransmissions before abandoning TSN 10 on the 9th NACK.
         let now = START_TIME;
         let events = Rc::new(RefCell::new(Events::new()));
         let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
         let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
         let mut rtx = create_queue(true, false, Rc::clone(&events));
 
-        for _ in 0..10 {
-            sq.add(
-                now,
-                Message::new(StreamId(1), PpId(53), vec![0; 4]),
-                &SendOptions { max_retransmissions: Some(2), ..SendOptions::default() },
-            );
-        }
-        assert_eq!(
-            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
-            (10..=19).map(Tsn).collect::<Vec<_>>()
-        );
-
-        for x in 11..=18 {
-            // Ack 9, 11->x->18
+        let add_messages = |sq: &mut SendQueue, count: usize| {
+            for _ in 0..count {
+                sq.add(
+                    now,
+                    Message::new(StreamId(1), PpId(53), vec![0; 4]),
+                    &SendOptions { max_retransmissions: Some(2), ..SendOptions::default() },
+                );
+            }
+        };
+        // Acks TSN 11..=highest_tsn, reporting TSN 10 as missing.
+        let sack_with_tsn_10_missing = |rtx: &mut RetransmissionQueue, highest_tsn: u16| {
             rtx.handle_sack(
                 now,
                 &SackChunk {
                     cumulative_tsn_ack: Tsn(9),
                     a_rwnd: A_RWND,
-                    gap_ack_blocks: vec![GapAckBlock::new(2, x - 9)],
+                    gap_ack_blocks: vec![GapAckBlock::new(2, highest_tsn - 9)],
                     duplicate_tsns: vec![],
                 },
             );
-            assert!(!rtx.should_send_forward_tsn(now));
+        };
 
-            // Retransmit any chunks.
-            if rtx.has_data_to_be_fast_retransmitted() {
-                rtx.get_chunks_for_fast_retransmit(now, MTU);
-            } else {
-                rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes));
-            }
+        // Batch 1 (TSN 11..13), sent with the initial transmission of TSN 10.
+        add_messages(&mut sq, 4);
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10), Tsn(11), Tsn(12), Tsn(13)]
+        );
+
+        // Ack TSN 11..13 - three NACKs for TSN 10, which will fast retransmit it.
+        for tsn in 11..=13 {
+            sack_with_tsn_10_missing(&mut rtx, tsn);
+            assert!(!rtx.should_send_forward_tsn(now));
+        }
+        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), [Tsn(10)]);
+
+        // Batch 2 (TSN 14..16), sent after the first retransmission of TSN 10.
+        add_messages(&mut sq, 3);
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(14), Tsn(15), Tsn(16)]
+        );
+
+        // Ack TSN 14..16 - three more NACKs - second and last retransmission.
+        for tsn in 14..=16 {
+            sack_with_tsn_10_missing(&mut rtx, tsn);
+            assert!(!rtx.should_send_forward_tsn(now));
         }
 
-        // 9th time for TSN=10.
-        rtx.handle_sack(
-            now,
-            &SackChunk {
-                cumulative_tsn_ack: Tsn(9),
-                a_rwnd: A_RWND,
-                gap_ack_blocks: vec![GapAckBlock::new(2, 10)],
-                duplicate_tsns: vec![],
-            },
+        // Batch 3 (TSN 17..19), sent together with the second retransmission of TSN 10.
+        add_messages(&mut sq, 3);
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10), Tsn(17), Tsn(18), Tsn(19)]
         );
+
+        // Ack TSN 17..19 - the 9th NACK abandons TSN 10.
+        for tsn in 17..=18 {
+            sack_with_tsn_10_missing(&mut rtx, tsn);
+            assert!(!rtx.should_send_forward_tsn(now));
+        }
+        sack_with_tsn_10_missing(&mut rtx, 19);
         assert!(rtx.should_send_forward_tsn(now));
         assert_eq!(
             rtx.get_chunk_states_for_testing(),

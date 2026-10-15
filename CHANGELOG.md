@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Fixed
+
+- Avoid retransmitting a lost chunk multiple times within a single RTT.
+
 ## 0.1.16 - 2026-10-27
 
 ### Added
