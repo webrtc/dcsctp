@@ -18,6 +18,7 @@ and this project adheres to
  - Prevent potential integer overflows and underflows in various places
  - Fix linter warnings from new compiler toolchain.
  - Do not retransmit expired chunks.
+ - Avoid retransmitting a lost chunk multiple times within a single RTT.
 
 ## 0.1.15 - 2026-10-01
 
