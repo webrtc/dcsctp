@@ -3328,6 +3328,100 @@ mod tests {
     }
 
     #[test]
+    fn only_rate_limits_duplicate_forward_tsn() {
+        let options = Options {
+            default_stream_buffered_amount_low_threshold: 1_800_000,
+            ..Options::default()
+        };
+        let mut socket_a = Socket::new("A", &options);
+        let mut socket_z = Socket::new("Z", &options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        let send_unreliable = |socket_a: &mut Socket, ppid: u32| {
+            socket_a
+                .send(
+                    Message::new(StreamId(1), PpId(ppid), vec![0; 10]),
+                    &SendOptions { max_retransmissions: Some(0), ..Default::default() },
+                )
+                .unwrap();
+            expect_sent_packet!(socket_a.poll_event())
+        };
+        let deliver_and_sack = |socket_a: &mut Socket, socket_z: &mut Socket, packet: &[u8]| {
+            socket_z.handle_input(packet);
+            socket_a.handle_input(&expect_sent_packet!(socket_z.poll_event()));
+        };
+        let get_data_chunk_tsn = |packet: &[u8]| {
+            let parsed = SctpPacket::from_bytes(packet, &options).unwrap();
+            let [Chunk::Data(chunk)] = parsed.chunks.as_slice() else {
+                panic!("Expected a single DATA chunk, got {:?}", parsed.chunks);
+            };
+            chunk.tsn
+        };
+
+        // The first message is lost. Three following messages are delivered, and the SACKs
+        // generated for them will mark the first one as lost and abandoned.
+        let lost_tsn1 = get_data_chunk_tsn(&send_unreliable(&mut socket_a, 51));
+        let packet52 = send_unreliable(&mut socket_a, 52);
+        let packet53 = send_unreliable(&mut socket_a, 53);
+        let packet54 = send_unreliable(&mut socket_a, 54);
+
+        // Let some time pass, so that a non-zero RTT is measured.
+        let mut now = SocketTime::zero() + Duration::from_millis(50);
+        socket_a.advance_time(now);
+        socket_z.advance_time(now);
+        deliver_and_sack(&mut socket_a, &mut socket_z, &packet52);
+        deliver_and_sack(&mut socket_a, &mut socket_z, &packet53);
+        deliver_and_sack(&mut socket_a, &mut socket_z, &packet54);
+
+        let forward_tsn1 = expect_sent_packet!(socket_a.poll_event());
+        let parsed = SctpPacket::from_bytes(&forward_tsn1, &options).unwrap();
+        assert!(matches!(
+            parsed.chunks.as_slice(),
+            [Chunk::ForwardTsn(ForwardTsnChunk { new_cumulative_tsn, .. })]
+                if *new_cumulative_tsn == lost_tsn1
+        ));
+        socket_z.handle_input(&forward_tsn1);
+        expect_no_event!(socket_a.poll_event());
+        expect_no_event!(socket_z.poll_event());
+
+        // Without advancing time (i.e. within the FORWARD-TSN rate limiting interval), lose
+        // another message. The FORWARD-TSN for it advances the cumulative TSN, so it must be sent
+        // immediately.
+        let lost_tsn2 = get_data_chunk_tsn(&send_unreliable(&mut socket_a, 55));
+        for ppid in [56, 57, 58] {
+            let packet = send_unreliable(&mut socket_a, ppid);
+            deliver_and_sack(&mut socket_a, &mut socket_z, &packet);
+        }
+
+        let forward_tsn2 = expect_sent_packet!(socket_a.poll_event());
+        let parsed = SctpPacket::from_bytes(&forward_tsn2, &options).unwrap();
+        assert!(matches!(
+            parsed.chunks.as_slice(),
+            [Chunk::ForwardTsn(ForwardTsnChunk { new_cumulative_tsn, .. })]
+                if *new_cumulative_tsn == lost_tsn2
+        ));
+
+        // That FORWARD-TSN was lost. A duplicate is not sent until the rate limiting interval has
+        // passed.
+        let packet59 = send_unreliable(&mut socket_a, 59);
+        deliver_and_sack(&mut socket_a, &mut socket_z, &packet59);
+        expect_no_event!(socket_a.poll_event());
+
+        now = now + Duration::from_millis(200);
+        socket_a.advance_time(now);
+        socket_z.advance_time(now);
+        let packet60 = send_unreliable(&mut socket_a, 60);
+        let parsed = SctpPacket::from_bytes(&packet60, &options).unwrap();
+        assert!(matches!(
+            parsed.chunks.as_slice(),
+            [
+                Chunk::ForwardTsn(ForwardTsnChunk { new_cumulative_tsn, .. }),
+                Chunk::Data(DataChunk { data: Data { ppid: PpId(60), .. }, .. }),
+            ] if *new_cumulative_tsn == lost_tsn2
+        ));
+    }
+
+    #[test]
     fn exposes_the_number_of_negotiated_streams() {
         let options_a = Options {
             announced_maximum_incoming_streams: 12,

@@ -220,7 +220,6 @@ impl Socket {
             options: options.clone(),
             events,
             send_queue: SendQueue::new(options.mtu, options, sqe),
-            limit_forward_tsn_until: SocketTime::zero(),
             heartbeat_interval: Timer::new(
                 options.heartbeat_interval,
                 BackoffAlgorithm::Fixed,

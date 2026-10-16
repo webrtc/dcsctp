@@ -11,6 +11,7 @@ and this project adheres to
 ### Fixed
 
 - Avoid retransmitting a lost chunk multiple times within a single RTT.
+- Only rate limit duplicate FORWARD-TSN chunks.
 
 ## 0.1.16 - 2026-10-27
 
