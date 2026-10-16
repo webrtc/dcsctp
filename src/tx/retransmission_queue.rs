@@ -2364,11 +2364,13 @@ mod tests {
             assert!(!rtx.should_send_forward_tsn(now));
         }
 
-        // Batch 3 (TSN 17..19), sent together with the second retransmission of TSN 10.
+        // The second retransmission is also a fast retransmission, even though the endpoint is in
+        // fast recovery. New data (TSN 17..19) is sent after it.
+        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), [Tsn(10)]);
         add_messages(&mut sq, 3);
         assert_eq!(
             get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
-            [Tsn(10), Tsn(17), Tsn(18), Tsn(19)]
+            [Tsn(17), Tsn(18), Tsn(19)]
         );
 
         // Ack TSN 17..19 - the 9th NACK abandons TSN 10.
@@ -2394,6 +2396,69 @@ mod tests {
                 (Tsn(19), ChunkState::Acked),
             ]
         );
+    }
+
+    #[test]
+    fn fast_retransmits_loss_detected_while_in_fast_recovery() {
+        let now = START_TIME;
+        let events = Rc::new(RefCell::new(Events::new()));
+        let events_clone = Rc::clone(&events) as Rc<RefCell<dyn EventSink>>;
+        let mut sq = SendQueue::new(MTU, &Options::default(), events_clone);
+        let mut rtx = create_queue(true, false, events);
+
+        for _ in 0..8 {
+            add_message(&mut sq, now);
+        }
+
+        // Send TSN 10 to 17. TSN 10 and TSN 14 are lost.
+        assert_eq!(
+            get_tsns(&rtx.get_chunks_to_send(now, MTU, |bytes, _| sq.produce(now, bytes))),
+            [Tsn(10), Tsn(11), Tsn(12), Tsn(13), Tsn(14), Tsn(15), Tsn(16), Tsn(17)]
+        );
+        let initial_cwnd = rtx.cwnd();
+
+        // SACKs for TSN 11 to 13 give TSN 10 three miss indications. It's fast retransmitted and
+        // the endpoint enters fast recovery, with exit point 17.
+        for tsn in 11..=13 {
+            rtx.handle_sack(
+                now,
+                &SackChunk {
+                    cumulative_tsn_ack: Tsn(9),
+                    a_rwnd: A_RWND,
+                    gap_ack_blocks: vec![GapAckBlock::new(2, tsn - 9)],
+                    duplicate_tsns: vec![],
+                },
+            );
+        }
+        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), [Tsn(10)]);
+        assert!(
+            rtx.get_handover_readiness()
+                .contains(HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY)
+        );
+        let cwnd_in_fast_recovery = rtx.cwnd();
+        assert!(cwnd_in_fast_recovery < initial_cwnd);
+
+        // SACKs for TSN 15 to 17 give TSN 14 three miss indications, while still in fast recovery.
+        // It must also be fast retransmitted, i.e. without waiting for cwnd to allow it, but
+        // without reducing cwnd again.
+        for tsn in 15..=17 {
+            rtx.handle_sack(
+                now,
+                &SackChunk {
+                    cumulative_tsn_ack: Tsn(9),
+                    a_rwnd: A_RWND,
+                    gap_ack_blocks: vec![GapAckBlock::new(2, 4), GapAckBlock::new(6, tsn - 9)],
+                    duplicate_tsns: vec![],
+                },
+            );
+        }
+        assert!(
+            rtx.get_handover_readiness()
+                .contains(HandoverReadiness::RETRANSMISSION_QUEUE_FAST_RECOVERY)
+        );
+        assert!(rtx.has_data_to_be_fast_retransmitted());
+        assert_eq!(get_tsns(&rtx.get_chunks_for_fast_retransmit(now, MTU)), [Tsn(14)]);
+        assert_eq!(rtx.cwnd(), cwnd_in_fast_recovery);
     }
 
     #[test]

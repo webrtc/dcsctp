@@ -499,8 +499,18 @@ impl OutstandingData {
                 if self.outstanding_data[index as usize]
                     .is_miss_indication(ack_info.highest_tsn_acked)
                 {
-                    ack_info.has_packet_loss |=
-                        self.nack_chunk(now, tsn, false, !is_in_fast_recovery);
+                    // From <https://datatracker.ietf.org/doc/html/rfc9260#section-7.2.4>:
+                    //
+                    //   3) Determine how many of the earliest (i.e., lowest TSN) DATA chunks marked
+                    //   for retransmission will fit into a single packet [...] Retransmit those K
+                    //   DATA chunks in a single packet. When a Fast Retransmit is being performed,
+                    //   the sender SHOULD ignore the value of cwnd and SHOULD NOT delay
+                    //   retransmission for this single packet.
+                    //
+                    // This applies to every chunk that reaches the miss indication threshold,
+                    // regardless of if the endpoint is already in fast recovery or not. Only the
+                    // cwnd/ssthresh adjustment (step 2) is skipped while in fast recovery.
+                    ack_info.has_packet_loss |= self.nack_chunk(now, tsn, false, true);
                 }
                 tsn += 1;
             }
@@ -514,7 +524,10 @@ impl OutstandingData {
 
     /// Nacks the chunk with the given `tsn`, possibly marking it for retransmission or abandoning
     /// it. Returns true if the chunk was marked for retransmission or abandoned, indicating packet
-    /// loss.
+    /// loss. If `do_fast_retransmit` is set and the item has been nacked sufficiently many times so
+    /// that it should be retransmitted, this schedules it to be "fast retransmitted", i.e.
+    /// retransmitted without regard to cwnd. This is done for losses detected by SACKs, but not for
+    /// those detected by T3-rtx expiry.
     fn nack_chunk(
         &mut self,
         now: SocketTime,
@@ -1741,7 +1754,8 @@ mod tests {
         assert!(!buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 23)], true).has_packet_loss);
         assert!(!buf.has_data_to_be_retransmitted());
         assert!(buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(2, 24)], true).has_packet_loss);
-        let chunks = buf.get_chunks_to_be_retransmitted(now(), 1000);
+        // It is fast retransmitted again, even though in fast recovery.
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(now(), 1000);
         assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(10)]);
     }
 
