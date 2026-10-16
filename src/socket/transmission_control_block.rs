@@ -38,7 +38,9 @@ use crate::tx::retransmission_queue::RetransmissionQueue;
 use crate::tx::retransmission_timeout::RetransmissionTimeout;
 use crate::types::Tsn;
 use std::cell::RefCell;
+use std::cmp::min;
 use std::rc::Rc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) struct PreparedResetRequest {
@@ -78,6 +80,10 @@ pub struct TransmissionControlBlock {
     pub retransmission_queue: RetransmissionQueue,
     pub rto: RetransmissionTimeout,
     pub capabilities: Capabilities,
+
+    /// Rate limiting of duplicate FORWARD-TSN: the cumulative TSN of the last sent FORWARD-TSN and
+    /// the earliest timestamp at which a duplicate may be sent.
+    limit_forward_tsn_until: Option<(Tsn, SocketTime)>,
 
     /// The next sequence number for outgoing stream requests.
     next_outgoing_reset_req_seq_nbr: u32,
@@ -131,6 +137,7 @@ impl TransmissionControlBlock {
             ),
             rto: RetransmissionTimeout::new(options),
             capabilities,
+            limit_forward_tsn_until: None,
             next_outgoing_reset_req_seq_nbr: my_initial_tsn.0,
             reconfig_timer: Timer::new(
                 options.rto_initial,
@@ -153,6 +160,41 @@ impl TransmissionControlBlock {
         } else {
             Chunk::Data(DataChunk { data, tsn, immediate_ack })
         }
+    }
+
+    pub fn maybe_add_forward_tsn(&mut self, now: SocketTime, builder: &mut SctpPacketBuilder) {
+        if !self.retransmission_queue.should_send_forward_tsn(now) {
+            return;
+        }
+        let chunk = self.retransmission_queue.create_forward_tsn();
+        let new_cumulative_tsn = match &chunk {
+            Chunk::ForwardTsn(c) => c.new_cumulative_tsn,
+            Chunk::IForwardTsn(c) => c.new_cumulative_tsn,
+            _ => unreachable!(),
+        };
+        // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.5>:
+        //
+        //   C3) If, after step C1 and C2, the "Advanced.Peer.Ack.Point" is greater than the
+        //   Cumulative TSN Ack Point, the data sender MUST send the data receiver a FORWARD TSN
+        //   chunk containing the latest value of the "Advanced.Peer.Ack.Point".
+        //
+        //   IMPLEMENTATION NOTE: An implementation may wish to limit the number of duplicate
+        //   FORWARD TSN chunks it sends by [...] waiting a full RTT before sending a duplicate
+        //   FORWARD TSN. [...] Any delay applied to the sending of FORWARD TSN chunk SHOULD NOT
+        //   exceed 200ms and MUST NOT exceed 500ms.
+        //
+        // Only duplicates are rate limited. A FORWARD-TSN that advances the cumulative TSN is sent
+        // immediately, as delaying it would block the receiver from delivering messages on ordered
+        // streams.
+        if self
+            .limit_forward_tsn_until
+            .is_some_and(|(last_tsn, until)| last_tsn == new_cumulative_tsn && now < until)
+        {
+            return;
+        }
+        self.limit_forward_tsn_until =
+            Some((new_cumulative_tsn, now + min(Duration::from_millis(200), self.rto.srtt())));
+        builder.add(&chunk);
     }
 
     pub fn add_prepared_ssn_reset_request(&mut self, builder: &mut SctpPacketBuilder) {

@@ -389,7 +389,6 @@ mod tests {
             options,
             events: Rc::clone(&events) as Rc<RefCell<dyn EventSink>>,
             send_queue,
-            limit_forward_tsn_until: SocketTime::zero(),
             heartbeat_interval: Timer::new(
                 Duration::from_secs(30),
                 BackoffAlgorithm::Fixed,

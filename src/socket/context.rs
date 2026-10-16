@@ -25,9 +25,7 @@ use crate::socket::transmission_control_block::CurrentResetRequest;
 use crate::timer::Timer;
 use crate::tx::send_queue::SendQueue;
 use std::cell::RefCell;
-use std::cmp::min;
 use std::rc::Rc;
-use std::time::Duration;
 
 pub(crate) struct TxErrorCounter {
     error_counter: u32,
@@ -65,8 +63,6 @@ pub(crate) struct Context {
     pub options: Options,
     pub events: Rc<RefCell<dyn EventSink>>,
     pub send_queue: SendQueue,
-
-    pub limit_forward_tsn_until: SocketTime,
 
     pub heartbeat_interval: Timer,
     pub heartbeat_timeout: Timer,
@@ -111,20 +107,7 @@ impl Context {
                             )),
                         );
                     }
-                    if now >= self.limit_forward_tsn_until
-                        && tcb.retransmission_queue.should_send_forward_tsn(now)
-                    {
-                        builder.add(&tcb.retransmission_queue.create_forward_tsn());
-                        // From <https://datatracker.ietf.org/doc/html/rfc3758#section-3.5>:
-                        //
-                        //   IMPLEMENTATION NOTE: An implementation may wish to limit the number of
-                        //   duplicate FORWARD TSN chunks it sends by [...] waiting a full RTT
-                        //   before sending a duplicate FORWARD TSN. [...] Any delay applied to the
-                        //   sending of FORWARD TSN chunk SHOULD NOT exceed 200ms and MUST NOT
-                        //   exceed 500ms.
-                        self.limit_forward_tsn_until =
-                            now + min(Duration::from_millis(200), tcb.rto.srtt());
-                    }
+                    tcb.maybe_add_forward_tsn(now, builder);
 
                     if matches!(tcb.current_reset_request, CurrentResetRequest::None)
                         && self.send_queue.has_streams_ready_to_be_reset()
