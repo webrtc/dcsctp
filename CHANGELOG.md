@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.16 - 2026-10-27
+
 ### Added
 
  - Support persisting queued and outstanding data across socket handover.
