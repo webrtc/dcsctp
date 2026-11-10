@@ -218,6 +218,7 @@ mod tests {
     use crate::types::Mid;
     use crate::types::Ssn;
     use crate::types::StreamKey;
+    use bytes::Bytes;
     use itertools::Itertools;
 
     const MAX_SIZE: usize = 1000;
@@ -276,7 +277,7 @@ mod tests {
                         stream_key: StreamKey::Unordered(StreamId(1)),
                         ssn: Ssn(0),
                         ppid: PpId(53),
-                        payload: perm_payload,
+                        payload: perm_payload.into(),
                         is_beginning,
                         is_end,
                         ..Default::default()
@@ -322,7 +323,7 @@ mod tests {
                         stream_key: StreamKey::Ordered(StreamId(1)),
                         ssn: Ssn((*tsn - 10) as u16),
                         ppid: PpId(53),
-                        payload: perm_payload,
+                        payload: perm_payload.into(),
                         is_beginning: true,
                         is_end: true,
                         ..Default::default()
@@ -518,7 +519,7 @@ mod tests {
                     Data {
                         stream_key: StreamKey::Unordered(chunk.stream_id),
                         fsn: chunk.fsn,
-                        payload: chunk.payload.as_bytes().to_vec(),
+                        payload: Bytes::from(chunk.payload),
                         is_beginning: chunk.fsn == Fsn(0),
                         is_end: chunk.fsn == Fsn(2),
                         ..Default::default()

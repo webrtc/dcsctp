@@ -19,6 +19,7 @@ use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::Ssn;
 use crate::types::StreamKey;
+use bytes::Bytes;
 
 pub struct DataSequencer {
     stream_id: StreamId,
@@ -44,7 +45,7 @@ impl DataSequencer {
             mid: self.message_id,
             fsn: self.fsn,
             ppid: PpId(53),
-            payload: payload.as_bytes().to_vec(),
+            payload: Bytes::copy_from_slice(payload.as_bytes()),
             is_beginning,
             is_end,
         };
@@ -68,7 +69,7 @@ impl DataSequencer {
             mid: self.message_id,
             fsn: self.fsn,
             ppid: PpId(53),
-            payload: payload.as_bytes().to_vec(),
+            payload: Bytes::copy_from_slice(payload.as_bytes()),
             is_beginning,
             is_end,
         };

@@ -27,6 +27,7 @@ use crate::packet::write_u32_be;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
+use bytes::Bytes;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 0;
@@ -79,7 +80,7 @@ impl TryFrom<RawChunk<'_>> for DataChunk {
             stream_key,
             ssn: Ssn(read_u16_be!(&raw.value[6..8])),
             ppid: PpId(read_u32_be!(&raw.value[8..12])),
-            payload: raw.value[12..].to_vec(),
+            payload: Bytes::copy_from_slice(&raw.value[12..]),
             is_beginning: (raw.flags & (1 << FLAGS_BIT_BEGINNING)) != 0,
             is_end: (raw.flags & (1 << FLAGS_BIT_END)) != 0,
             ..Default::default()
@@ -180,7 +181,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 ssn: Ssn(789),
                 ppid: PpId(9090),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: Bytes::from_static(&[1, 2, 3, 4, 5]),
                 ..Default::default()
             },
             immediate_ack: true,

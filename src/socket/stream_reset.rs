@@ -435,8 +435,7 @@ mod tests {
         events: &Rc<RefCell<Events>>,
         options: &Options,
     ) -> ReConfigChunk {
-        let packet = expect_sent_packet(events, options);
-        packet
+        expect_sent_packet(events, options)
             .chunks
             .into_iter()
             .find_map(|c| match c {

@@ -28,6 +28,7 @@ use crate::types::Fsn;
 use crate::types::Mid;
 use crate::types::StreamKey;
 use crate::types::Tsn;
+use bytes::Bytes;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 64;
@@ -86,7 +87,7 @@ impl TryFrom<RawChunk<'_>> for IDataChunk {
             mid: Mid(read_u32_be!(&raw.value[8..12])),
             ppid: PpId(ppid),
             fsn: Fsn(fsn),
-            payload: raw.value[16..].to_vec(),
+            payload: Bytes::copy_from_slice(&raw.value[16..]),
             is_beginning,
             is_end: (raw.flags & (1 << FLAGS_BIT_END)) != 0,
             ..Default::default()
@@ -192,7 +193,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 mid: Mid(789),
                 ppid: PpId(9090),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: Bytes::from_static(&[1, 2, 3, 4, 5]),
                 is_beginning: true,
                 ..Default::default()
             },
@@ -253,7 +254,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 mid: Mid(789),
                 fsn: Fsn(10),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: Bytes::from_static(&[1, 2, 3, 4, 5]),
                 ..Default::default()
             },
             immediate_ack: false,

@@ -345,7 +345,7 @@ impl SendQueue {
             mid: item.mid.unwrap(),
             fsn,
             ppid: item.message.ppid,
-            payload: payload.to_vec(),
+            payload,
             is_beginning,
             is_end,
         };

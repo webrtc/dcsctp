@@ -4240,7 +4240,7 @@ mod tests {
         .add(&Chunk::IData(crate::packet::idata_chunk::IDataChunk {
             tsn: Tsn(10),
             data: Data {
-                payload: b"hello".to_vec(),
+                payload: Bytes::from_static(b"hello"),
                 is_beginning: true,
                 is_end: true,
                 ..Default::default()
@@ -4293,7 +4293,7 @@ mod tests {
         .add(&Chunk::Data(DataChunk {
             tsn: Tsn(10),
             data: Data {
-                payload: b"hello".to_vec(),
+                payload: Bytes::from_static(b"hello"),
                 is_beginning: true,
                 is_end: true,
                 ..Default::default()
