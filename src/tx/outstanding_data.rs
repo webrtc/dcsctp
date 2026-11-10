@@ -31,6 +31,7 @@ use crate::types::SerialNumber;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
+use bytes::Bytes;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -1020,7 +1021,7 @@ impl OutstandingData {
                     ssn: item.data.ssn.0,
                     fsn: item.data.fsn.0,
                     ppid: item.data.ppid.0,
-                    payload: item.data.payload.clone(),
+                    payload: item.data.payload.to_vec(),
                     expires_in_ms,
                     max_retransmissions: item.max_retransmissions,
                     is_beginning: item.data.is_beginning,
@@ -1081,7 +1082,7 @@ impl OutstandingData {
                 mid: Mid(data.mid),
                 fsn: Fsn(data.fsn),
                 ppid: PpId(data.ppid),
-                payload: data.payload.clone(),
+                payload: Bytes::copy_from_slice(&data.payload),
                 is_beginning: data.is_beginning,
                 is_end: data.is_end,
             };

@@ -241,6 +241,7 @@ mod tests {
     use crate::types::Ssn;
     use crate::types::StreamKey;
     use crate::types::Tsn;
+    use bytes::BytesMut;
 
     const VERIFICATION_TAG: u32 = 0x12345678;
 
@@ -473,7 +474,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(456)),
                 ssn: Ssn(789),
                 ppid: PpId(9090),
-                payload: vec![1, 2, 3, 4, 5],
+                payload: Bytes::from_static(&[1, 2, 3, 4, 5]),
                 ..Default::default()
             },
             immediate_ack: false,
@@ -484,7 +485,7 @@ mod tests {
                 stream_key: StreamKey::Ordered(StreamId(654)),
                 ssn: Ssn(789),
                 ppid: PpId(909),
-                payload: vec![5, 4, 3, 2, 1],
+                payload: Bytes::from_static(&[5, 4, 3, 2, 1]),
                 ..Default::default()
             },
             immediate_ack: false,
@@ -570,7 +571,7 @@ mod tests {
         assert_eq!(builder.bytes_remaining(), MAX_PACKET_SIZE - SCTP_PACKET_HEADER_SIZE);
 
         // Add a smaller chunk first.
-        let payload = vec![0; 183];
+        let payload = BytesMut::zeroed(183).freeze();
         builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(1),
             data: Data { payload: payload.clone(), ..Default::default() },
@@ -583,7 +584,7 @@ mod tests {
         );
         assert_eq!(builder.bytes_remaining(), 976);
 
-        let payload = vec![0; 957];
+        let payload = BytesMut::zeroed(957).freeze();
         builder.add(&Chunk::Data(DataChunk {
             tsn: Tsn(2),
             data: Data { payload: payload.clone(), ..Default::default() },
