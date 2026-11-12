@@ -43,13 +43,13 @@ pub struct HeartbeatRequestChunk {
     pub parameters: Vec<Parameter>,
 }
 
-impl TryFrom<RawChunk<'_>> for HeartbeatRequestChunk {
+impl TryFrom<RawChunk> for HeartbeatRequestChunk {
     type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
+    fn try_from(raw: RawChunk) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
-        let parameters = parameters_from_bytes(raw.value)?;
+        let parameters = parameters_from_bytes(&raw.value)?;
         Ok(Self { parameters })
     }
 }
@@ -75,6 +75,7 @@ impl fmt::Display for HeartbeatRequestChunk {
 mod tests {
     use super::*;
     use crate::packet::heartbeat_info_parameter::HeartbeatInfoParameter;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -92,8 +93,9 @@ mod tests {
             0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
         ];
+        let bytes = Bytes::from_static(BYTES);
         let chunk =
-            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(chunk.parameters.len(), 1);
 
         const HEARTBEAT_INFO_BYTES: &[u8] = &[
@@ -120,8 +122,9 @@ mod tests {
 
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            HeartbeatRequestChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
 
         match deserialized.parameters[0] {
             Parameter::HeartbeatInfo(ref i) if i.info == info => {}

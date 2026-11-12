@@ -44,13 +44,13 @@ pub struct ErrorChunk {
     pub error_causes: Vec<ErrorCause>,
 }
 
-impl TryFrom<RawChunk<'_>> for ErrorChunk {
+impl TryFrom<RawChunk> for ErrorChunk {
     type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
+    fn try_from(raw: RawChunk) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
-        let error_causes = error_cause_from_bytes(raw.value)?;
+        let error_causes = error_cause_from_bytes(&raw.value)?;
         ensure!(!error_causes.is_empty(), ChunkParseError::InvalidLength);
 
         Ok(Self { error_causes })
@@ -78,6 +78,7 @@ impl fmt::Display for ErrorChunk {
 mod tests {
     use super::*;
     use crate::packet::unrecognized_chunk_error_cause::UnrecognizedChunkErrorCause;
+    use bytes::Bytes;
 
     #[test]
     fn init_from_capture() {
@@ -88,7 +89,8 @@ mod tests {
         //    Unrecognized chunk type cause (Type: 73 (unknown))
         const BYTES: &[u8] =
             &[0x09, 0x00, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x08, 0x49, 0x00, 0x00, 0x04];
-        let error = ErrorChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let error = ErrorChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(error.error_causes.len(), 1);
         match &error.error_causes[0] {
             ErrorCause::UnrecognizedChunk(c) => {
@@ -108,7 +110,8 @@ mod tests {
 
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
-        let parsed = ErrorChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(&serialized);
+        let parsed = ErrorChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         match &parsed.error_causes[0] {
             ErrorCause::UnrecognizedChunk(c) => {
                 assert_eq!(c.chunk, vec![1, 2, 3, 4]);

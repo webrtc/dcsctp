@@ -27,7 +27,6 @@ use crate::packet::write_u32_be;
 use crate::types::Ssn;
 use crate::types::StreamKey;
 use crate::types::Tsn;
-use bytes::Bytes;
 use std::fmt;
 
 pub(crate) const CHUNK_TYPE: u8 = 0;
@@ -66,21 +65,22 @@ const FLAGS_BIT_BEGINNING: i8 = 1;
 const FLAGS_BIT_UNORDERED: i8 = 2;
 const FLAGS_BIT_IMMEDIATE_ACK: i8 = 3;
 
-impl TryFrom<RawChunk<'_>> for DataChunk {
+impl TryFrom<RawChunk> for DataChunk {
     type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
+    fn try_from(raw: RawChunk) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
         ensure!(raw.value.len() >= 12, ChunkParseError::InvalidLength);
 
         let tsn = Tsn(read_u32_be!(&raw.value[0..4]));
         let is_unordered = raw.flags & (1 << FLAGS_BIT_UNORDERED) != 0;
         let stream_key = StreamKey::new(is_unordered, StreamId(read_u16_be!(&raw.value[4..6])));
+
         let data = Data {
             stream_key,
             ssn: Ssn(read_u16_be!(&raw.value[6..8])),
             ppid: PpId(read_u32_be!(&raw.value[8..12])),
-            payload: Bytes::copy_from_slice(&raw.value[12..]),
+            payload: raw.value.slice(12..),
             is_beginning: (raw.flags & (1 << FLAGS_BIT_BEGINNING)) != 0,
             is_end: (raw.flags & (1 << FLAGS_BIT_END)) != 0,
             ..Default::default()
@@ -146,6 +146,7 @@ impl fmt::Display for DataChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn from_capture() {
@@ -162,7 +163,8 @@ mod tests {
             0x00, 0x03, 0x00, 0x14, 0x55, 0x08, 0x36, 0x3c, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00,
             0x00, 0x35, 0x00, 0x01, 0x02, 0x03,
         ];
-        let c = DataChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let c = DataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(c.tsn, Tsn(1426601532));
         assert_eq!(c.data.stream_key, StreamKey::Ordered(StreamId(2)));
         assert_eq!(c.data.ssn, Ssn(1));
@@ -189,8 +191,8 @@ mod tests {
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
 
-        let deserialized =
-            DataChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+        let bytes = Bytes::copy_from_slice(&serialized);
+        let deserialized = DataChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(deserialized.tsn, Tsn(123));
         assert_eq!(deserialized.data.stream_key, StreamKey::Ordered(StreamId(456)));
         assert_eq!(deserialized.data.ssn, Ssn(789));

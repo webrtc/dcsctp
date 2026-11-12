@@ -25,10 +25,10 @@ pub(crate) struct UnknownChunk {
     pub(crate) value: Vec<u8>,
 }
 
-impl TryFrom<RawChunk<'_>> for UnknownChunk {
+impl TryFrom<RawChunk> for UnknownChunk {
     type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
+    fn try_from(raw: RawChunk) -> Result<Self, ChunkParseError> {
         Ok(Self { typ: raw.typ, flags: raw.flags, value: raw.value.to_vec() })
     }
 }

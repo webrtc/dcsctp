@@ -44,13 +44,13 @@ pub struct AbortChunk {
     pub error_causes: Vec<ErrorCause>,
 }
 
-impl TryFrom<RawChunk<'_>> for AbortChunk {
+impl TryFrom<RawChunk> for AbortChunk {
     type Error = ChunkParseError;
 
-    fn try_from(raw: RawChunk<'_>) -> Result<Self, ChunkParseError> {
+    fn try_from(raw: RawChunk) -> Result<Self, ChunkParseError> {
         ensure!(raw.typ == CHUNK_TYPE, ChunkParseError::InvalidType);
 
-        let error_causes = error_cause_from_bytes(raw.value)?;
+        let error_causes = error_cause_from_bytes(&raw.value)?;
         let tag_reflected = (raw.flags & 0x01) != 0;
         Ok(Self { tag_reflected, error_causes })
     }
@@ -78,6 +78,7 @@ impl fmt::Display for AbortChunk {
 mod tests {
     use super::*;
     use crate::packet::protocol_violation_error_cause::ProtocolViolationErrorCause;
+    use bytes::Bytes;
 
     #[test]
     fn init_from_capture() {
@@ -87,7 +88,8 @@ mod tests {
         //     Chunk length: 8
         //     User initiated ABORT cause
         const BYTES: &[u8] = &[0x06, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00, 0x04];
-        let abort = AbortChunk::try_from(RawChunk::from_bytes(BYTES).unwrap().0).unwrap();
+        let bytes = Bytes::from_static(BYTES);
+        let abort = AbortChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert_eq!(abort.error_causes.len(), 1);
         match &abort.error_causes[0] {
             ErrorCause::UserInitiatedAbort(c) => {
@@ -108,8 +110,9 @@ mod tests {
 
         let mut serialized = vec![0; chunk.serialized_size()];
         chunk.serialize_to(&mut serialized);
+        let bytes = Bytes::copy_from_slice(&serialized);
         let deserialized =
-            AbortChunk::try_from(RawChunk::from_bytes(&serialized).unwrap().0).unwrap();
+            AbortChunk::try_from(RawChunk::from_bytes(&bytes, 0).unwrap().0).unwrap();
         assert!(deserialized.tag_reflected);
     }
 }
