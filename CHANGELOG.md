@@ -8,6 +8,8 @@ and this project adheres to
 
 ## Unreleased
 
+## 0.1.18 - 2026-11-13
+
 ### Changed
 
  - Byte payloads are now represented using the bytes crate.
