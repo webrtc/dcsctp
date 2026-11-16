@@ -34,7 +34,6 @@ use crate::api::handover::HandoverReadiness;
 use crate::api::handover::HandoverSocketState;
 use crate::api::handover::SocketHandoverState;
 use crate::events::Events;
-use crate::logging::log_packet;
 use crate::math::round_down_to_4;
 use crate::packet::SerializableTlv;
 use crate::packet::abort_chunk::AbortChunk;
@@ -90,13 +89,9 @@ use crate::tx::send_queue::SendQueue;
 use crate::types::Tsn;
 use bytes::Bytes;
 #[cfg(not(test))]
-use log::info;
-#[cfg(not(test))]
 use log::warn;
 use std::cell::RefCell;
 use std::cmp::min;
-#[cfg(test)]
-use std::println as info;
 #[cfg(test)]
 use std::println as warn;
 use std::rc::Rc;
@@ -114,75 +109,6 @@ pub mod transmission_control_block;
 
 #[cfg(test)]
 pub mod socket_tests;
-
-struct LoggingEvents {
-    parent: Rc<RefCell<dyn EventSink>>,
-    name: String,
-    now: Rc<RefCell<SocketTime>>,
-}
-
-impl LoggingEvents {
-    pub fn new(
-        parent: Rc<RefCell<dyn EventSink>>,
-        name: String,
-        now: Rc<RefCell<SocketTime>>,
-    ) -> LoggingEvents {
-        Self { parent, name, now }
-    }
-}
-
-impl EventSink for LoggingEvents {
-    fn add(&mut self, event: SocketEvent) {
-        match event {
-            SocketEvent::SendPacket(ref e) => {
-                let now = *self.now.borrow();
-                log_packet(&self.name, now, true, e);
-            }
-            SocketEvent::OnConnected() => info!("OnConnected"),
-            SocketEvent::OnError(kind, ref e) => info!("OnError: {:?}, {}", kind, e),
-            SocketEvent::OnBufferedAmountLow(e) => info!("OnBufferedAmountLow: {}", e),
-            SocketEvent::OnTotalBufferedAmountLow() => info!("OnTotalBufferedAmountLow"),
-            SocketEvent::OnLifecycleMessageFullySent(ref id) => {
-                info!("OnLifecycleMessageFullySent({})", id);
-            }
-            SocketEvent::OnLifecycleMessageExpired(ref id) => {
-                info!("OnLifecycleMessageExpired({})", id);
-            }
-            SocketEvent::OnLifecycleMessageMaybeExpired(ref id) => {
-                info!("OnLifecycleMessageMaybeExpired({})", id);
-            }
-            SocketEvent::OnLifecycleMessageDelivered(ref id) => {
-                info!("OnLifecycleMessageDelivered({})", id);
-            }
-            SocketEvent::OnLifecycleEnd(ref id) => {
-                info!("OnLifecycleEnd({})", id);
-            }
-            SocketEvent::OnStreamsResetFailed(ref streams) => {
-                info!("OnStreamsResetFailed({:?})", streams);
-            }
-            SocketEvent::OnStreamsResetPerformed(ref streams) => {
-                info!("OnStreamsResetPerformed({:?})", streams);
-            }
-            SocketEvent::OnIncomingStreamReset(ref streams) => {
-                info!("OnIncomingStreamReset({:?})", streams);
-            }
-            SocketEvent::OnClosed() => {
-                info!("OnClosed()");
-            }
-            SocketEvent::OnAborted(ref error, ref reason) => {
-                info!("OnAborted({:?}, {})", error, reason);
-            }
-            SocketEvent::OnConnectionRestarted() => {
-                info!("OnConnectionRestarted()");
-            }
-        }
-        self.parent.borrow_mut().add(event);
-    }
-
-    fn next_event(&mut self) -> Option<SocketEvent> {
-        self.parent.borrow_mut().next_event()
-    }
-}
 
 /// An SCTP socket.
 ///
@@ -213,9 +139,7 @@ impl Socket {
     /// is the initial time, used as a basline for all time-based operations.
     pub fn new(name: &str, options: &Options) -> Self {
         let now = Rc::new(RefCell::new(SocketTime::zero()));
-        let events: Rc<RefCell<Events>> = Rc::new(RefCell::new(Events::new()));
-        let events: Rc<RefCell<dyn EventSink>> =
-            Rc::new(RefCell::new(LoggingEvents::new(events, name.into(), Rc::clone(&now))));
+        let events: Rc<RefCell<dyn EventSink>> = Rc::new(RefCell::new(Events::new()));
         let sqe = Rc::clone(&events);
         let ctx = Context {
             options: options.clone(),
@@ -487,7 +411,6 @@ impl DcSctpSocket for Socket {
     fn handle_input(&mut self, packet: Bytes) {
         self.ctx.rx_packets_count += 1;
         let now = *self.now.borrow();
-        log_packet(&self.name, now, false, &packet);
 
         match SctpPacket::from_bytes(packet, &self.ctx.options) {
             Err(_e) => {

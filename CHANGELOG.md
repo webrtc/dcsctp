@@ -8,6 +8,10 @@ and this project adheres to
 
 ## Unreleased
 
+### Removed
+
+ - Removed logging of packets and events at info level.
+
 ## 0.1.18 - 2026-11-13
 
 ### Changed
