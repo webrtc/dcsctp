@@ -384,6 +384,7 @@ impl OutstandingData {
             cumulative_tsn_ack_advanced,
             &mut ack_info,
         );
+        debug_assert!(self.is_consistent());
         ack_info
     }
 
@@ -680,6 +681,7 @@ impl OutstandingData {
         //   subsequent Fast Retransmit. However, as they are marked for retransmission, they will
         //   be retransmitted later on as soon as cwnd allows."
         self.to_be_retransmitted.extend(tsns);
+        debug_assert!(self.is_consistent());
         chunks
     }
 
@@ -696,6 +698,7 @@ impl OutstandingData {
         let mut tsns = std::mem::take(&mut self.to_be_retransmitted);
         let chunks = self.extract_chunks_that_can_fit(now, max_size, &mut tsns);
         std::mem::swap(&mut self.to_be_retransmitted, &mut tsns);
+        debug_assert!(self.is_consistent());
         chunks
     }
 
@@ -742,6 +745,7 @@ impl OutstandingData {
                 self.abandon_all_for(tsn);
             }
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn is_empty(&self) -> bool {
@@ -812,9 +816,11 @@ impl OutstandingData {
                 item.data.mid
             );
             self.abandon_all_for(tsn);
+            debug_assert!(self.is_consistent());
             return None;
         }
 
+        debug_assert!(self.is_consistent());
         Some(tsn)
     }
 
@@ -894,6 +900,7 @@ impl OutstandingData {
         for tsn in &tsns_to_nack {
             self.nack_chunk(now, *tsn, true, false);
         }
+        debug_assert!(self.is_consistent());
     }
 
     /// Creates a FORWARD-TSN chunk.
@@ -1112,12 +1119,44 @@ impl OutstandingData {
 
             self.outstanding_data.push_back(item);
         }
+        debug_assert!(self.is_consistent());
     }
 
     /// Called when an outgoing stream reset is sent, marking the last assigned TSN as a breakpoint
     /// that a FORWARD-TSN shouldn't cross.
     pub fn begin_reset_streams(&mut self) {
         self.stream_reset_breakpoint_tsns.insert(OrderedTsn(self.next_tsn()));
+    }
+
+    /// Indicates if the metadata (the unacked bytes and items, and the chunks to be retransmitted)
+    /// is consistent with the state of the chunks.
+    fn is_consistent(&self) -> bool {
+        let mut unacked_payload_bytes = 0;
+        let mut unacked_packet_bytes = 0;
+        let mut unacked_items = 0;
+        let mut to_be_retransmitted = BTreeSet::new();
+
+        let mut tsn = self.last_cumulative_tsn_ack;
+        for item in &self.outstanding_data {
+            tsn += 1;
+            if item.is_outstanding() {
+                unacked_payload_bytes += item.data.payload.len();
+                unacked_packet_bytes +=
+                    round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
+                unacked_items += 1;
+            }
+            if item.should_be_retransmitted() {
+                to_be_retransmitted.insert(OrderedTsn(tsn));
+            }
+        }
+
+        unacked_payload_bytes == self.unacked_payload_bytes
+            && unacked_packet_bytes == self.unacked_packet_bytes
+            && unacked_items == self.unacked_items
+            // Chunks to be retransmitted must be in exactly one of the retransmission sets.
+            && self.to_be_retransmitted.is_disjoint(&self.to_be_fast_retransmitted)
+            && to_be_retransmitted
+                == self.to_be_retransmitted.union(&self.to_be_fast_retransmitted).copied().collect()
     }
 }
 
