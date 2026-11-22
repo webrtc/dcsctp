@@ -913,11 +913,14 @@ impl OutstandingData {
             new_cumulative_tsn = tsn;
 
             if item.data.stream_key.is_ordered() {
-                let entry =
-                    skipped_per_ordered_stream.entry(item.data.stream_key.id()).or_insert(Ssn(0));
-                if item.data.ssn.greater_than(*entry) {
-                    *entry = item.data.ssn;
-                }
+                skipped_per_ordered_stream
+                    .entry(item.data.stream_key.id())
+                    .and_modify(|ssn| {
+                        if item.data.ssn.greater_than(*ssn) {
+                            *ssn = item.data.ssn;
+                        }
+                    })
+                    .or_insert(item.data.ssn);
             }
         }
 
@@ -945,10 +948,14 @@ impl OutstandingData {
             }
             new_cumulative_tsn = tsn;
 
-            let entry = skipped_per_stream.entry(item.data.stream_key).or_insert(Mid(0));
-            if item.data.mid.greater_than(*entry) {
-                *entry = item.data.mid;
-            }
+            skipped_per_stream
+                .entry(item.data.stream_key)
+                .and_modify(|mid| {
+                    if item.data.mid.greater_than(*mid) {
+                        *mid = item.data.mid;
+                    }
+                })
+                .or_insert(item.data.mid);
         }
 
         let skipped_streams: Vec<SkippedStream> = skipped_per_stream
@@ -2908,6 +2915,103 @@ mod tests {
         assert_eq!(
             buf2.get_chunk_states_for_testing(),
             vec![(Tsn(9), ChunkState::Acked), (Tsn(10), ChunkState::Abandoned)]
+        );
+    }
+
+    #[test]
+    fn creates_forward_tsn_with_ssn_above_half_space() {
+        let add = |buf: &mut OutstandingData, id: u32, ssn: u16| {
+            let data = Data {
+                stream_key: StreamKey::Ordered(StreamId(1)),
+                ssn: Ssn(ssn),
+                payload: Bytes::from_static(b"a"),
+                is_beginning: true,
+                is_end: true,
+                ..Default::default()
+            };
+            buf.insert(OutgoingMessageId(id), &data, now(), 0, no_expiry(), None).unwrap()
+        };
+
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+
+        // Single abandoned chunk at half the SSN space must not become Ssn(0).
+        let tsn = add(&mut buf, 1, 32768);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_forward_tsn().skipped_streams,
+            vec![SkippedStream::ForwardTsn(StreamId(1), Ssn(32768))]
+        );
+        buf.handle_sack(now(), tsn, &[], false);
+
+        // Multiple abandoned chunks above half the SSN space must pick the highest SSN.
+        add(&mut buf, 2, 32769);
+        let tsn = add(&mut buf, 3, 32770);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_forward_tsn().skipped_streams,
+            vec![SkippedStream::ForwardTsn(StreamId(1), Ssn(32770))]
+        );
+        buf.handle_sack(now(), tsn, &[], false);
+
+        // Wrapping across u16::MAX -> 0 must pick Ssn(0).
+        add(&mut buf, 4, u16::MAX);
+        add(&mut buf, 5, 0);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_forward_tsn().skipped_streams,
+            vec![SkippedStream::ForwardTsn(StreamId(1), Ssn(0))]
+        );
+    }
+
+    #[test]
+    fn creates_iforward_tsn_with_mid_above_half_space() {
+        let half = 1u32 << 31;
+        let ordered = StreamKey::Ordered(StreamId(1));
+        let unordered = StreamKey::Unordered(StreamId(1));
+        let add = |buf: &mut OutstandingData, id: u32, stream_key: StreamKey, mid: u32| {
+            let data = Data {
+                stream_key,
+                mid: Mid(mid),
+                payload: Bytes::from_static(b"a"),
+                is_beginning: true,
+                is_end: true,
+                ..Default::default()
+            };
+            buf.insert(OutgoingMessageId(id), &data, now(), 0, no_expiry(), None).unwrap()
+        };
+
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+
+        // Abandoned ordered and unordered chunks at half the MID space must not become Mid(0).
+        add(&mut buf, 1, ordered, half);
+        let tsn = add(&mut buf, 2, unordered, half);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_iforward_tsn().skipped_streams,
+            vec![
+                SkippedStream::IForwardTsn(ordered, Mid(half)),
+                SkippedStream::IForwardTsn(unordered, Mid(half)),
+            ]
+        );
+        buf.handle_sack(now(), tsn, &[], false);
+
+        // Multiple abandoned chunks above half the MID space must pick the highest MID.
+        add(&mut buf, 3, unordered, half + 1);
+        let tsn = add(&mut buf, 4, unordered, half + 2);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_iforward_tsn().skipped_streams,
+            vec![SkippedStream::IForwardTsn(unordered, Mid(half + 2))]
+        );
+        buf.handle_sack(now(), tsn, &[], false);
+
+        // Wrapping across u32::MAX -> 0 must pick Mid(0).
+        add(&mut buf, 5, ordered, u32::MAX);
+        add(&mut buf, 6, ordered, 0);
+        buf.nack_all(now());
+        assert_eq!(
+            buf.create_iforward_tsn().skipped_streams,
+            vec![SkippedStream::IForwardTsn(ordered, Mid(0))]
         );
     }
 }

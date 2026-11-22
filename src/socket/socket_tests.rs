@@ -31,6 +31,7 @@ mod tests {
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_LOWER_LAYER_DTLS;
     use crate::api::ZERO_CHECKSUM_ALTERNATE_ERROR_DETECTION_METHOD_NONE;
     use crate::math::round_down_to_4;
+    use crate::packet::SkippedStream;
     use crate::packet::abort_chunk::AbortChunk;
     use crate::packet::chunk::Chunk;
     use crate::packet::data::Data;
@@ -4799,5 +4800,51 @@ mod tests {
         let packet =
             SctpPacket::from_bytes(expect_sent_packet!(socket_a2.poll_event()), &options).unwrap();
         assert!(matches!(packet.chunks.as_slice(), [Chunk::Data(_)]));
+    }
+
+    #[test]
+    fn forward_tsn_carries_correct_ssn_above_half_space() {
+        let options = default_options();
+        let mut a = Socket::new("A", &options);
+        let mut z = Socket::new("Z", &options);
+        connect_sockets(&mut a, &mut z);
+
+        // Advance stream 1 through SSNs 0..=32767 using normal messages.
+        for _ in 0..(32768 / 256) {
+            let batch: Vec<Message> = (0..256)
+                .map(|_| Message::new(StreamId(1), PpId(53), Bytes::from_static(b"x")))
+                .collect();
+            a.send_many(batch, &SendOptions::default()).unwrap();
+            exchange_packets(&mut a, &mut z);
+            while z.get_next_message().is_some() {}
+        }
+
+        // Abandon SSN 32768 (drop its DATA packet) and send SSN 32769 reliably.
+        let unreliable = SendOptions { max_retransmissions: Some(0), ..Default::default() };
+        a.send(Message::new(StreamId(1), PpId(53), Bytes::from_static(b"lost")), &unreliable)
+            .unwrap();
+        let _dropped = expect_sent_packet!(a.poll_event());
+
+        a.send(
+            Message::new(StreamId(1), PpId(53), Bytes::from_static(b"after")),
+            &SendOptions::default(),
+        )
+        .unwrap();
+        z.handle_input(expect_sent_packet!(a.poll_event()));
+        a.handle_input(expect_sent_packet!(z.poll_event()));
+
+        // Let T3-RTX expire so A abandons SSN 32768 and emits FORWARD-TSN.
+        let timeout = a.poll_timeout();
+        a.advance_time(timeout);
+        let fwd_packet = expect_sent_packet!(a.poll_event());
+        let parsed = SctpPacket::from_bytes(fwd_packet.clone(), &options).unwrap();
+        let [Chunk::ForwardTsn(fwd)] = parsed.chunks.as_slice() else {
+            panic!("Expected FORWARD-TSN chunk, got {:?}", parsed.chunks);
+        };
+        assert_eq!(fwd.skipped_streams, vec![SkippedStream::ForwardTsn(StreamId(1), Ssn(32768))]);
+
+        z.handle_input(fwd_packet);
+        let received = z.get_next_message().expect("subsequent message must be delivered");
+        assert_eq!(&received.payload[..], b"after");
     }
 }
