@@ -12,6 +12,10 @@ and this project adheres to
 
  - Removed logging of packets and events at info level.
 
+### Fixed
+
+ - Fix stalled message delivery when the receive buffer fills up.
+
 ## 0.1.18 - 2026-11-13
 
 ### Changed
