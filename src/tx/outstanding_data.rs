@@ -384,6 +384,7 @@ impl OutstandingData {
             cumulative_tsn_ack_advanced,
             &mut ack_info,
         );
+        debug_assert!(self.is_consistent());
         ack_info
     }
 
@@ -612,8 +613,8 @@ impl OutstandingData {
     ) -> Vec<(Tsn, Data)> {
         let mut result: Vec<(Tsn, Data)> = vec![];
         // As `tsns` has been taken out of `self`, `abandon_all_for` can't remove abandoned chunks
-        // from it directly. They are collected here and removed once the iteration is done.
-        let mut abandoned: Vec<OrderedTsn> = vec![];
+        // from it directly. They are removed once the iteration is done.
+        let mut has_abandoned_chunks = false;
         for tsn in tsns.iter() {
             // No point in continuing if the packet is full.
             if max_size <= self.data_chunk_header_size {
@@ -625,8 +626,7 @@ impl OutstandingData {
 
             if item.is_abandoned() {
                 // Abandoned together with an earlier, expired fragment of the same message.
-                debug_assert!(!abandoned.is_empty());
-                abandoned.push(*tsn);
+                debug_assert!(has_abandoned_chunks);
                 continue;
             }
 
@@ -636,7 +636,7 @@ impl OutstandingData {
 
             if item.has_expired(now) {
                 self.abandon_all_for(tsn.0);
-                abandoned.push(*tsn);
+                has_abandoned_chunks = true;
                 continue;
             }
 
@@ -650,8 +650,13 @@ impl OutstandingData {
                 self.unacked_items += 1;
             }
         }
-        for tsn in &abandoned {
-            tsns.remove(tsn);
+        if has_abandoned_chunks {
+            // This includes fragments of the expired messages that weren't visited above, as the
+            // packet got full.
+            tsns.retain(|tsn| {
+                let index = tsn.0.distance_to(self.last_cumulative_tsn_ack) - 1;
+                !self.outstanding_data[index as usize].is_abandoned()
+            });
         }
         for (tsn, _) in &result {
             tsns.remove(&OrderedTsn(*tsn));
@@ -680,6 +685,7 @@ impl OutstandingData {
         //   subsequent Fast Retransmit. However, as they are marked for retransmission, they will
         //   be retransmitted later on as soon as cwnd allows."
         self.to_be_retransmitted.extend(tsns);
+        debug_assert!(self.is_consistent());
         chunks
     }
 
@@ -696,6 +702,7 @@ impl OutstandingData {
         let mut tsns = std::mem::take(&mut self.to_be_retransmitted);
         let chunks = self.extract_chunks_that_can_fit(now, max_size, &mut tsns);
         std::mem::swap(&mut self.to_be_retransmitted, &mut tsns);
+        debug_assert!(self.is_consistent());
         chunks
     }
 
@@ -742,6 +749,7 @@ impl OutstandingData {
                 self.abandon_all_for(tsn);
             }
         }
+        debug_assert!(self.is_consistent());
     }
 
     pub fn is_empty(&self) -> bool {
@@ -812,9 +820,11 @@ impl OutstandingData {
                 item.data.mid
             );
             self.abandon_all_for(tsn);
+            debug_assert!(self.is_consistent());
             return None;
         }
 
+        debug_assert!(self.is_consistent());
         Some(tsn)
     }
 
@@ -894,6 +904,7 @@ impl OutstandingData {
         for tsn in &tsns_to_nack {
             self.nack_chunk(now, *tsn, true, false);
         }
+        debug_assert!(self.is_consistent());
     }
 
     /// Creates a FORWARD-TSN chunk.
@@ -1112,12 +1123,44 @@ impl OutstandingData {
 
             self.outstanding_data.push_back(item);
         }
+        debug_assert!(self.is_consistent());
     }
 
     /// Called when an outgoing stream reset is sent, marking the last assigned TSN as a breakpoint
     /// that a FORWARD-TSN shouldn't cross.
     pub fn begin_reset_streams(&mut self) {
         self.stream_reset_breakpoint_tsns.insert(OrderedTsn(self.next_tsn()));
+    }
+
+    /// Indicates if the metadata (the unacked bytes and items, and the chunks to be retransmitted)
+    /// is consistent with the state of the chunks.
+    fn is_consistent(&self) -> bool {
+        let mut unacked_payload_bytes = 0;
+        let mut unacked_packet_bytes = 0;
+        let mut unacked_items = 0;
+        let mut to_be_retransmitted = BTreeSet::new();
+
+        let mut tsn = self.last_cumulative_tsn_ack;
+        for item in &self.outstanding_data {
+            tsn += 1;
+            if item.is_outstanding() {
+                unacked_payload_bytes += item.data.payload.len();
+                unacked_packet_bytes +=
+                    round_up_to_4!(self.data_chunk_header_size + item.data.payload.len());
+                unacked_items += 1;
+            }
+            if item.should_be_retransmitted() {
+                to_be_retransmitted.insert(OrderedTsn(tsn));
+            }
+        }
+
+        unacked_payload_bytes == self.unacked_payload_bytes
+            && unacked_packet_bytes == self.unacked_packet_bytes
+            && unacked_items == self.unacked_items
+            // Chunks to be retransmitted must be in exactly one of the retransmission sets.
+            && self.to_be_retransmitted.is_disjoint(&self.to_be_fast_retransmitted)
+            && to_be_retransmitted
+                == self.to_be_retransmitted.union(&self.to_be_fast_retransmitted).copied().collect()
     }
 }
 
@@ -2845,6 +2888,100 @@ mod tests {
                 (Tsn(14), ChunkState::Acked),
             ]
         );
+    }
+
+    #[test]
+    fn expiring_chunk_on_retransmit_abandons_fragments_after_full_packet() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq1 = DataSequencer::new(StreamId(1));
+        let mut seq2 = DataSequencer::new(StreamId(2));
+        let expiry = now() + Duration::from_millis(50);
+        let payload = "x".repeat(100);
+
+        // TSN 10 and 12 are fragments of a message with a limited lifetime, which is interleaved
+        // with a reliable message at TSN 11.
+        buf.insert(OutgoingMessageId(1), &seq1.ordered("a", "B"), now(), u16::MAX, expiry, None);
+        buf.insert(
+            OutgoingMessageId(2),
+            &seq2.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(OutgoingMessageId(1), &seq1.ordered("b", "E"), now(), u16::MAX, expiry, None);
+
+        buf.nack_all(now());
+
+        // TSN 10 has expired, which abandons TSN 12 as well, and TSN 11 fills the packet.
+        let one_chunk_budget = DATA_CHUNK_HEADER_SIZE + payload.len();
+        let chunks = buf.get_chunks_to_be_retransmitted(expiry, one_chunk_budget);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(11)]);
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::InFlight),
+                (Tsn(12), ChunkState::Abandoned),
+            ]
+        );
+
+        // TSN 12 must not remain scheduled for retransmission.
+        assert!(!buf.has_data_to_be_retransmitted());
+        assert!(buf.get_chunks_to_be_retransmitted(expiry, 1000).is_empty());
+    }
+
+    #[test]
+    fn expiring_chunk_on_fast_retransmit_abandons_fragments_after_full_packet() {
+        let mut buf = OutstandingData::new(DATA_CHUNK_HEADER_SIZE, Tsn(9));
+        let mut seq1 = DataSequencer::new(StreamId(1));
+        let mut seq2 = DataSequencer::new(StreamId(2));
+        let expiry = now() + Duration::from_millis(50);
+        let payload = "x".repeat(100);
+
+        // TSN 10 and 12 are fragments of a message with a limited lifetime, which is interleaved
+        // with a reliable message at TSN 11.
+        buf.insert(OutgoingMessageId(1), &seq1.ordered("a", "B"), now(), u16::MAX, expiry, None);
+        buf.insert(
+            OutgoingMessageId(2),
+            &seq2.ordered(&payload, "BE"),
+            now(),
+            u16::MAX,
+            no_expiry(),
+            None,
+        );
+        buf.insert(OutgoingMessageId(1), &seq1.ordered("b", "E"), now(), u16::MAX, expiry, None);
+        // TSN 13, 14 and 15 are used to trigger 3 miss indications.
+        insert(&mut buf, seq2.ordered("c", "BE"));
+        insert(&mut buf, seq2.ordered("d", "BE"));
+        insert(&mut buf, seq2.ordered("e", "BE"));
+
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(4, 4)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(4, 5)], false);
+        buf.handle_sack(now(), Tsn(9), &[GapAckBlock::new(4, 6)], false);
+        assert!(buf.has_data_to_be_fast_retransmitted());
+
+        // TSN 10 has expired, which abandons TSN 12 as well, and TSN 11 fills the packet.
+        let one_chunk_budget = DATA_CHUNK_HEADER_SIZE + payload.len();
+        let chunks = buf.get_chunks_to_be_fast_retransmitted(expiry, one_chunk_budget);
+        assert_eq!(chunks.iter().map(|c| c.0).collect_vec(), &[Tsn(11)]);
+        assert_eq!(
+            buf.get_chunk_states_for_testing(),
+            vec![
+                (Tsn(9), ChunkState::Acked),
+                (Tsn(10), ChunkState::Abandoned),
+                (Tsn(11), ChunkState::InFlight),
+                (Tsn(12), ChunkState::Abandoned),
+                (Tsn(13), ChunkState::Acked),
+                (Tsn(14), ChunkState::Acked),
+                (Tsn(15), ChunkState::Acked),
+            ]
+        );
+
+        // TSN 12 must not be moved to the chunks to be retransmitted later.
+        assert!(!buf.has_data_to_be_retransmitted());
+        assert!(buf.get_chunks_to_be_retransmitted(expiry, 1000).is_empty());
     }
 
     #[test]

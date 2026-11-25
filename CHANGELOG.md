@@ -12,6 +12,10 @@ and this project adheres to
 
  - Removed logging of packets and events at info level.
 
+### Fixed
+
+ - Fix a potential crash when a message expires while it's being retransmitted.
+
 ## 0.1.18 - 2026-11-13
 
 ### Changed
