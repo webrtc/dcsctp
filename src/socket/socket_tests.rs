@@ -4800,4 +4800,180 @@ mod tests {
             SctpPacket::from_bytes(expect_sent_packet!(socket_a2.poll_event()), &options).unwrap();
         assert!(matches!(packet.chunks.as_slice(), [Chunk::Data(_)]));
     }
+
+    #[test]
+    fn accepts_gap_filling_data_above_watermark() {
+        let a_options = default_options();
+        let z_options = Options { max_receiver_window_buffer_size: 10_000, ..default_options() };
+        let watermark =
+            ((z_options.max_receiver_window_buffer_size as f32) * HIGH_WATERMARK_LIMIT) as usize;
+        assert_eq!(watermark, 9_000);
+
+        let mut socket_a = Socket::new("A", &a_options);
+        let mut socket_z = Socket::new("Z", &z_options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        // Send message 0 from A and hold it back to create a gap at first_tsn.
+        socket_a
+            .send(Message::with_payload(Bytes::from(vec![0u8; 900])), &SendOptions::default())
+            .unwrap();
+        let first_pkt = expect_sent_packet!(socket_a.poll_event());
+        let first_tsn = {
+            let parsed = SctpPacket::from_bytes(first_pkt.clone(), &z_options).unwrap();
+            let Chunk::Data(DataChunk { tsn, .. }) = parsed.chunks[0] else {
+                panic!("Expected DATA chunk");
+            };
+            tsn
+        };
+
+        let z_vtag = socket_z.verification_tag();
+        let make_pkt = |tsn: Tsn, ssn: u16, fill: u8, len: usize| {
+            SctpPacketBuilder::new(
+                z_vtag,
+                z_options.remote_port,
+                z_options.local_port,
+                z_options.mtu,
+            )
+            .add(&Chunk::Data(DataChunk {
+                tsn,
+                data: Data {
+                    stream_key: StreamKey::Ordered(StreamId(1)),
+                    ssn: Ssn(ssn),
+                    ppid: PpId(53),
+                    payload: Bytes::from(vec![fill; len]),
+                    is_beginning: true,
+                    is_end: true,
+                    ..Default::default()
+                },
+                immediate_ack: false,
+            }))
+            .build()
+        };
+
+        // Deliver TSNs first_tsn+1..=first_tsn+10 (10 * 900 = 9,000 B == watermark).
+        let mut last_sack = None;
+        for i in 1u16..11 {
+            socket_z.handle_input(make_pkt(first_tsn + u32::from(i), i, i as u8, 900));
+            let parsed =
+                SctpPacket::from_bytes(expect_sent_packet!(socket_z.poll_event()), &z_options)
+                    .unwrap();
+            let Chunk::Sack(sack) = parsed.chunks.into_iter().next().unwrap() else {
+                panic!("Expected SACK chunk");
+            };
+            last_sack = Some(sack);
+        }
+        let sack = last_sack.unwrap();
+        assert_eq!(sack.cumulative_tsn_ack, first_tsn - 1);
+        assert_eq!(sack.a_rwnd, 0);
+        assert_eq!(sack.gap_ack_blocks.len(), 1);
+        assert_eq!(sack.gap_ack_blocks[0].start, 2);
+        assert_eq!(sack.gap_ack_blocks[0].end, 11);
+        assert_eq!(socket_z.messages_ready_count(), 0);
+
+        // Above the watermark, a chunk that does not advance the cumulative TSN ack must be
+        // dropped and immediately answered with a SACK.
+        socket_z.handle_input(make_pkt(first_tsn + 11, 11, 11, 500));
+        let parsed =
+            SctpPacket::from_bytes(expect_sent_packet!(socket_z.poll_event()), &z_options).unwrap();
+        let Chunk::Sack(sack) = &parsed.chunks[0] else {
+            panic!("Expected immediate SACK after dropping chunk above watermark");
+        };
+        assert_eq!(sack.cumulative_tsn_ack, first_tsn - 1);
+        assert_eq!(sack.a_rwnd, 0);
+        assert_eq!(sack.gap_ack_blocks.len(), 1);
+        assert_eq!(sack.gap_ack_blocks[0].start, 2);
+        assert_eq!(sack.gap_ack_blocks[0].end, 11);
+        expect_no_event!(socket_z.poll_event());
+
+        // Delivering the missing gap-filling packet (first_tsn) advances the cumulative TSN ack,
+        // so it must be accepted using the headroom above the watermark and unlock all 11 messages.
+        socket_z.handle_input(first_pkt);
+        assert_eq!(socket_z.messages_ready_count(), 11);
+        for i in 0u8..11 {
+            let msg = socket_z.get_next_message().unwrap();
+            assert_eq!(msg.stream_id, StreamId(1));
+            assert_eq!(msg.payload.len(), 900);
+            assert!(msg.payload.iter().all(|&b| b == i));
+        }
+        assert!(socket_z.get_next_message().is_none());
+
+        // Verify the SACK acknowledges the full block and reopens the receive window.
+        let next_timeout = socket_z.poll_timeout();
+        socket_z.advance_time(next_timeout);
+        let parsed =
+            SctpPacket::from_bytes(expect_sent_packet!(socket_z.poll_event()), &z_options).unwrap();
+        let Chunk::Sack(sack) = &parsed.chunks[0] else {
+            panic!("Expected SACK chunk");
+        };
+        assert_eq!(sack.cumulative_tsn_ack, first_tsn + 10);
+        assert!(sack.gap_ack_blocks.is_empty());
+        assert_eq!(sack.a_rwnd, watermark as u32);
+    }
+
+    #[test]
+    fn drops_data_and_sends_immediate_sack_when_reassembly_queue_is_full() {
+        let z_options = Options { max_receiver_window_buffer_size: 5_000, ..default_options() };
+        let mut socket_a = Socket::new("A", &default_options());
+        let mut socket_z = Socket::new("Z", &z_options);
+        connect_sockets(&mut socket_a, &mut socket_z);
+
+        socket_a.send(Message::with_size(1_000), &SendOptions::default()).unwrap();
+        let first_pkt = expect_sent_packet!(socket_a.poll_event());
+        let first_tsn = {
+            let parsed = SctpPacket::from_bytes(first_pkt.clone(), &z_options).unwrap();
+            let Chunk::Data(DataChunk { tsn, .. }) = parsed.chunks[0] else {
+                panic!("Expected DATA chunk");
+            };
+            tsn
+        };
+
+        let z_vtag = socket_z.verification_tag();
+        let make_pkt = |tsn: Tsn, ssn: u16, len: usize| {
+            SctpPacketBuilder::new(
+                z_vtag,
+                z_options.remote_port,
+                z_options.local_port,
+                z_options.mtu,
+            )
+            .add(&Chunk::Data(DataChunk {
+                tsn,
+                data: Data {
+                    stream_key: StreamKey::Ordered(StreamId(1)),
+                    ssn: Ssn(ssn),
+                    ppid: PpId(53),
+                    payload: zeroed_bytes(len),
+                    is_beginning: true,
+                    is_end: true,
+                    ..Default::default()
+                },
+                immediate_ack: false,
+            }))
+            .build()
+        };
+
+        // Five 1,000-byte unread in-order messages fill the 5,000-byte buffer completely.
+        // Packets 0, 2, and 4 each emit a SACK, leaving the delayed-ack state idle.
+        socket_z.handle_input(first_pkt);
+        let _ = expect_sent_packet!(socket_z.poll_event());
+        for i in 1u16..5 {
+            socket_z.handle_input(make_pkt(first_tsn + u32::from(i), i, 1_000));
+            while socket_z.poll_event().is_some() {}
+        }
+        assert_eq!(socket_z.messages_ready_count(), 5);
+        expect_no_event!(socket_z.poll_event());
+
+        // Even an in-order chunk that would advance the cumulative TSN ack must be dropped when
+        // the queue is completely full, and answered with an immediate SACK advertising rwnd = 0.
+        socket_z.handle_input(make_pkt(first_tsn + 5, 5, 100));
+        let parsed =
+            SctpPacket::from_bytes(expect_sent_packet!(socket_z.poll_event()), &z_options).unwrap();
+        let Chunk::Sack(sack) = &parsed.chunks[0] else {
+            panic!("Expected immediate SACK when queue is full");
+        };
+        assert_eq!(sack.cumulative_tsn_ack, first_tsn + 4);
+        assert_eq!(sack.a_rwnd, 0);
+        assert!(sack.gap_ack_blocks.is_empty());
+        assert_eq!(socket_z.messages_ready_count(), 5);
+        expect_no_event!(socket_z.poll_event());
+    }
 }

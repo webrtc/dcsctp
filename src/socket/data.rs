@@ -69,10 +69,15 @@ pub(crate) fn handle_data(
         // If the reassembly queue is full, there is nothing that can be done. The specification
         // only allows dropping gap-ack-blocks, and that's not likely to help as the socket has
         // been trying to fill gaps since the watermark was reached.
+        tcb.data_tracker.force_immediate_sack(now);
         return;
     }
-    if tcb.reassembly_queue.is_above_watermark() {
-        // TODO: Implement
+    if tcb.reassembly_queue.is_above_watermark() && !tcb.data_tracker.will_increase_cum_ack_tsn(tsn)
+    {
+        // Above the high watermark (a_rwnd == 0), headroom remains up to the maximum buffer size.
+        // Only accept DATA chunks that advance the cumulative ack TSN (filling gaps or continuing
+        // an in-order sequence).
+        tcb.data_tracker.force_immediate_sack(now);
         return;
     }
     if !tcb.data_tracker.is_tsn_valid(tsn) {
