@@ -12,6 +12,10 @@ and this project adheres to
 
  - Removed logging of packets and events at info level.
 
+### Fixed
+
+ - Fix message loss or stalled delivery after a partially reliable message is abandoned on a long-lived stream.
+
 ## 0.1.18 - 2026-11-13
 
 ### Changed
